@@ -12,7 +12,7 @@ from jobcopilot_api import __version__
 from jobcopilot_api.errors import install_exception_handlers
 from jobcopilot_api.infra.logging import setup_logging
 from jobcopilot_api.infra.request_id import RequestIDMiddleware
-from jobcopilot_api.routers import health
+from jobcopilot_api.routers import files, health
 from jobcopilot_api.settings import settings
 
 
@@ -48,6 +48,7 @@ def create_app() -> FastAPI:
     install_exception_handlers(app)
 
     app.include_router(health.router, prefix="/v1")
+    app.include_router(files.router, prefix="/v1")
 
     return app
 
