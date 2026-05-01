@@ -39,9 +39,16 @@ exclude = ["build/", "dist/", ".venv/", "apps/api/alembic/versions/"]
 module = ["tests.*"]
 disallow_untyped_decorators = false
 
+[[tool.mypy.overrides]]
+module = ["testcontainers.*", "pgvector.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["apps/api/tests"]
+markers = [
+    "integration: tests that spin a real Postgres via testcontainers (need Docker)",
+]
 
 [tool.coverage.run]
 source = ["apps/api/src/jobcopilot_api"]
