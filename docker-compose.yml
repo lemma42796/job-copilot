@@ -1,0 +1,78 @@
+name: jobcopilot
+
+x-postgres-env: &postgres-env
+  POSTGRES_USER: jobcopilot
+  POSTGRES_PASSWORD: jobcopilot
+  POSTGRES_DB: jobcopilot
+
+services:
+  postgres:
+    # Public pgvector image. pgmq will be added in M2 via a custom Dockerfile
+    # when queues are first used (see 3-DATA_MODEL §3.19, ROADMAP M2).
+    image: pgvector/pgvector:pg16
+    container_name: jobcopilot-postgres
+    restart: unless-stopped
+    environment:
+      <<: *postgres-env
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/00-jobcopilot.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobcopilot -d jobcopilot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    container_name: jobcopilot-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      JOBCOPILOT_ENV: ${JOBCOPILOT_ENV:-dev}
+      JOBCOPILOT_DATABASE_URL: postgresql+asyncpg://jobcopilot:jobcopilot@postgres:5432/jobcopilot
+      JOBCOPILOT_CORS_ALLOW_ORIGINS: '["http://localhost:3000","http://localhost"]'
+      JOBCOPILOT_DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      JOBCOPILOT_LLM_PROVIDER: ${LLM_PROVIDER:-dashscope}
+    ports:
+      - "8000:8000"
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    container_name: jobcopilot-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      INTERNAL_API_BASE_URL: http://api:8000
+      HOSTNAME: 0.0.0.0
+    ports:
+      - "3000:3000"
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: jobcopilot-caddy
+    restart: unless-stopped
+    depends_on:
+      - api
+      - web
+    ports:
+      - "80:80"
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

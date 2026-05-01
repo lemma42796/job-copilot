@@ -1,0 +1,44 @@
+[project]
+name = "jobcopilot"
+version = "0.0.1"
+description = "JobCopilot — AI 求职副驾(workspace root)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+[tool.uv.workspace]
+members = ["apps/api"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "build", "dist", "apps/api/alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF", "ASYNC", "S", "TID", "PT"]
+ignore = ["E501", "S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["jobcopilot_api"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S", "PT011"]
+"apps/api/src/jobcopilot_api/settings.py" = ["S104"]  # 0.0.0.0 bind is intentional in containers
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+exclude = ["build/", "dist/", ".venv/", "apps/api/alembic/versions/"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_decorators = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["apps/api/tests"]

@@ -1,0 +1,55 @@
+name: Type Sync (OpenAPI → schemas)
+
+on:
+  pull_request:
+    paths:
+      - "apps/api/**"
+      - "packages/schemas/**"
+      - ".github/workflows/type-sync.yml"
+
+concurrency:
+  group: type-sync-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  drift:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.11"
+          enable-cache: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - run: uv sync --package jobcopilot-api --extra dev
+      - run: pnpm install --frozen-lockfile
+
+      - name: Boot API & dump openapi
+        run: |
+          uv run --project apps/api uvicorn jobcopilot_api.main:app --port 8000 &
+          API_PID=$!
+          for _ in $(seq 1 30); do
+            curl -fs http://127.0.0.1:8000/v1/health > /dev/null && break
+            sleep 1
+          done
+          curl -fs http://127.0.0.1:8000/v1/openapi.json -o /tmp/openapi.json
+          kill $API_PID
+
+      - name: Regenerate types from snapshot
+        env:
+          OPENAPI_FILE: /tmp/openapi.json
+        run: pnpm --filter @jobcopilot/schemas gen
+
+      - name: Fail on drift
+        run: |
+          if ! git diff --exit-code packages/schemas/src/api.ts; then
+            echo "::error::packages/schemas/src/api.ts is out of date. Run \`pnpm gen:api\` and commit."
+            exit 1
+          fi
