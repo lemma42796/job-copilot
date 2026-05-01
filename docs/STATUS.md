@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-01 (M1 进行中:S0.5 + S1 已完成未 commit;S2 已规划,见 ADR-0004)
+last_updated: 2026-05-01 (M1 进行中:S0.5 / S1 / S2 全部完成并已 push;下一刀 S3)
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -13,8 +13,8 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 |------|------|------|
 | S0.5 | M0 卫生债清理(coverage 闸门 / mypy 加测试 / 前端切自动类型 / structlog+request_id+RFC 7807) | ✅ |
 | S1   | DB + Alembic + 通用列/触发器/枚举(5 条 migration,9 张表) | ✅ |
-| S2   | LLM Client + DummyProvider + Tier 路由 + `llm_calls` 表 | 📋 已规划(ADR-0004),下一刀 |
-| S3   | files 表 + `/v1/files` 上传(sha256 去重) | pending |
+| S2   | LLM Client + DummyProvider + Tier 路由 + `llm_calls` 表 | ✅ |
+| S3   | files 表 + `/v1/files` 上传(sha256 去重) | ⏭ 下一刀 |
 | S4   | JDParserAgent(文本入口)+ `/v1/jds` + `/v1/jds/parse` SSE | pending |
 | S5   | 前端:JD 粘贴页 + 结构化结果可视化 + 编辑保存 | pending |
 | S6   | `evals/suites/jd_extract` 50 条 + promptfoo CI(**Week 2 末 DoD**) | pending |
@@ -24,19 +24,22 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | S10  | `evals/suites/profile_extract` 30 条 + chunk 召回断言 | pending |
 | S11  | 1 名志愿者 dogfood + bad case 修复(**Week 3 末 DoD**) | pending |
 
-## 当前 working tree 状态(重要)
+## 当前 working tree 状态
 
-**⚠ S0.5 + S1 全部产出都在 working tree,尚未 commit。** 上次 commit 仍是 `526e620 chore: bootstrap M0 monorepo skeleton`。
+Working tree 干净,本地 main 与 origin/main 一致。最近 5 个 commit:
 
-`git status` 摘要:
-- 改动:`.github/workflows/{lint,test-api,type-sync}.yml` / `apps/api/pyproject.toml` / `apps/api/src/jobcopilot_api/main.py` / `apps/api/tests/conftest.py` / `apps/web/src/lib/api.ts` / `pyproject.toml` / `uv.lock`
-- 新增:`apps/api/alembic.ini` / `apps/api/alembic/{env.py, script.py.mako, versions/0001-0005}` / `apps/api/src/jobcopilot_api/{errors.py, infra/, models/}` / `apps/api/tests/integration/` / `apps/api/tests/unit/{test_errors,test_infra_db,test_logging,test_request_id}.py`
-
-下次开工首件事可以选:**(A) 把 S0.5 + S1 拆成两个 commit 推上去,再开 S2**;或 **(B) 先开 S2,统一 squash**。建议 A,粒度更可读。
+```
+1db3c23 feat(api): persist llm_calls via DBCallLogger (S2-E)
+e500ac5 feat(api): add LLM abstraction layer (S2-D)
+6a3c6d6 feat(api): add llm_calls + prompt_versions schema (S2-C)
+8642091 docs: lock S2 plan in ADR-0004 (LLMClient contract)
+6a84f65 feat(api): land alembic + 9-table M1 schema (S1)
+6ac36be feat(api): add observability and error scaffolding (S0.5)
+```
 
 ## 当前 docker compose 状态
 
-S1 期间手动起了 postgres 单容器开发(`docker compose up -d postgres`),停机时**未 down**。下次开工前可以选择继续用它,或 `docker compose down -v` 后重启重置数据。**Alembic 已经把 0001-0005 应用到该容器,不重置可以省去一次迁移**。
+S1 期间手动起了 postgres 单容器开发(`docker compose up -d postgres`),停机时**未 down**。下次开工前可以选择继续用它,或 `docker compose down -v` 后重启重置数据。**Alembic 已经把 0001-0006 应用到该容器,不重置可以省去一次迁移**。集成测试用 testcontainers 起独立容器,与开发容器无关,无需停。
 
 > 2026-05-01 决策变更:LLM Provider 由 DeepSeek V4 切换为阿里云百炼 Qwen3.6,理由是消耗剩余 ¥15 赠款。详见 ADR-0003。**ADR-0001 复审条件 1(余额 < ¥1)触发时自动回切。**
 
@@ -136,14 +139,53 @@ apps/api/src/jobcopilot_api/
 - **HNSW 参数**:`vector_cosine_ops`,`m=16`,`ef_construction=64`(沿用 DATA_MODEL §3.8,M1 不调)
 - **`metadata` 列**:目前在 migration 里直接叫 `metadata` 没问题;**后续做 ORM 模型时要用 `meta_data: Mapped[dict] = mapped_column("metadata", JSONB, ...)`** 避免与 `Base.metadata` 撞名
 
-## 当前闸门(本地)
+---
+
+# S2 LLM 抽象层产出(2026-05-01)
+
+按 ADR-0004 落地,3 条原子 commit。
+
+```
+apps/api/alembic/versions/
+└── 0006_llm_calls_and_prompt_versions.py  # llm_calls + prompt_versions(FK 完整)
+
+apps/api/src/jobcopilot_api/
+├── llm/
+│   ├── tiers.py            # Tier(StrEnum:CHEAP/STANDARD/PREMIUM) + tier_to_model
+│   ├── errors.py           # LLMError 族,继承 JobCopilotError → RFC 7807
+│   ├── pricing.py          # price table + cost_for(本地自算)
+│   ├── cache.py            # cache_system 语义占位 + 前缀稳定文档
+│   ├── client.py           # Provider Protocol / LLMResult / LLMClient Protocol /
+│   │                       # BaseLLMClient(tenacity 重试 + JSON 修复 + 日志 1 行)/
+│   │                       # NoopCallLogger / MemoryCallLogger
+│   ├── db_logger.py        # DBCallLogger(独立 AsyncSession,失败只 warn)
+│   └── providers/
+│       ├── dashscope.py    # openai AsyncOpenAI 包装,error 映射
+│       └── dummy.py        # 显式 scenario 队列 + from_fixture
+├── infra/
+│   └── llm.py              # get_llm_client() 懒单例,默认接 DBCallLogger
+└── models/
+    ├── llm_call.py         # ORM(无 ORM 层 FK,migration 是权威)
+    └── prompt_version.py
+```
+
+## S2 设计决策(实现细节)
+
+- **ORM FK 原则**:ORM 只声明需要 navigate(`relationship()`)的关系,纯约束放 migration。LlmCall.user_id / prompt_version_id 都是 DB-only FK
+- **每次 `complete()` 最多 1 行日志**:tenacity 多少次重试 / schema 修复多少次,都聚成一行。失败路径在 try 走 `logger.log()` 后 raise,成功路径直接 return 前 log
+- **失败 cost = 0 / tokens = 0**:timeout / 5xx 拿不到 `response.usage`,LLMResult 用零占位写 llm_calls
+- **DBCallLogger 用独立 AsyncSession**:从注入的 sessionmaker 拿一个新 session,与业务事务无关,业务回滚不影响日志(集成测试 `test_business_rollback_does_not_drop_cost_log` 是这条的 load-bearing 断言)
+- **DashScope JSON schema 走 `json_object`**:OpenAI compat 不支持 `json_schema` 字段,降级用 `json_object` + Pydantic 二次校验 + 1 次重试(prompt 追加 schema)
+- **retry 参数可注入**:BaseLLMClient `retry_wait` 默认是 ADR-0004 D3,测试传 `wait_none()` 让重试不睡
+
+## 当前闸门(本地,M0 → S2-E 累计)
 
 - `ruff check`:All checks passed
-- `ruff format --check`:22 files already formatted
-- `mypy --strict apps/api/src apps/api/tests`:21 files, 0 issues
+- `ruff format --check`:44 files already formatted
+- `mypy --strict apps/api/src apps/api/tests`:43 files, 0 issues
 - `pnpm lint`(biome):16 files, no fixes
 - `pnpm typecheck`(tsc):0 errors
-- `pytest --cov --cov-fail-under=70`:**13 passed,98.97%**(12 unit + 1 integration)
+- `pytest --cov --cov-fail-under=70`:**60 passed,93.01%**(55 unit + 5 integration)
 
 ---
 
@@ -179,6 +221,13 @@ apps/api/src/jobcopilot_api/
 3. ruff `N818` 要求异常类名 `*Error` 后缀:`ValidationFailed` → `ValidationError`。
 4. structlog processor 的入参类型是 `MutableMapping[str, Any]`,不是 `dict`;mypy strict 会报。修复:`_redact` 签名换成 `MutableMapping`。
 
+# S2 期间踩到的小坑(已记录)
+
+1. **LlmCall.user_id 的 ORM `ForeignKey("users.id")` mapper 失败**:User ORM 还没建,SQLAlchemy mapper config 阶段 resolve 不到 `users` 表。修复:改用"ORM 只表达需要 navigate 的关系,纯约束放 DB"原则,删 LlmCall 的 ORM 层 FK 声明,留 migration 0006 的 DB 层 FK。后续 S3 建 User ORM 时不需要回头补。
+2. **集成测试用 module-scope async engine 跨 event loop 失败**:pytest-asyncio 默认每个测试一个新 loop,asyncpg 连接不能跨 loop 复用。修复:engine fixture 改成 function-scope(每测试新建 + dispose);container 仍 module-scope 避免反复重启 Postgres。
+3. **structlog `capture_logs()` 在套件中失效**:前置测试调过 `setup_logging()` 后,structlog 全局配置被锁定,`capture_logs()` 看不到事件。修复:db_logger 单测用 monkeypatch 直接替换模块级 `log` 对象。
+4. **DashScope OpenAI compat 不支持 `json_schema`**:M1 走 `response_format={"type":"json_object"}` + 在 prompt 里注入 schema + Pydantic 二次校验 + 1 次重试。已在 ADR-0004 D2 + client.py docstring 注明。
+
 ---
 
 # 文档清单与状态
@@ -210,36 +259,22 @@ README.md (项目根)               ✅ 完成(214 行)
 ## 当用户问"开发进度到了?"时
 
 1. 读本文件(STATUS.md)
-2. 简短汇报:S0.5 + S1 完成但未 commit;S2 是下一刀;5 个开放问题已用默认值锁定
+2. 简短汇报:M0 / S0.5 / S1 / S2(C+D+E)全部完成并 push;下一刀 S3(files 表 + `/v1/files` 上传 + sha256 去重)
 3. **等待用户指示后再行动**,不要自动开工
 
-## S2 起步时要做什么
+## S3 起步时要做什么(尚未做最佳实践规划)
 
-S2 的最佳实践规划已锁定在 **ADR-0004(LLM 抽象层契约)**,9 项决策(Tier 映射 / cache 行为 / 重试参数 / 日志写入边界 / cost 计算 / prompt_versions 同期建 / Idempotency 跳过 / commit 拆分 / BYOK 跳过)详见 `docs/adr/0004-llm-client-contract.md`。
+S3 的高层任务在 7-ROADMAP / DATA_MODEL §3.2(files 表)/ 4-API_SPEC(`/v1/files`)里,但**没做过 S3 专属的最佳实践规划会话**。开工前建议先做(对照 S2 的做法):
 
-S2 拆 3 个独立 commit(在 S0.5 / S1 commit 之后):
+候选规划点(开工前要决):
+- **User ORM 模型**:S2-E 临时跳过了 User ORM(改用 DB-only FK),S3 涉及 `files.user_id` 必须建 User class — 一并把 jds / profiles 等其他需要 navigate 的 ORM 模型补齐?还是用最小子集?
+- **/v1/files 上传协议**:multipart 还是 base64?分块上传?最大体积已在 0002 migration 限定 100MB CHECK
+- **去重语义**:同 user 同 sha256 视为同一文件(返回已有 file_id)还是允许重复 row?DATA_MODEL §3.2 没明说
+- **purpose 字段约束**:enum-like 还是自由 string?M1 涉及 `resume_upload` / `jd_pdf` / `jd_image`
+- **PDF 文本抽取**:Q1 已默认 `pypdfium2`,但 S3 是 service 层做(同步抽 + 存到 jds.raw_text)还是 S4 jdparse 时做?
+- **bytea 流式读写 vs 一次加载**:asyncpg 对 bytea 默认整块,100MB 大文件需要 chunked?
 
-| Commit | 内容 | 测试 |
-|--------|------|------|
-| **C** | `0006_llm_calls_and_prompt_versions.py` migration + ORM 模型(`models/llm_call.py` + `models/prompt_version.py`) | testcontainers 集成测试:扩展/2 张新表/索引/FK/触发器存在 |
-| **D** | `llm/` 模块全套:`client.py`(LLMClient Protocol + 实现)、`tiers.py`(Tier 枚举)、`pricing.py`(price table)、`errors.py`(LLM 异常族)、`providers/{dashscope,dummy}.py`、`cache.py`(语义占位) | 全 dummy provider 单测;tenacity 重试边界、JSON schema 重试路径 |
-| **E** | LLMClient ↔ `llm_calls` 写入 hook(独立 AsyncSession) | testcontainers 集成测试:成功/失败/超时三类调用都落库,业务事务回滚不影响日志 |
-
-关键签名(完整版见 ADR-0004):
-
-```python
-async def complete(
-    *, feature: str, tier: Tier, system: str, user: str,
-    response_schema: type[BaseModel] | None = None,
-    cache_system: bool = True,
-    timeout_s: float | None = None,        # None → 按 tier 默认(CHEAP/STD 30s, PREMIUM 60s)
-    related_entity: str | None = None, related_id: int | None = None,
-    user_id: int | None = None, trace_id: str | None = None,
-    prompt_version_id: int | None = None,
-) -> LLMResult: ...
-```
-
-**约束(S2 期间不要再讨论)**:Agent 不 import provider,只通过 LLMClient;DummyProvider 走 fixture 回放,所有 unit/integration 测试默认走 dummy;`@pytest.mark.live` 留给真实 LLM,CI 不跑。
+S3 规划完后产出 ADR-0005(或者轻量的 STATUS 章节决策表)+ commit 拆分计划。
 
 ## 重要风格约定
 
