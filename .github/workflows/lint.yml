@@ -20,10 +20,10 @@ jobs:
           version: "0.5.11"
           enable-cache: true
       - name: Install API project
-        run: uv sync --package jobcopilot-api --extra dev
+        run: uv sync --frozen --package jobcopilot-api --extra dev
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run mypy apps/api/src
+      - run: uv run mypy apps/api/src apps/api/tests
 
   web:
     name: biome + tsc

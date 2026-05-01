@@ -28,7 +28,7 @@ jobs:
           node-version: "22"
           cache: pnpm
 
-      - run: uv sync --package jobcopilot-api --extra dev
+      - run: uv sync --frozen --package jobcopilot-api --extra dev
       - run: pnpm install --frozen-lockfile
 
       - name: Boot API & dump openapi

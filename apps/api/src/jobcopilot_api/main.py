@@ -9,6 +9,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from jobcopilot_api import __version__
+from jobcopilot_api.errors import install_exception_handlers
+from jobcopilot_api.infra.logging import setup_logging
+from jobcopilot_api.infra.request_id import RequestIDMiddleware
 from jobcopilot_api.routers import health
 from jobcopilot_api.settings import settings
 
@@ -19,6 +22,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    setup_logging()
+
     app = FastAPI(
         title="JobCopilot API",
         version=__version__,
@@ -29,6 +34,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Innermost first: CORS sits next to the route handlers; RequestID
+    # wraps everything so all logs and error responses see the id.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allow_origins,
@@ -36,6 +43,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(RequestIDMiddleware)
+
+    install_exception_handlers(app)
 
     app.include_router(health.router, prefix="/v1")
 

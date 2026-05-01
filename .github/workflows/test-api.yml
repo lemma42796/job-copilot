@@ -28,5 +28,11 @@ jobs:
         with:
           version: "0.5.11"
           enable-cache: true
-      - run: uv sync --package jobcopilot-api --extra dev
-      - run: uv run pytest apps/api/tests -v
+      - run: uv sync --frozen --package jobcopilot-api --extra dev
+      - run: |
+          uv run pytest apps/api/tests \
+            -v \
+            --cov \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=70

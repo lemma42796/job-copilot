@@ -42,3 +42,23 @@ disallow_untyped_decorators = false
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["apps/api/tests"]
+
+[tool.coverage.run]
+source = ["apps/api/src/jobcopilot_api"]
+branch = true
+parallel = true
+omit = [
+    "apps/api/alembic/*",
+    "apps/api/src/jobcopilot_api/__init__.py",
+]
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+skip_covered = false
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+    "if __name__ == .__main__.:",
+]

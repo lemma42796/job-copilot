@@ -1,3 +1,5 @@
+import type { components } from '@jobcopilot/schemas';
+
 // Server components fetch via the internal Docker network (`http://api:8000`),
 // while the browser hits the host-mapped port. Pick whichever is set first.
 const API_BASE_URL =
@@ -5,12 +7,7 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ??
   'http://localhost:8000';
 
-export type HealthResponse = {
-  status: 'ok';
-  version: string;
-  env: string;
-  timestamp: string;
-};
+export type HealthResponse = components['schemas']['HealthResponse'];
 
 export async function fetchHealth(signal?: AbortSignal): Promise<HealthResponse> {
   const res = await fetch(`${API_BASE_URL}/v1/health`, {
