@@ -710,18 +710,33 @@ event: done
 
 ### 6.9 Files(文件存储)
 
-对应 `files` 表(bytea 存储,见 ADR-0002 §文件)。
+对应 `files` 表(bytea 存储,见 ADR-0002 §文件;详细契约见 ADR-0005)。
 
 #### `POST /v1/files/upload`
 
-`multipart/form-data`:`file` + 可选 `purpose`(`jd_pdf` / `jd_image` / `profile_pdf` / `other`)。
+`multipart/form-data`:`file` + 必填 `purpose`。
+
+`purpose` 取值(StrEnum,`FilePurpose`):
+
+| 值 | 用途 |
+|---|---|
+| `jd_pdf` | JD PDF 上传(M1) |
+| `jd_image` | JD 截图上传(M1 末) |
+| `profile_pdf` | 简历 PDF 上传(M1) |
+| `profile_docx` | 简历 .docx 上传(M1) |
+| `resume_pdf` | M3 简历定制产物 |
+| `other` | 兜底 |
 
 约束:
-- 单文件 ≤ 20MB
-- MIME 白名单:`application/pdf`、`image/png`、`image/jpeg`、`text/plain`、`text/markdown`、`application/vnd.openxmlformats-officedocument.wordprocessingml.document`
+- 单文件 ≤ 20MB(应用层 413);DB CHECK 100MB 兜底
+- MIME 白名单(同 Content-Type 与 magic bytes 二次校验,见 ADR-0005 D3):
+  - `application/pdf`、`image/png`、`image/jpeg`
+  - `text/plain`、`text/markdown`
+  - `application/vnd.openxmlformats-officedocument.wordprocessingml.document`(.docx)
 - 总配额(单用户):200MB,超额返回 413
+- **去重**:`(user_id, sha256)` 唯一。同 user 重复上传相同字节 → 返回已有 `file_id`,响应 `replayed: true`(物理去重,非 Idempotency-Key)
 
-响应 201:
+响应 201(新上传)/ 200(去重命中):
 
 ```json
 {
@@ -730,17 +745,34 @@ event: done
   "mime": "application/pdf",
   "size_bytes": 102400,
   "sha256": "...",
-  "url": "/v1/files/123"
+  "url": "/v1/files/123",
+  "replayed": false
 }
 ```
 
 #### `GET /v1/files/{id}`
 
-下载原文件。`Content-Type` 与上传一致,`Content-Disposition: attachment`。
+下载原文件。响应头:
+
+| 头 | 取值 |
+|---|---|
+| `Content-Type` | `files.mime_type` |
+| `Content-Disposition` | `attachment; filename*=UTF-8''<percent-encoded>`(RFC 6266) |
+| `ETag` | `"<sha256>"`(content 不可变) |
+| `Cache-Control` | `private, max-age=86400` |
+
+客户端 `If-None-Match: "<sha256>"` 命中 → 304 无 body。
+
+软删的文件 / 不属当前 user 的文件:均 → 404(不区分,避免存在性泄露)。
 
 #### `DELETE /v1/files/{id}`
 
-硬删除(bytea 删完即释放)。
+软删除(`UPDATE files SET deleted_at = NOW()`)。bytea 不立即释放,留给后续 `/v1/admin/gc` 后台任务硬删 + VACUUM(M3-M4 实现)。
+
+软删后:
+- 该文件 GET → 404
+- 配额计算不再计入(仅算 `deleted_at IS NULL` 的行)
+- 同 user 同 sha256 允许重传(部分唯一索引仅索引未删行)
 
 ---
 

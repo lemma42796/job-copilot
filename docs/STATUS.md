@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-01 (M1 进行中:S0.5 / S1 / S2 全部完成并已 push;下一刀 S3)
+last_updated: 2026-05-01 (M1 进行中:S0.5 / S1 / S2 完成并已 push;S3 规划已锁 ADR-0005,下一刀 S3-A)
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -14,7 +14,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | S0.5 | M0 卫生债清理(coverage 闸门 / mypy 加测试 / 前端切自动类型 / structlog+request_id+RFC 7807) | ✅ |
 | S1   | DB + Alembic + 通用列/触发器/枚举(5 条 migration,9 张表) | ✅ |
 | S2   | LLM Client + DummyProvider + Tier 路由 + `llm_calls` 表 | ✅ |
-| S3   | files 表 + `/v1/files` 上传(sha256 去重) | ⏭ 下一刀 |
+| S3   | User/File ORM + `/v1/files` 上传(sha256 去重 + 软删 + 200MB 配额),规划见 ADR-0005 | ⏭ 下一刀(A/B/C 三 commit) |
 | S4   | JDParserAgent(文本入口)+ `/v1/jds` + `/v1/jds/parse` SSE | pending |
 | S5   | 前端:JD 粘贴页 + 结构化结果可视化 + 编辑保存 | pending |
 | S6   | `evals/suites/jd_extract` 50 条 + promptfoo CI(**Week 2 末 DoD**) | pending |
@@ -248,7 +248,8 @@ README.md (项目根)               ✅ 完成(214 行)
 │   ├── 0001-only-deepseek.md    ✅ 完成(已 Superseded by 0003)
 │   ├── 0002-postgres-as-vector-db.md  ✅ 完成
 │   ├── 0003-switch-to-qwen.md   ✅ 完成
-│   └── 0004-llm-client-contract.md  ✅ 完成(S2 规划锁)
+│   ├── 0004-llm-client-contract.md  ✅ 完成(S2 规划锁)
+│   └── 0005-files-upload-contract.md  ✅ 完成(S3 规划锁)
 └── runbook/                     (空,部署期再写)
 ```
 
@@ -259,29 +260,44 @@ README.md (项目根)               ✅ 完成(214 行)
 ## 当用户问"开发进度到了?"时
 
 1. 读本文件(STATUS.md)
-2. 简短汇报:M0 / S0.5 / S1 / S2(C+D+E)全部完成并 push;下一刀 S3(files 表 + `/v1/files` 上传 + sha256 去重)
+2. 简短汇报:M0 / S0.5 / S1 / S2(C+D+E)完成并 push;S3 规划已锁 ADR-0005,下一刀 S3-A(User/File ORM + 0007 部分唯一索引)
 3. **等待用户指示后再行动**,不要自动开工
 
-## S3 起步时要做什么(尚未做最佳实践规划)
+## S3 规划已锁定(ADR-0005,2026-05-01)
 
-S3 的高层任务在 7-ROADMAP / DATA_MODEL §3.2(files 表)/ 4-API_SPEC(`/v1/files`)里,但**没做过 S3 专属的最佳实践规划会话**。开工前建议先做(对照 S2 的做法):
+12 个开放问题在 ADR-0005 一次性锁死(D1-D12)。摘要:
 
-候选规划点(开工前要决):
-- **User ORM 模型**:S2-E 临时跳过了 User ORM(改用 DB-only FK),S3 涉及 `files.user_id` 必须建 User class — 一并把 jds / profiles 等其他需要 navigate 的 ORM 模型补齐?还是用最小子集?
-- **/v1/files 上传协议**:multipart 还是 base64?分块上传?最大体积已在 0002 migration 限定 100MB CHECK
-- **去重语义**:同 user 同 sha256 视为同一文件(返回已有 file_id)还是允许重复 row?DATA_MODEL §3.2 没明说
-- **purpose 字段约束**:enum-like 还是自由 string?M1 涉及 `resume_upload` / `jd_pdf` / `jd_image`
-- **PDF 文本抽取**:Q1 已默认 `pypdfium2`,但 S3 是 service 层做(同步抽 + 存到 jds.raw_text)还是 S4 jdparse 时做?
-- **bytea 流式读写 vs 一次加载**:asyncpg 对 bytea 默认整块,100MB 大文件需要 chunked?
+| 决策点 | 锁死值 |
+|---|---|
+| User ORM 范围 | **最小集**(只建 User,不顺带 jds/profiles)。S3 唯一 navigate 关系:`User.files` |
+| 体积上限 | **应用层 20MB(413)+ DB CHECK 100MB 兜底**;starlette UploadFile chunked,不读完整体 |
+| MIME 校验 | 白名单 + magic bytes 二次 sniff(自写 5 字节,不引 `python-magic`) |
+| `purpose` | **StrEnum**:`jd_pdf / jd_image / profile_pdf / profile_docx / resume_pdf / other`;DB 列保持 VARCHAR(50) |
+| 去重 | `(user_id, sha256)` 唯一(部分索引,排除 `deleted_at IS NOT NULL`);同 user 命中 → 返回已有 + `replayed: true`;跨 user 各算各的 |
+| 删除语义 | **软删**(`UPDATE deleted_at = NOW()`);软删后 GET → 404,允许重传同字节;硬删 GC 推迟到 M3-M4 |
+| PDF 抽取时机 | **S4 做,S3 不抽**;S3 pyproject 不引 `pypdfium2` |
+| bytea I/O | 一次性加载(20MB 上限内 asyncpg 无压力);100MB chunked 留给 M3+ |
+| 200MB 配额 | **S3 必做**(DoS 防线);5 req/min 限流推迟到 M1 末与横切框架一起 |
+| 下载行为 | `Content-Disposition` RFC 6266 中文兼容 + `ETag: <sha256>` + `Cache-Control: private, max-age=86400` + 304 |
+| Idempotency-Key | 不做(继承 STATUS Q2);D5 物理去重已覆盖常见场景 |
 
-S3 规划完后产出 ADR-0005(或者轻量的 STATUS 章节决策表)+ commit 拆分计划。
+**API_SPEC §6.9 同步修文**:硬删→软删 / 响应加 `replayed` / `purpose` 列举枚举 / 下载头表 / 体积 layered defense。
+
+**commit 拆分(本 docs commit + 3 个实现 commit)**:
+
+| Commit | 内容 |
+|---|---|
+| **docs**(已落) | ADR-0005 + API_SPEC §6.9 修文 + STATUS 同步 |
+| **S3-A** | `models/user.py` + `models/file.py` + `schemas/files.py` + migration `0007_files_unique_user_sha256.py` + 集成测试 |
+| **S3-B** | `services/file_service.py` + `infra/upload.py` + 单测全用 BytesIO mock |
+| **S3-C** | `routers/files.py` + `main.py` 注册 + 集成测试(httpx + testcontainers) |
 
 ## 重要风格约定
 
 - 文档元数据头格式见已完成文档,严格遵循
 - 中文为主,代码示例与 schema 标识符为英文
 - 每份文档末尾写"不在本文档范围"指向相关文档
-- ADR 编号顺延(下一个 ADR 是 0005)
+- ADR 编号顺延(下一个 ADR 是 0006)
 - 不要重新讨论已锁定的决策
 - **不估工时**
 
