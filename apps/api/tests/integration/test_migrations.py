@@ -30,6 +30,8 @@ EXPECTED_TABLES = {
     "profile_skills",
     "profile_educations",
     "profile_chunks",
+    "llm_calls",
+    "prompt_versions",
 }
 
 
@@ -109,5 +111,32 @@ def test_migration_round_trip(pg_async_url: str) -> None:
                 )
             ).scalar_one()
             assert trigger_count >= 7  # users, jds, profiles + 4 children
+
+            # 0006: llm_calls FKs both fall back to NULL on delete (cost log
+            # must survive user / prompt_version removal).
+            llm_fks = {
+                (r.constraint_name, r.delete_rule): r.foreign_table_name
+                for r in conn.execute(
+                    sa.text(
+                        "SELECT tc.constraint_name, rc.delete_rule, "
+                        "       ccu.table_name AS foreign_table_name "
+                        "FROM information_schema.table_constraints tc "
+                        "JOIN information_schema.referential_constraints rc "
+                        "  ON tc.constraint_name = rc.constraint_name "
+                        "JOIN information_schema.constraint_column_usage ccu "
+                        "  ON ccu.constraint_name = tc.constraint_name "
+                        "WHERE tc.table_name='llm_calls' "
+                        "  AND tc.constraint_type='FOREIGN KEY'"
+                    )
+                )
+            }
+            assert llm_fks.get(("fk_lc_user_id", "SET NULL")) == "users"
+            assert llm_fks.get(("fk_lc_prompt_version_id", "SET NULL")) == "prompt_versions"
+
+            # 0006: prompt_versions (agent_name, version) must be unique.
+            uq_exists = conn.execute(
+                sa.text("SELECT 1 FROM pg_constraint WHERE conname='uq_pv_agent_version'")
+            ).scalar_one_or_none()
+            assert uq_exists == 1
     finally:
         engine.dispose()
