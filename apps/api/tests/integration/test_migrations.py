@@ -138,5 +138,17 @@ def test_migration_round_trip(pg_async_url: str) -> None:
                 sa.text("SELECT 1 FROM pg_constraint WHERE conname='uq_pv_agent_version'")
             ).scalar_one_or_none()
             assert uq_exists == 1
+
+            # 0007: files (user_id, sha256) partial unique index, only
+            # indexing rows where deleted_at IS NULL (so soft-delete
+            # does not block re-uploading the same bytes).
+            files_idx = conn.execute(
+                sa.text("SELECT indexdef FROM pg_indexes WHERE indexname='uq_files_user_sha256'")
+            ).first()
+            assert files_idx is not None
+            idxdef = files_idx.indexdef.lower()
+            assert "unique index" in idxdef
+            assert "(user_id, sha256)" in idxdef
+            assert "where (deleted_at is null)" in idxdef
     finally:
         engine.dispose()

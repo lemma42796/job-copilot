@@ -3,7 +3,17 @@
 from __future__ import annotations
 
 from jobcopilot_api.models.base import Base, IDMixin, TimestampMixin
+from jobcopilot_api.models.file import File
 from jobcopilot_api.models.llm_call import LlmCall
 from jobcopilot_api.models.prompt_version import PromptVersion
+from jobcopilot_api.models.user import User
 
-__all__ = ["Base", "IDMixin", "LlmCall", "PromptVersion", "TimestampMixin"]
+__all__ = [
+    "Base",
+    "File",
+    "IDMixin",
+    "LlmCall",
+    "PromptVersion",
+    "TimestampMixin",
+    "User",
+]
