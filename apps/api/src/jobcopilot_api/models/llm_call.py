@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from jobcopilot_api.models.base import Base, IDMixin
@@ -14,10 +14,12 @@ from jobcopilot_api.models.base import Base, IDMixin
 class LlmCall(Base, IDMixin):
     __tablename__ = "llm_calls"
 
-    user_id: Mapped[int | None] = mapped_column(
-        BigInteger,
-        ForeignKey("users.id", ondelete="SET NULL", name="fk_lc_user_id"),
-    )
+    # FK to users.id (ON DELETE SET NULL) is declared at the DB level by
+    # migration 0006. We deliberately omit the ORM-level ForeignKey here
+    # because the User ORM is not yet declared — migrations are the
+    # authoritative source for constraints, and we add ORM-level FKs only
+    # for relationships we actually navigate.
+    user_id: Mapped[int | None] = mapped_column(BigInteger)
 
     feature: Mapped[str] = mapped_column(String(50), nullable=False)
     tier: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -38,14 +40,8 @@ class LlmCall(Base, IDMixin):
     related_entity: Mapped[str | None] = mapped_column(String(50))
     related_id: Mapped[int | None] = mapped_column(BigInteger)
 
-    prompt_version_id: Mapped[int | None] = mapped_column(
-        BigInteger,
-        ForeignKey(
-            "prompt_versions.id",
-            ondelete="SET NULL",
-            name="fk_lc_prompt_version_id",
-        ),
-    )
+    # FK to prompt_versions.id (ON DELETE SET NULL) declared in migration 0006.
+    prompt_version_id: Mapped[int | None] = mapped_column(BigInteger)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

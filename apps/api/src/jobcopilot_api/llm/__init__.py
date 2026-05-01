@@ -14,6 +14,7 @@ from jobcopilot_api.llm.client import (
     ProviderRequest,
     ProviderResponse,
 )
+from jobcopilot_api.llm.db_logger import DBCallLogger
 from jobcopilot_api.llm.errors import (
     LLMAuthError,
     LLMError,
@@ -27,6 +28,7 @@ from jobcopilot_api.llm.tiers import Tier, tier_to_model
 __all__ = [
     "BaseLLMClient",
     "CallLogger",
+    "DBCallLogger",
     "LLMAuthError",
     "LLMClient",
     "LLMError",
