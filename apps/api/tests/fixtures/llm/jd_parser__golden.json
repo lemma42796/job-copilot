@@ -1,0 +1,5 @@
+{
+  "content": "{\"company\":\"ACME\",\"title\":\"Senior Backend Engineer\",\"location\":\"Shanghai\",\"salary_min\":30000,\"salary_max\":50000,\"salary_period\":\"monthly\",\"job_level\":\"senior\",\"years_required\":5,\"education\":\"本科\",\"hard_skills\":[{\"name\":\"python\",\"name_raw\":\"Python\",\"required\":true,\"weight\":1.0},{\"name\":\"postgres\",\"name_raw\":\"PostgreSQL\",\"required\":true,\"weight\":0.8}],\"soft_skills\":[],\"bonus_skills\":[{\"name\":\"langchain\",\"name_raw\":\"LangChain\",\"required\":false,\"weight\":0.3}],\"responsibilities\":[\"Design and own the backend platform\",\"Mentor junior engineers\"],\"description\":\"We are hiring a senior backend engineer to lead our platform.\",\"confidence\":0.92}",
+  "tokens_in": 850,
+  "tokens_out": 180
+}

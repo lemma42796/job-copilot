@@ -10,14 +10,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from jobcopilot_api import __version__
 from jobcopilot_api.errors import install_exception_handlers
+from jobcopilot_api.infra.db import get_sessionmaker
 from jobcopilot_api.infra.logging import setup_logging
+from jobcopilot_api.infra.prompts import load_prompt_versions
 from jobcopilot_api.infra.request_id import RequestIDMiddleware
 from jobcopilot_api.routers import files, health
 from jobcopilot_api.settings import settings
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # ADR-0006 D6: scan prompts/, upsert prompt_versions, cache by
+    # (agent_name, version) on app.state for agents to look up.
+    app.state.prompt_versions = await load_prompt_versions(get_sessionmaker())
     yield
 
 
