@@ -14,7 +14,10 @@
       "**/build/**",
       "packages/schemas/src/api.ts",
       "apps/api/**",
-      "**/.venv/**"
+      "**/.venv/**",
+      "evals/reports/**",
+      "evals/raw/**",
+      "evals/suites/**/jd_structured.schema.json"
     ]
   },
   "formatter": {

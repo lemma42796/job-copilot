@@ -1,0 +1,70 @@
+name: Eval Regression
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/api/src/jobcopilot_api/agents/**"
+      - "apps/api/src/jobcopilot_api/llm/**"
+      - "apps/api/src/jobcopilot_api/prompts/**"
+      - "evals/**"
+      - ".github/workflows/eval.yml"
+  pull_request:
+    paths:
+      - "apps/api/src/jobcopilot_api/agents/**"
+      - "apps/api/src/jobcopilot_api/llm/**"
+      - "apps/api/src/jobcopilot_api/prompts/**"
+      - "evals/**"
+      - ".github/workflows/eval.yml"
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  jd_extract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check eval API key
+        id: keycheck
+        env:
+          KEY: ${{ secrets.DASHSCOPE_API_KEY_EVAL }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::warning::DASHSCOPE_API_KEY_EVAL secret not set — eval skipped. See evals/README.md."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: pnpm/action-setup@v4
+        if: steps.keycheck.outputs.skip == 'false'
+        with:
+          version: 9.15.9
+
+      - uses: actions/setup-node@v4
+        if: steps.keycheck.outputs.skip == 'false'
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install evals workspace
+        if: steps.keycheck.outputs.skip == 'false'
+        run: pnpm install --filter @jobcopilot/evals... --frozen-lockfile
+
+      - name: Run jd_extract suite
+        if: steps.keycheck.outputs.skip == 'false'
+        env:
+          DASHSCOPE_API_KEY_EVAL: ${{ secrets.DASHSCOPE_API_KEY_EVAL }}
+        run: pnpm --filter @jobcopilot/evals run eval:jd
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.keycheck.outputs.skip == 'false'
+        with:
+          name: jd-extract-report
+          path: evals/reports/jd_extract/latest.json
+          if-no-files-found: warn
+          retention-days: 14

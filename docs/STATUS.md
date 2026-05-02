@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-02 (M1 进行中:S0.5 / S1 / S2 / S3 / S4 已完成已 push;S5 前端 JD 闭环本地完成未 push;下一刀 S6 evals)
+last_updated: 2026-05-02 (M1 进行中:S0.5/S1/S2/S3/S4 已 push;S5 本地完成未 push;S6 脚手架完成 dataset 2/15 种子,等用户补 13 条 Boss 截图 + 配 GitHub secret;下一刀:用户截 3 张 → from-screenshot 跑通)
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -17,7 +17,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | S3   | User/File ORM + `/v1/files` 上传(sha256 去重 + 软删 + 200MB 配额),见 ADR-0005 | ✅ |
 | S4   | JDParserAgent(文本 + PDF)+ `/v1/jds/parse` SSE + `/v1/jds` 读改删 + prompt_versions 闭环 | ✅ |
 | S5   | 前端:JD 粘贴页 + 结构化结果可视化 + 编辑保存(同步,SSE / 列表延后) | ✅ |
-| S6   | `evals/suites/jd_extract` 50 条 + promptfoo CI(**Week 2 末 DoD**) | pending |
+| S6   | `evals/suites/jd_extract` MVP(15 条 + 3 指标 title/skill_f1/salary)+ promptfoo CI(**Week 2 末 DoD**;50 条全量 / 8 指标 / bad case promote 推 M2) | 进行中 |
 | S7   | ProfileParserAgent + `/v1/profiles/parse` SSE | pending |
 | S8   | Chunking 纯函数 + Embedding(text-embedding-v3)+ `/rechunk` | pending |
 | S9   | 前端:简历上传 + 表单 + chunks 可视化(调试) | pending |
@@ -26,7 +26,28 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 ## 当前 working tree 状态
 
-**本地领先 origin/main**(S5 + 文档瘦身改动未 push)。检查领先量:`git log origin/main..main --oneline | wc -l`。
+**本地领先 origin/main**(S5 + S6 脚手架未 push)。检查领先量:`git log origin/main..main --oneline | wc -l`。
+
+## S6 下一刀(MVP 推进步骤)
+
+脚手架已就绪(`evals/` workspace + `.github/workflows/eval.yml`),dataset 当前 2/15(全合成种子)。
+
+剩余:
+1. **你截 3 张 Boss JD 图** → `evals/raw/boss/*.png`(.gitignore,不入仓库)
+2. `pnpm --filter @jobcopilot/evals run prep:screenshot evals/raw/boss/*.png` → 输出 3 行候选 JSONL 到 stdout
+3. **人工核对** 3 行(脱敏公司名 → `[CompanyA]/[CompanyB]/[CompanyC]`,改错的 ground truth 字段),追加到 `evals/suites/jd_extract/dataset.jsonl`
+4. 删掉 dataset.jsonl 头 2 条合成种子,本地跑 `pnpm eval:jd` 验证 3 条全过(LOCAL `DASHSCOPE_API_KEY_EVAL` 必填)
+5. GitHub Settings → Secrets → New `DASHSCOPE_API_KEY_EVAL`(独立 Key,与生产分开,见 EVAL_PLAN §10.5)
+6. push 前再补 12 张图重复 2-3 步 → 凑 15 条
+7. push → CI 触发 → 全绿即 S6 完成
+
+下方 6 个 M2 待办**不**进 S6:
+- 50 条全量(剩 35 条:OCR 7 / 邮件 8 / 极短 3 / 薪资模糊 2 / 标准中文 15)
+- `level_acc` / `confidence_calibration` / `latency_p95` / `cost_per_call_cny` 4 个指标
+- bad case 表 + promote 脚本 + 月度 triage(EVAL_PLAN §12)
+- 跑 3 次取中位数(EVAL_PLAN §11.3)
+- 不退化策略(Δ ≤ -2pp 比对 main baseline)
+- PR comment 脚本
 
 ## 当前闸门(S5 完成)
 

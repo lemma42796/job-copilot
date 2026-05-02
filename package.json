@@ -18,7 +18,9 @@
     "dev:web": "pnpm --filter @jobcopilot/web dev",
     "gen:api": "pnpm --filter @jobcopilot/schemas gen",
     "test": "pnpm -r --parallel test",
-    "test:e2e": "pnpm --filter @jobcopilot/web test:e2e"
+    "test:e2e": "pnpm --filter @jobcopilot/web test:e2e",
+    "eval:jd": "pnpm --filter @jobcopilot/evals run eval:jd",
+    "eval:view": "pnpm --filter @jobcopilot/evals run eval:view"
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.4",

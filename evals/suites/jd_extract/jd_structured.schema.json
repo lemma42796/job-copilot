@@ -1,0 +1,193 @@
+{
+  "$defs": {
+    "JDSkill": {
+      "properties": {
+        "name": {
+          "description": "归一化技能名,小写,如 'python','langchain'",
+          "title": "Name",
+          "type": "string"
+        },
+        "name_raw": {
+          "title": "Name Raw",
+          "type": "string"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "weight": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Weight",
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "name_raw",
+        "required",
+        "weight"
+      ],
+      "title": "JDSkill",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "company": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Company"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "location": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Location"
+    },
+    "salary_min": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Salary Min"
+    },
+    "salary_max": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Salary Max"
+    },
+    "salary_period": {
+      "default": "monthly",
+      "enum": [
+        "monthly",
+        "yearly"
+      ],
+      "title": "Salary Period",
+      "type": "string"
+    },
+    "job_level": {
+      "anyOf": [
+        {
+          "enum": [
+            "intern",
+            "junior",
+            "middle",
+            "senior",
+            "lead"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Job Level"
+    },
+    "years_required": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Years Required"
+    },
+    "education": {
+      "anyOf": [
+        {
+          "enum": [
+            "专科",
+            "本科",
+            "硕士",
+            "博士"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Education"
+    },
+    "hard_skills": {
+      "items": {
+        "$ref": "#/$defs/JDSkill"
+      },
+      "title": "Hard Skills",
+      "type": "array"
+    },
+    "soft_skills": {
+      "items": {
+        "$ref": "#/$defs/JDSkill"
+      },
+      "title": "Soft Skills",
+      "type": "array"
+    },
+    "bonus_skills": {
+      "items": {
+        "$ref": "#/$defs/JDSkill"
+      },
+      "title": "Bonus Skills",
+      "type": "array"
+    },
+    "responsibilities": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Responsibilities",
+      "type": "array"
+    },
+    "description": {
+      "default": "",
+      "title": "Description",
+      "type": "string"
+    },
+    "confidence": {
+      "description": "抽取置信度自评",
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Confidence",
+      "type": "number"
+    }
+  },
+  "required": [
+    "title",
+    "confidence"
+  ],
+  "title": "JDStructured",
+  "type": "object"
+}

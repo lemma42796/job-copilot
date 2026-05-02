@@ -63,3 +63,9 @@ logs/
 # Misc
 *.tmp
 *.bak
+
+# Evals artifacts (生产 LLM 调用产物 + 用户截图原件,不进仓库)
+evals/raw/
+evals/reports/
+evals/cache/
+evals/.promptfoo/

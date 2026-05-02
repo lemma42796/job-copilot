@@ -1,0 +1,39 @@
+# JD 抽取回归 — promptfoo 配置(M1 S6 MVP)
+# 文档:docs/6-EVAL_PLAN.md §3
+description: JD extract regression (jd_parser/v1.0.0)
+
+# 不走 apps/api 的 LLMClient,直接打 DashScope OpenAI 兼容模式 → 评测纯 prompt 质量
+providers:
+  - id: openai:chat:qwen-flash
+    label: qwen-flash@dashscope
+    config:
+      apiBaseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
+      apiKeyEnvar: DASHSCOPE_API_KEY_EVAL
+      temperature: 0
+      seed: 42
+      max_tokens: 2048
+      response_format:
+        type: json_object
+      # promptfoo 默认 max_tokens=1024 在长 JD 上会截断输出 → schema_invalid。
+      # 2048 覆盖最长 JD 的 hard_skills 完整输出(实测 row 4 用了 912 tokens)。
+      # 不传 top_p / cache_control / stream — 见 EVAL_PLAN §3.2 + DashScope 文档
+
+# Prompt 来自后端真实模板 v1.0.0.j2,loader 拆 SYSTEM/USER + 渲染 jd_text
+prompts:
+  - file://./prompt.ts
+
+# 每条样本都跑 3 个断言;dataset.jsonl 提供 vars(jd_text + expected)
+defaultTest:
+  assert:
+    - type: javascript
+      value: file://./assertions.ts:titleExact
+    - type: javascript
+      value: file://./assertions.ts:hardSkillF1
+    - type: javascript
+      value: file://./assertions.ts:salaryMatch
+
+tests: file://./dataset.jsonl
+
+# 输出位置(promptfoo 把 outputPath 解释为相对 CWD,不是相对 config;
+# `pnpm run eval:jd` 的 CWD = evals/,所以这里写 `reports/...` → evals/reports/)
+outputPath: reports/jd_extract/latest.json

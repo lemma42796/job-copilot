@@ -1,0 +1,15 @@
+# Raw screenshots — never commit (Boss/拉勾/招聘邮件原件,版权敏感)
+raw/
+
+# Promptfoo cache + reports
+.promptfoo/
+reports/
+cache/
+
+# Node
+node_modules/
+*.log
+
+# Local overrides
+.env
+.env.local
