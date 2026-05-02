@@ -3,18 +3,21 @@
 Transaction model
 -----------------
 
-- **create_and_parse** uses an injected `async_sessionmaker` and runs in
-  TWO transactions:
-    1. INSERT `(status='parsing', raw_text)` and commit (D7: raw_text
-       must persist before the slow LLM call so a crash leaves a
-       debuggable row).
-    2. After the LLM returns, a fresh session writes the structured
-       fields + `status='parsed'` OR `status='parse_failed'`. The
-       failure-path commit means raw_text survives the exception
-       (D8: "raw_text 保留供前端手填").
+The parse pipeline is two public functions so the SSE router can emit
+`started` between Phase 1 and Phase 2 with the freshly-minted `jd_id`:
 
-  This mirrors the `DBCallLogger` side-channel pattern (ADR-0004): a
-  failure in the business path must not lose the diagnostic write.
+- **create_pending_jd** — Phase 1: resolve raw_text + INSERT
+  `(status='parsing', raw_text)` and commit (D7: raw_text must persist
+  before the slow LLM call). Returns `(jd_id, raw_text)`.
+- **run_parse** — Phase 2 (LLM) + Phase 3 (UPDATE structured / failed).
+  Failure-path commit means raw_text survives the exception (D8).
+
+`create_and_parse` is a thin wrapper that calls them in sequence; it's
+the sync `/v1/jds/parse` path's only entry point.
+
+The failure write mirrors `DBCallLogger`'s side-channel pattern
+(ADR-0004): a failure in the business path must not lose the diagnostic
+row.
 
 - **list / get / patch / soft_delete** take a caller-managed session,
   matching `file_service`'s convention. Routers wrap them in
@@ -46,7 +49,7 @@ from jobcopilot_api.agents.jd_parser.agent import parse_jd
 from jobcopilot_api.errors import JobCopilotError, NotFoundError
 from jobcopilot_api.infra.pdf import extract_pdf_text
 from jobcopilot_api.infra.prompts import LoadedPrompt
-from jobcopilot_api.llm.client import LLMClient
+from jobcopilot_api.llm.client import LLMClient, LLMResult
 from jobcopilot_api.llm.errors import (
     LLMSchemaInvalidError,
     LLMTimeoutError,
@@ -74,31 +77,26 @@ class JDParseFailedError(JobCopilotError):
 # ---------------------------------------------------------------------------
 
 
-async def create_and_parse(
+async def create_pending_jd(
     sessionmaker: async_sessionmaker[AsyncSession],
     *,
     user_id: int,
     source: str,
     text: str | None,
     file_id: int | None,
-    llm: LLMClient,
-    prompt: LoadedPrompt,
-    trace_id: str | None = None,
-) -> Jd:
-    """Create a JD row and run JDParserAgent against it.
+) -> tuple[int, str]:
+    """Phase 1: resolve raw_text and INSERT a `status='parsing'` row.
 
-    Two-transaction shape (see module docstring): INSERT pending → LLM
-    call → UPDATE parsed/failed. Returns the final detached `Jd` row.
-
-    Raises `LLMUpstreamError` (502) or `JDParseFailedError` (422) per
-    ADR-0006 D8; in both cases the row exists in DB at `status='parse_failed'`.
+    Returns `(jd_id, raw_text)` so the caller can emit SSE `started` with
+    the id and feed `raw_text` straight into `run_parse` without a
+    re-read. Pre-insert failures (text too short / PDF garbage) raise
+    before any row exists — matches the original D7 invariant.
     """
     raw_text = await _resolve_raw_text(
         sessionmaker, source=source, text=text, file_id=file_id, user_id=user_id
     )
     raw_file_id = file_id if source == "pdf_upload" else None
 
-    # Phase 1: persist parsing row.
     async with sessionmaker() as session, session.begin():
         jd = Jd(
             user_id=user_id,
@@ -109,9 +107,28 @@ async def create_and_parse(
         )
         session.add(jd)
         await session.flush()
-        jd_id = jd.id
+        return jd.id, raw_text
 
-    # Phase 2: LLM call (no DB transaction held).
+
+async def run_parse(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    jd_id: int,
+    user_id: int,
+    raw_text: str,
+    llm: LLMClient,
+    prompt: LoadedPrompt,
+    trace_id: str | None = None,
+) -> tuple[Jd, LLMResult]:
+    """Phase 2 (LLM) + Phase 3 (UPDATE) against an existing pending row.
+
+    Returns `(Jd, LLMResult)`; the router needs `LLMResult` for the
+    `tokens.input` / `tokens.output` breakdown that the JD ORM only
+    stores as a single `parse_tokens` total.
+
+    Raises `LLMUpstreamError` (502) or `JDParseFailedError` (422) per
+    ADR-0006 D8; in both cases the row is left at `status='parse_failed'`.
+    """
     try:
         result = await parse_jd(
             text=raw_text,
@@ -134,7 +151,6 @@ async def create_and_parse(
         await _mark_failed(sessionmaker, jd_id=jd_id)
         raise JDParseFailedError("LLM 未识别出有效 title,JD 内容可能不完整")
 
-    # Phase 3: write structured fields.
     async with sessionmaker() as session, session.begin():
         jd_row = await get_jd(session, user_id=user_id, jd_id=jd_id)
         _apply_structured(
@@ -145,7 +161,35 @@ async def create_and_parse(
             cost=result.cost_cny,
         )
         jd_row.status = "parsed"
-    return jd_row
+    return jd_row, result
+
+
+async def create_and_parse(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    user_id: int,
+    source: str,
+    text: str | None,
+    file_id: int | None,
+    llm: LLMClient,
+    prompt: LoadedPrompt,
+    trace_id: str | None = None,
+) -> tuple[Jd, LLMResult]:
+    """Sync-path wrapper: Phase 1 → Phase 2/3 in one call. SSE-path uses
+    `create_pending_jd` + `run_parse` directly so it can emit `started`
+    between the two."""
+    jd_id, raw_text = await create_pending_jd(
+        sessionmaker, user_id=user_id, source=source, text=text, file_id=file_id
+    )
+    return await run_parse(
+        sessionmaker,
+        jd_id=jd_id,
+        user_id=user_id,
+        raw_text=raw_text,
+        llm=llm,
+        prompt=prompt,
+        trace_id=trace_id,
+    )
 
 
 async def _resolve_raw_text(

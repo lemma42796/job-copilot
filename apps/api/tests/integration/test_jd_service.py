@@ -220,7 +220,7 @@ async def test_create_and_parse_text_paste_writes_structured_and_parsed_status(
 ) -> None:
     llm = _client_with_response(GOLDEN_LLM_OUTPUT)
 
-    jd = await create_and_parse(
+    jd, _ = await create_and_parse(
         sessionmaker_,
         user_id=user_id,
         source="text_paste",
@@ -272,7 +272,7 @@ async def test_create_and_parse_pdf_upload_extracts_and_persists_raw_file_id(
         file_id = f.id
 
     llm = _client_with_response(GOLDEN_LLM_OUTPUT)
-    jd = await create_and_parse(
+    jd, _ = await create_and_parse(
         sessionmaker_,
         user_id=user_id,
         source="pdf_upload",
@@ -459,7 +459,7 @@ async def test_create_and_parse_empty_title_persists_failed_row(
 
 async def test_get_jd_happy(sessionmaker_: async_sessionmaker[AsyncSession], user_id: int) -> None:
     llm = _client_with_response(GOLDEN_LLM_OUTPUT)
-    jd = await create_and_parse(
+    jd, _ = await create_and_parse(
         sessionmaker_,
         user_id=user_id,
         source="text_paste",
@@ -482,7 +482,7 @@ async def test_get_jd_404_for_other_user(
     from jobcopilot_api.errors import NotFoundError
 
     llm = _client_with_response(GOLDEN_LLM_OUTPUT)
-    jd = await create_and_parse(
+    jd, _ = await create_and_parse(
         sessionmaker_,
         user_id=user_id,
         source="text_paste",
@@ -503,7 +503,7 @@ async def test_get_jd_404_for_soft_deleted(
     from jobcopilot_api.errors import NotFoundError
 
     llm = _client_with_response(GOLDEN_LLM_OUTPUT)
-    jd = await create_and_parse(
+    jd, _ = await create_and_parse(
         sessionmaker_,
         user_id=user_id,
         source="text_paste",
@@ -584,7 +584,7 @@ async def test_list_jds_pagination_has_more(
 async def test_list_jds_excludes_soft_deleted(
     sessionmaker_: async_sessionmaker[AsyncSession], user_id: int
 ) -> None:
-    jd_a = await create_and_parse(
+    jd_a, _ = await create_and_parse(
         sessionmaker_,
         user_id=user_id,
         source="text_paste",
@@ -619,7 +619,7 @@ async def test_list_jds_excludes_soft_deleted(
 async def test_patch_jd_structured_overrides_fields(
     sessionmaker_: async_sessionmaker[AsyncSession], user_id: int
 ) -> None:
-    jd = await create_and_parse(
+    jd, _ = await create_and_parse(
         sessionmaker_,
         user_id=user_id,
         source="text_paste",
@@ -649,7 +649,7 @@ async def test_patch_jd_structured_overrides_fields(
 async def test_patch_jd_status_only(
     sessionmaker_: async_sessionmaker[AsyncSession], user_id: int
 ) -> None:
-    jd = await create_and_parse(
+    jd, _ = await create_and_parse(
         sessionmaker_,
         user_id=user_id,
         source="text_paste",
@@ -679,7 +679,7 @@ async def test_patch_jd_status_only(
 async def test_soft_delete_jd_marks_deleted_at(
     sessionmaker_: async_sessionmaker[AsyncSession], user_id: int
 ) -> None:
-    jd = await create_and_parse(
+    jd, _ = await create_and_parse(
         sessionmaker_,
         user_id=user_id,
         source="text_paste",
@@ -702,7 +702,7 @@ async def test_soft_delete_jd_404_when_already_deleted(
 ) -> None:
     from jobcopilot_api.errors import NotFoundError
 
-    jd = await create_and_parse(
+    jd, _ = await create_and_parse(
         sessionmaker_,
         user_id=user_id,
         source="text_paste",
