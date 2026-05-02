@@ -383,9 +383,9 @@ M1 不实现 — S4 只走 `/v1/jds/parse`。M4 投递追踪需要"已经在做�
 
 #### `PATCH /v1/jds/{id}`
 
-部分更新。允许字段:`structured`(用户手动修正)、`status`(仅 `parsing → parsed` 手动确认 / `parsed → parsing` 触发重 parse 由前端调 `/parse`)、`notes`。
+部分更新。允许字段:`structured`(用户手动修正)、`status`(仅 `parsing → parsed` 手动确认 / `parsed → parsing` 触发重 parse 由前端调 `/parse`)。
 
-> 不允许 PATCH `raw_text`(语义上是源,改了重 parse 才有意义)。
+> 不允许 PATCH `raw_text`(语义上是源,改了重 parse 才有意义)。`notes` 列 DB 暂无,M4 投递追踪一并加。
 
 #### `DELETE /v1/jds/{id}`
 
