@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-01 (M1 进行中:S0.5 / S1 / S2 完成并已 push;S3 规划已锁 ADR-0005,下一刀 S3-A)
+last_updated: 2026-05-02 (M1 进行中:S0.5 / S1 / S2 / S3 全部完成,本地 main 领先 origin 4 commit 待 push;下一刀 S4)
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -14,8 +14,8 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | S0.5 | M0 卫生债清理(coverage 闸门 / mypy 加测试 / 前端切自动类型 / structlog+request_id+RFC 7807) | ✅ |
 | S1   | DB + Alembic + 通用列/触发器/枚举(5 条 migration,9 张表) | ✅ |
 | S2   | LLM Client + DummyProvider + Tier 路由 + `llm_calls` 表 | ✅ |
-| S3   | User/File ORM + `/v1/files` 上传(sha256 去重 + 软删 + 200MB 配额),规划见 ADR-0005 | ⏭ 下一刀(A/B/C 三 commit) |
-| S4   | JDParserAgent(文本入口)+ `/v1/jds` + `/v1/jds/parse` SSE | pending |
+| S3   | User/File ORM + `/v1/files` 上传(sha256 去重 + 软删 + 200MB 配额),见 ADR-0005 | ✅ |
+| S4   | JDParserAgent(文本入口)+ `/v1/jds` + `/v1/jds/parse` SSE | ⏭ 下一刀 |
 | S5   | 前端:JD 粘贴页 + 结构化结果可视化 + 编辑保存 | pending |
 | S6   | `evals/suites/jd_extract` 50 条 + promptfoo CI(**Week 2 末 DoD**) | pending |
 | S7   | ProfileParserAgent + `/v1/profiles/parse` SSE | pending |
@@ -26,20 +26,20 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 ## 当前 working tree 状态
 
-Working tree 干净,本地 main 与 origin/main 一致。最近 5 个 commit:
+Working tree 干净,**本地 main 领先 origin/main 4 个 commit(S3 全套未 push)**。最近 commit:
 
 ```
+3713a9c feat(api): wire /v1/files routes (S3-C)
+7f5607a feat(api): file upload service + chunked reader (S3-B)
+6db1f30 feat(api): add User/File ORM + files unique index (S3-A)
+9b4c506 docs: lock S3 plan in ADR-0005 (files upload contract)
 1db3c23 feat(api): persist llm_calls via DBCallLogger (S2-E)
 e500ac5 feat(api): add LLM abstraction layer (S2-D)
-6a3c6d6 feat(api): add llm_calls + prompt_versions schema (S2-C)
-8642091 docs: lock S2 plan in ADR-0004 (LLMClient contract)
-6a84f65 feat(api): land alembic + 9-table M1 schema (S1)
-6ac36be feat(api): add observability and error scaffolding (S0.5)
 ```
 
 ## 当前 docker compose 状态
 
-S1 期间手动起了 postgres 单容器开发(`docker compose up -d postgres`),停机时**未 down**。下次开工前可以选择继续用它,或 `docker compose down -v` 后重启重置数据。**Alembic 已经把 0001-0006 应用到该容器,不重置可以省去一次迁移**。集成测试用 testcontainers 起独立容器,与开发容器无关,无需停。
+S1 期间手动起了 postgres 单容器开发(`docker compose up -d postgres`),停机时**未 down**。下次开工前可以选择继续用它,或 `docker compose down -v` 后重启重置数据。**Alembic 已经把 0001-0007 应用到该容器,不重置可以省去一次迁移**。集成测试用 testcontainers 起独立容器,与开发容器无关,无需停。
 
 > 2026-05-01 决策变更:LLM Provider 由 DeepSeek V4 切换为阿里云百炼 Qwen3.6,理由是消耗剩余 ¥15 赠款。详见 ADR-0003。**ADR-0001 复审条件 1(余额 < ¥1)触发时自动回切。**
 
@@ -178,14 +178,14 @@ apps/api/src/jobcopilot_api/
 - **DashScope JSON schema 走 `json_object`**:OpenAI compat 不支持 `json_schema` 字段,降级用 `json_object` + Pydantic 二次校验 + 1 次重试(prompt 追加 schema)
 - **retry 参数可注入**:BaseLLMClient `retry_wait` 默认是 ADR-0004 D3,测试传 `wait_none()` 让重试不睡
 
-## 当前闸门(本地,M0 → S2-E 累计)
+## 当前闸门(本地,M0 → S3-C 累计)
 
 - `ruff check`:All checks passed
-- `ruff format --check`:44 files already formatted
-- `mypy --strict apps/api/src apps/api/tests`:43 files, 0 issues
+- `ruff format --check`:58 files already formatted
+- `mypy --strict apps/api/src apps/api/tests`:57 files, 0 issues
 - `pnpm lint`(biome):16 files, no fixes
 - `pnpm typecheck`(tsc):0 errors
-- `pytest --cov --cov-fail-under=70`:**60 passed,93.01%**(55 unit + 5 integration)
+- `pytest --cov --cov-fail-under=70`:**113 passed,97.65%**(79 unit + 34 integration)
 
 ---
 
@@ -228,6 +228,17 @@ apps/api/src/jobcopilot_api/
 3. **structlog `capture_logs()` 在套件中失效**:前置测试调过 `setup_logging()` 后,structlog 全局配置被锁定,`capture_logs()` 看不到事件。修复:db_logger 单测用 monkeypatch 直接替换模块级 `log` 对象。
 4. **DashScope OpenAI compat 不支持 `json_schema`**:M1 走 `response_format={"type":"json_object"}` + 在 prompt 里注入 schema + Pydantic 二次校验 + 1 次重试。已在 ADR-0004 D2 + client.py docstring 注明。
 
+# S3 期间踩到的小坑(已记录)
+
+1. **`pytest.raises` 不能与 `async with` 同行组合**:`async with sessionmaker_() as session, pytest.raises(NotFoundError):` mypy 报 `RaisesExc` 没有 `__aenter__`。修复:拆成 `async with sessionmaker_() as session:` + 内嵌 `with pytest.raises(...):`。
+2. **`Result.rowcount` 在 mypy strict 下不可见**:`session.execute(sa.update(...))` 返回 `Result[Any]`,`rowcount` 属性是 `CursorResult` 的。修复:改用 `.returning(File.id)` + `scalar_one_or_none()` 检测命中,无需 cast。
+3. **`session.begin_nested()` SAVEPOINT 接 IntegrityError**:dedup INSERT 失败要在外层事务里 SELECT 已有行,直接 `try/except IntegrityError` 会让外层 txn 进入 aborted 状态。修复:`async with session.begin_nested(): session.add(...); flush()` — IntegrityError 时 SAVEPOINT 自动 rollback,外层 txn 仍可用。
+4. **CHECK 约束撞配额测试**:`ck_files_size <= 100MB` 与 200MB 配额测试不能用单行;改成两行各 `(USER_QUOTA-100)//2` 各算各的避开 CHECK。
+5. **配额测试的 PDF 太短**:`b"%PDF-1.7\n%..."` 只 35 bytes,小于 quota headroom(100 bytes)所以不触发。修复:PDF 常量加长到 ~1KB。
+6. **FastAPI Form/UploadFile 需要 `python-multipart`**:M0/M1 没装,S3-C router 跑测试时 `RuntimeError: Form data requires "python-multipart"`。修复:加进 `apps/api/pyproject.toml` 的 dependencies。
+7. **uv workspace 的 dev extras**:`uv sync` 默认不带 optional-dependencies。要 `uv sync --package jobcopilot-api --all-extras` 才能装回 pytest/mypy/ruff。否则 `.venv/bin/pytest` 缺失。
+8. **ruff `SIM300 Yoda condition` 误判**:`ALLOWED_MIME == frozenset({...})` 被认为是 Yoda 条件(把 frozenset 字面量当作 literal),自动修成 `frozenset({...}) == ALLOWED_MIME`。无害,接受 autofix 即可。
+
 ---
 
 # 文档清单与状态
@@ -260,37 +271,63 @@ README.md (项目根)               ✅ 完成(214 行)
 ## 当用户问"开发进度到了?"时
 
 1. 读本文件(STATUS.md)
-2. 简短汇报:M0 / S0.5 / S1 / S2(C+D+E)完成并 push;S3 规划已锁 ADR-0005,下一刀 S3-A(User/File ORM + 0007 部分唯一索引)
+2. 简短汇报:M0 / S0.5 / S1 / S2 / S3 全部完成,本地 main 领先 origin 4 commit 待 push;下一刀 S4(JDParserAgent 文本入口 + `/v1/jds` + `/v1/jds/parse` SSE)
 3. **等待用户指示后再行动**,不要自动开工
 
-## S3 规划已锁定(ADR-0005,2026-05-01)
+## S3 已完成产出(2026-05-02,见 ADR-0005)
 
-12 个开放问题在 ADR-0005 一次性锁死(D1-D12)。摘要:
+```
+apps/api/alembic/versions/
+└── 0007_files_unique_user_sha256.py  # 部分唯一索引,WHERE deleted_at IS NULL
 
-| 决策点 | 锁死值 |
-|---|---|
-| User ORM 范围 | **最小集**(只建 User,不顺带 jds/profiles)。S3 唯一 navigate 关系:`User.files` |
-| 体积上限 | **应用层 20MB(413)+ DB CHECK 100MB 兜底**;starlette UploadFile chunked,不读完整体 |
-| MIME 校验 | 白名单 + magic bytes 二次 sniff(自写 5 字节,不引 `python-magic`) |
-| `purpose` | **StrEnum**:`jd_pdf / jd_image / profile_pdf / profile_docx / resume_pdf / other`;DB 列保持 VARCHAR(50) |
-| 去重 | `(user_id, sha256)` 唯一(部分索引,排除 `deleted_at IS NOT NULL`);同 user 命中 → 返回已有 + `replayed: true`;跨 user 各算各的 |
-| 删除语义 | **软删**(`UPDATE deleted_at = NOW()`);软删后 GET → 404,允许重传同字节;硬删 GC 推迟到 M3-M4 |
-| PDF 抽取时机 | **S4 做,S3 不抽**;S3 pyproject 不引 `pypdfium2` |
-| bytea I/O | 一次性加载(20MB 上限内 asyncpg 无压力);100MB chunked 留给 M3+ |
-| 200MB 配额 | **S3 必做**(DoS 防线);5 req/min 限流推迟到 M1 末与横切框架一起 |
-| 下载行为 | `Content-Disposition` RFC 6266 中文兼容 + `ETag: <sha256>` + `Cache-Control: private, max-age=86400` + 304 |
-| Idempotency-Key | 不做(继承 STATUS Q2);D5 物理去重已覆盖常见场景 |
+apps/api/src/jobcopilot_api/
+├── models/
+│   ├── user.py                # 最小 User ORM,S3 唯一 navigate:User.files
+│   └── file.py                # File ORM,content 列 deferred=True
+├── schemas/
+│   └── files.py               # FilePurpose StrEnum + FileUploadResponse
+├── infra/
+│   └── upload.py              # read_with_size_cap / verify_mime_and_magic /
+│                              # compute_sha256 + 3 错误类(413/415/413)
+├── services/
+│   └── file_service.py        # upload_file(SAVEPOINT 接 IntegrityError 实现 dedup)/
+│                              # get_file_for_download(undefer content)/
+│                              # soft_delete_file(RETURNING id 检测命中)
+└── routers/
+    ├── _deps.py               # current_user_id 读 X-User-Id(M5 切 JWT 时签名不变)
+    └── files.py               # POST/GET/DELETE,201/200/304/404/415/413/401
+```
 
-**API_SPEC §6.9 同步修文**:硬删→软删 / 响应加 `replayed` / `purpose` 列举枚举 / 下载头表 / 体积 layered defense。
+**12 项 ADR-0005 决策的实现要点**(D1-D12):
 
-**commit 拆分(本 docs commit + 3 个实现 commit)**:
+- **D1 最小 User ORM**:LlmCall.user_id 仍保持 DB-only FK,S3 不补 navigate
+- **D2 体积**:应用层 20MB chunked(starlette UploadFile),DB CHECK 100MB 兜底
+- **D3 MIME**:白名单 + 5 字节 magic sniff(PDF `%PDF` / PNG / JPEG / docx ZIP);text/* 跳 sniff
+- **D4 purpose**:StrEnum 6 值,DB VARCHAR(50) 保持灵活
+- **D5 去重**:`(user_id, sha256)` 部分唯一索引(`WHERE deleted_at IS NULL`);命中 → 200 + `replayed: true`;跨 user 各算
+- **D6 PDF 抽取**:S3 不抽,留给 S4(JDParserAgent 自己引 `pypdfium2`)
+- **D7 bytea I/O**:一次性加载;`File.content` `deferred=True`,下载路径 `undefer(File.content)`
+- **D8 配额 200MB**:`COALESCE(SUM(size_bytes), 0) WHERE deleted_at IS NULL` + 待传 size 超 200MB → 413;限流推迟 M1 末
+- **D9 软删**:`UPDATE deleted_at = NOW()`,GET / DELETE 软删后都 404 不区分(避存在性泄露);硬删 GC → M3-M4
+- **D10 下载头**:`Content-Type` = mime / `Content-Disposition` RFC 6266(`filename*=UTF-8''<percent>`)/ `ETag: "<sha256>"` / `Cache-Control: private, max-age=86400` / `If-None-Match` 命中 → 304
+- **D11 Idempotency-Key**:不做
+- **D12 commit 拆分**:docs / S3-A / S3-B / S3-C 四个原子 commit
 
-| Commit | 内容 |
-|---|---|
-| **docs**(已落) | ADR-0005 + API_SPEC §6.9 修文 + STATUS 同步 |
-| **S3-A** | `models/user.py` + `models/file.py` + `schemas/files.py` + migration `0007_files_unique_user_sha256.py` + 集成测试 |
-| **S3-B** | `services/file_service.py` + `infra/upload.py` + 单测全用 BytesIO mock |
-| **S3-C** | `routers/files.py` + `main.py` 注册 + 集成测试(httpx + testcontainers) |
+## S4 起步前要做最佳实践规划(尚未做)
+
+S4 高层任务在 7-ROADMAP / DATA_MODEL §3.2(jds 表)/ 5-AGENT_DESIGN(JDParserAgent)/ 4-API_SPEC §6.3 里。开工前候选规划点(对照 S2/S3 的做法,先出 ADR-0006):
+
+- **JDParserAgent 输入接口**:文本(POST `/v1/jds/parse` JSON)+ 引用 file_id(`raw_file_id` 来自 S3)?后者要在 S4 引 `pypdfium2` 抽 PDF 文本(D6 已决)
+- **`/v1/jds` vs `/v1/jds/parse` 边界**:`/v1/jds` 仅 CRUD(已结构化),`/v1/jds/parse` 走 LLM 生成结构化输出。SSE 节点事件粒度?
+- **JD Pydantic schema 范围**:title / company / location / salary / required_skills / preferred_skills / responsibilities / years_required / ...,与 DATA_MODEL §3.2 字段对齐
+- **prompt 版本化**:S2 的 `prompt_versions` 表如何写入?S4 是否一并落 `prompts/jd_parser/v1.0.0.j2` + 启动时 upsert?
+- **`raw_text` 抽取与存储**:DATA_MODEL §3.2 有 `raw_text` 列;PDF 抽出后写回 jds 还是只 in-memory 喂 LLM?
+- **SSE 事件协议**:对照 4-API_SPEC §5.3(`started` / `node_started` / `node_progress` / `node_completed` / `result` / `done` / `error`),JDParser 单 Agent 不走 LangGraph,可能只发 `started` / `result` / `done`
+- **JD 解析失败语义**:LLM 返回结构化但内容明显垃圾(全 null / title 为空)→ 422 `JD_PARSE_FAILED`?Pydantic schema 严格 vs 宽松?
+- **去重**:同 user 同 raw_text 是否去重(类似 files D5)?
+- **`/v1/jds/parse?stream=1` vs 强制 SSE**:API_SPEC §5.1 说"可选流",但 M1 dogfood 是否值得双实现
+
+S4 规划完后产出 ADR-0006 + commit 拆分计划。
 
 ## 重要风格约定
 
