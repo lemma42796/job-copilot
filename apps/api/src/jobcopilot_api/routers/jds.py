@@ -185,6 +185,7 @@ def _sessionmaker_dep() -> async_sessionmaker[AsyncSession]:
 @router.post(
     "/jds/parse",
     response_model=None,
+    responses={201: {"model": JDParseResponse}},
     status_code=status.HTTP_201_CREATED,
     summary="Parse a JD (sync default, ?stream=1 for SSE)",
 )

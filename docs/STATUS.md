@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-02 (M1 进行中:S0.5 / S1 / S2 / S3 / S4 已完成已 push;下一刀 S5 前端 JD 粘贴页)
+last_updated: 2026-05-02 (M1 进行中:S0.5 / S1 / S2 / S3 / S4 已完成已 push;S5 前端 JD 闭环本地完成未 push;下一刀 S6 evals)
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -16,7 +16,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | S2   | LLM Client + DummyProvider + Tier 路由 + `llm_calls` 表 | ✅ |
 | S3   | User/File ORM + `/v1/files` 上传(sha256 去重 + 软删 + 200MB 配额),见 ADR-0005 | ✅ |
 | S4   | JDParserAgent(文本 + PDF)+ `/v1/jds/parse` SSE + `/v1/jds` 读改删 + prompt_versions 闭环 | ✅ |
-| S5   | 前端:JD 粘贴页 + 结构化结果可视化 + 编辑保存 | pending |
+| S5   | 前端:JD 粘贴页 + 结构化结果可视化 + 编辑保存(同步,SSE / 列表延后) | ✅ |
 | S6   | `evals/suites/jd_extract` 50 条 + promptfoo CI(**Week 2 末 DoD**) | pending |
 | S7   | ProfileParserAgent + `/v1/profiles/parse` SSE | pending |
 | S8   | Chunking 纯函数 + Embedding(text-embedding-v3)+ `/rechunk` | pending |
@@ -26,13 +26,19 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 ## 当前 working tree 状态
 
-**本地 main 与 origin/main 同步**。检查领先量:`git log origin/main..main --oneline | wc -l`。
+**本地领先 origin/main**(S5 + 文档瘦身改动未 push)。检查领先量:`git log origin/main..main --oneline | wc -l`。
 
-## 当前闸门(S4 完成)
+## 当前闸门(S5 完成)
 
+后端:
 - `ruff check` / `ruff format --check`:全绿
 - `mypy --strict apps/api/src apps/api/tests`:74 files,0 issues
 - `pytest --cov --cov-fail-under=70`:**200 passed,93.61%**
+
+前端:
+- `pnpm --filter @jobcopilot/web typecheck`:0 errors
+- `pnpm --filter @jobcopilot/web lint`(biome):0 errors
+- `pnpm --filter @jobcopilot/web build`(Next 15 + Tailwind v4 + typedRoutes):✓ 4 路由
 
 ## 当前 docker compose 状态
 
@@ -50,6 +56,7 @@ S1 期间手动起了 postgres 单容器开发(`docker compose up -d postgres`),
 - [S2 LLM 抽象层](slices/S2-llm-client.md) — Tier 路由 / DummyProvider / DBCallLogger
 - [S3 Files 上传](slices/S3-files.md) — sha256 去重 / 软删 / 200MB 配额(见 ADR-0005)
 - [S4 JD 解析](slices/S4-jds.md) — JDParserAgent / SSE / prompt_versions(见 ADR-0006)
+- [S5 前端 JD 闭环](slices/S5-jds-frontend.md) — Tailwind v4 + shadcn / `/jds/new` + `/jds/[id]` / X-User-Id header
 
 ---
 
@@ -91,6 +98,11 @@ ROADMAP 已有:1 志愿者全流程通 / ≥5 bad case high severity 修 / 日�
 2. **`ASGITransport` 不跑 lifespan** [来自 S4]——router 集成测试需要在 fixture 里手动 `app.state.prompt_versions = {(...): LoadedPrompt(...)}`;`get_llm_client` / `get_sessionmaker` 走 `dependency_overrides`。S7 ProfileParser router 测试同样遵循。
 3. **JD ORM 只存 `parse_tokens` 总数** [来自 S4]——无 input/output 拆分;同步 POST /parse 响应的 `tokens.input/output` 来自 `LLMResult`(由 `create_and_parse` 一并返回 `(Jd, LLMResult)`)。GET 详情只能给总数。
 4. **SSE 起手要 resource_id** [来自 S4]——Phase 1 与 Phase 2 在 service 层拆成 `create_pending_*` + `run_parse`,`started` 事件带 `resource_id`,失败发 `error → done`,pre-insert 失败(text 过短 / PDF 烂)直接发 `error → done`(无 `started`)。
+5. **`X-User-Id` header** [来自 S5]——M1 单用户,前端从 `NEXT_PUBLIC_USER_ID` env 读默认 '1';后端 `current_user_id` 依赖只读 header。M5+ 替换成 JWT,所有 router 不变。前端所有 API 调用走统一 `jsonFetch` helper 注入。
+6. **OpenAPI parse endpoint 必须 `responses={201: {"model": ...}}`** [来自 S5]——`response_model=None`(因为 union 返回 `Pydantic | EventSourceResponse`)会导致 OpenAPI dump 里 200 response 是 `unknown`,前端拿不到自动类型,违反 S0.5 DoD"前端无手写 API 类型"。S7 ProfileParser parse endpoint 同结构同样要写。
+7. **typedRoutes 字符串拼接需要 `as Route`** [来自 S5]——Next 15 `experimental.typedRoutes` 启用,`<Link href={...}>` / `router.push(`/jds/${id}`)` 字符串模板被推断为 `string`,需要 `import type { Route } from 'next'; ... as Route`。S9 简历列表跳详情同样。
+8. **openapi-typescript `--enum` 必须用 enum value** [来自 S5]——`scripts/generate.mjs` 用了 `--enum`,生成的是 TypeScript enum 类型而非 string literal union。前端 `source: 'text_paste'` typecheck 会报错,必须 `import { JDParseInputSource } from '@jobcopilot/schemas'; ... source: JDParseInputSource.text_paste`。
+9. **Tailwind v4 主题色用 `@theme` 注册** [来自 S5]——`@theme { --color-* }` 自动生成 `bg-* / text-* / border-*` utility(`bg-accent`、`text-muted`、`border-border` 等);**没有 `tailwind.config.ts`**(v4 默认全文件扫)。S9 前端表单沿用此 token 命名。
 
 ---
 
