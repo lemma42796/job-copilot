@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-02 (M1 进行中:S0.5 / S1 / S2 / S3 全部完成,本地 main 领先 origin 4 commit 待 push;下一刀 S4)
+last_updated: 2026-05-02 (M1 进行中:S0.5 / S1 / S2 / S3 已完成且已 push;S4 规划已锁,见 ADR-0006;待开 docs commit + S4-A)
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -15,7 +15,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | S1   | DB + Alembic + 通用列/触发器/枚举(5 条 migration,9 张表) | ✅ |
 | S2   | LLM Client + DummyProvider + Tier 路由 + `llm_calls` 表 | ✅ |
 | S3   | User/File ORM + `/v1/files` 上传(sha256 去重 + 软删 + 200MB 配额),见 ADR-0005 | ✅ |
-| S4   | JDParserAgent(文本入口)+ `/v1/jds` + `/v1/jds/parse` SSE | ⏭ 下一刀 |
+| S4   | JDParserAgent(文本 + PDF)+ `/v1/jds/parse` SSE + `/v1/jds` 读改删 + prompt_versions 闭环 | 🚧 规划已锁(ADR-0006),待开工 |
 | S5   | 前端:JD 粘贴页 + 结构化结果可视化 + 编辑保存 | pending |
 | S6   | `evals/suites/jd_extract` 50 条 + promptfoo CI(**Week 2 末 DoD**) | pending |
 | S7   | ProfileParserAgent + `/v1/profiles/parse` SSE | pending |
@@ -26,15 +26,15 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 ## 当前 working tree 状态
 
-Working tree 干净,**本地 main 领先 origin/main 4 个 commit(S3 全套未 push)**。最近 commit:
+Working tree 干净,**main 与 origin/main 同步**。最近 commit:
 
 ```
+ae21fde docs(status): close out S3 and queue S4 as next slice
 3713a9c feat(api): wire /v1/files routes (S3-C)
 7f5607a feat(api): file upload service + chunked reader (S3-B)
 6db1f30 feat(api): add User/File ORM + files unique index (S3-A)
 9b4c506 docs: lock S3 plan in ADR-0005 (files upload contract)
 1db3c23 feat(api): persist llm_calls via DBCallLogger (S2-E)
-e500ac5 feat(api): add LLM abstraction layer (S2-D)
 ```
 
 ## 当前 docker compose 状态
@@ -260,7 +260,8 @@ README.md (项目根)               ✅ 完成(214 行)
 │   ├── 0002-postgres-as-vector-db.md  ✅ 完成
 │   ├── 0003-switch-to-qwen.md   ✅ 完成
 │   ├── 0004-llm-client-contract.md  ✅ 完成(S2 规划锁)
-│   └── 0005-files-upload-contract.md  ✅ 完成(S3 规划锁)
+│   ├── 0005-files-upload-contract.md  ✅ 完成(S3 规划锁)
+│   └── 0006-jd-parse-contract.md   ✅ 完成(S4 规划锁)
 └── runbook/                     (空,部署期再写)
 ```
 
@@ -271,7 +272,7 @@ README.md (项目根)               ✅ 完成(214 行)
 ## 当用户问"开发进度到了?"时
 
 1. 读本文件(STATUS.md)
-2. 简短汇报:M0 / S0.5 / S1 / S2 / S3 全部完成,本地 main 领先 origin 4 commit 待 push;下一刀 S4(JDParserAgent 文本入口 + `/v1/jds` + `/v1/jds/parse` SSE)
+2. 简短汇报:M0 / S0.5 / S1 / S2 / S3 全部完成且已 push,S4 规划已锁(ADR-0006);下一刀 S4-A(JD ORM + schemas + 加 pypdfium2)。检查领先量用 `git log origin/main..main --oneline | wc -l`
 3. **等待用户指示后再行动**,不要自动开工
 
 ## S3 已完成产出(2026-05-02,见 ADR-0005)
@@ -313,21 +314,24 @@ apps/api/src/jobcopilot_api/
 - **D11 Idempotency-Key**:不做
 - **D12 commit 拆分**:docs / S3-A / S3-B / S3-C 四个原子 commit
 
-## S4 起步前要做最佳实践规划(尚未做)
+## S4 规划已锁(2026-05-02,见 ADR-0006)
 
-S4 高层任务在 7-ROADMAP / DATA_MODEL §3.2(jds 表)/ 5-AGENT_DESIGN(JDParserAgent)/ 4-API_SPEC §6.3 里。开工前候选规划点(对照 S2/S3 的做法,先出 ADR-0006):
+12 项决策摘要(实现时直接对照):
 
-- **JDParserAgent 输入接口**:文本(POST `/v1/jds/parse` JSON)+ 引用 file_id(`raw_file_id` 来自 S3)?后者要在 S4 引 `pypdfium2` 抽 PDF 文本(D6 已决)
-- **`/v1/jds` vs `/v1/jds/parse` 边界**:`/v1/jds` 仅 CRUD(已结构化),`/v1/jds/parse` 走 LLM 生成结构化输出。SSE 节点事件粒度?
-- **JD Pydantic schema 范围**:title / company / location / salary / required_skills / preferred_skills / responsibilities / years_required / ...,与 DATA_MODEL §3.2 字段对齐
-- **prompt 版本化**:S2 的 `prompt_versions` 表如何写入?S4 是否一并落 `prompts/jd_parser/v1.0.0.j2` + 启动时 upsert?
-- **`raw_text` 抽取与存储**:DATA_MODEL §3.2 有 `raw_text` 列;PDF 抽出后写回 jds 还是只 in-memory 喂 LLM?
-- **SSE 事件协议**:对照 4-API_SPEC §5.3(`started` / `node_started` / `node_progress` / `node_completed` / `result` / `done` / `error`),JDParser 单 Agent 不走 LangGraph,可能只发 `started` / `result` / `done`
-- **JD 解析失败语义**:LLM 返回结构化但内容明显垃圾(全 null / title 为空)→ 422 `JD_PARSE_FAILED`?Pydantic schema 严格 vs 宽松?
-- **去重**:同 user 同 raw_text 是否去重(类似 files D5)?
-- **`/v1/jds/parse?stream=1` vs 强制 SSE**:API_SPEC §5.1 说"可选流",但 M1 dogfood 是否值得双实现
+- **D1 输入范围**:S4 收 `text_paste` + `pdf_upload`(file_id 引用 S3 的 `purpose=jd_pdf`);图片 `image_upload` 推迟 M1 末
+- **D2 端点收敛**:S4 只做 `POST /v1/jds/parse` + GET 列表/详情 + PATCH + DELETE。**不做 POST `/v1/jds`(raw_text 占位)**,留 M4 投递追踪
+- **D3 status 取值修正**:以 DATA_MODEL §3.2 ENUM 为准(`parsing/parsed/parse_failed`);API_SPEC §6.3 同 PR 修文(已改)。`archived` 不在 S4
+- **D4 SSE 双实现 + 4 事件**:同步默认 + `?stream=1` 走 SSE;JDParser 单 Agent 只发 `started → result → done`,失败 `started → error → done`;不发 `node_*`/`token`;断线重连 / Last-Event-ID M1 不实现
+- **D5 Pydantic schema**:`JDStructured`(AGENT_DESIGN §3.3),`salary_currency` 默认 `"CNY"`(LLM 不抽);JSONB 列用 `model_dump(mode="json")`
+- **D6 prompt_versions 闭环**:`prompts/jd_parser/v1.0.0.j2`(SYSTEM/USER 双段)+ `infra/prompts.py`(扫描 / hash / upsert / 启动报错);Agent 透 `prompt_version_id` 到 `LLMResult` 到 `llm_calls`
+- **D7 raw_text 写回 jds**:文本输入直接写;PDF 输入抽完后写 + raw_file_id;不 GENERATED 进 search_tsv(避免长文本拖慢)
+- **D8 失败语义 4 分支**:LLM 上游 5xx/超时 → 502 `LLM_UPSTREAM_ERROR` + status=`parse_failed`;schema 不合法(1 次重试后)/ title 为空 → 422 `JD_PARSE_FAILED`;`confidence < 0.5` 不算失败,UI 高亮
+- **D9 去重 = M1 不做**:用户主动粘贴语义每次都是新建;evals 显示是问题再加 `(user_id, sha256(raw_text))` 部分唯一索引
+- **D10 PDF 抽取在 service 层**:`infra/pdf.py::extract_pdf_text`(pypdfium2 纯函数);Agent 保持纯函数不读文件;空抽取 / < 50 字符 → 422
+- **D11 配额/限流**:S4 不做(限流推迟到 M1 末横切框架)
+- **D12 commit 拆分**:docs / S4-A(ORM + schemas + pypdfium2)/ S4-B(Agent + prompt_versions 启动钩子)/ S4-C(service + pdf.py)/ S4-D(router + 集成测试)。**不需要新 migration**(0003 已建 jds 表 + ENUM,0006 已建 prompt_versions)
 
-S4 规划完后产出 ADR-0006 + commit 拆分计划。
+复审条件见 ADR-0006 末尾(去重 / 阈值 / 扫描件比例 / token 流支持)。
 
 ## 重要风格约定
 

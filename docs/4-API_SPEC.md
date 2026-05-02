@@ -233,6 +233,8 @@ data: <json_payload>
 | `error` | 任意阶段失败 | `{ "code": "LLM_UPSTREAM_ERROR", "detail": "..." }` |
 | `done` | 流结束(总在最后一条) | `{ "ok": true }` |
 
+> **单 Agent 子集**:不走 LangGraph 的端点(M1 仅 `/v1/jds/parse`)只发 `started → result → done`,失败路径 `started → error → done`,不发 `node_*` / `token`。详见 ADR-0006 D4。
+
 ### 5.4 心跳
 
 每 15s 服务端发 `:heartbeat\n\n` 注释行,客户端用于检测断线。
@@ -300,59 +302,67 @@ data: <json_payload>
 
 ### 6.3 JDs(职位描述)
 
-资源对应 `jds` 表(3-DATA_MODEL §3.2)。
+资源对应 `jds` 表(3-DATA_MODEL §3.2)。`status` 取值与 DB ENUM 一致(见 ADR-0006 D3):
 
-#### `POST /v1/jds`
+| status | 含义 |
+|---|---|
+| `parsing` | 已落库,LLM 抽取中 / 待 PATCH(未来 POST `/v1/jds` 占位也用此) |
+| `parsed` | 抽取成功,结构化字段可用 |
+| `parse_failed` | 抽取失败,raw_text 仍可用,UI 引导用户手填 |
 
-直接创建 JD(不解析,粘贴原始文本占位)。
-
-请求:
-
-```json
-{
-  "raw_text": "Senior Backend Engineer @ XYZ ...",
-  "source": "text_paste"
-}
-```
-
-响应 201:`JD` 完整对象(含 `id`、`status: draft`)。
+> M4 投递追踪会扩 `archived` 取值(`ALTER TYPE`);M1 不引入。
 
 #### `POST /v1/jds/parse`
 
-调用 `JDParserAgent`,返回结构化 JD。**支持 SSE 流(可选)**。
+创建 + 解析一步走。调用 `JDParserAgent`,返回结构化 JD。**支持 SSE 流(可选)**,详见 ADR-0006 D4。
 
-请求(任选其一):
+请求(`text` / `file_id` 二选一):
 
 ```json
 { "text": "...", "source": "text_paste" }
-{ "image_b64": "...", "source": "image_upload" }
 { "file_id": 123, "source": "pdf_upload" }
 ```
 
-响应(同步,默认):
+> 图片入口(`source: "image_upload"`,走 `qwen3.6-vl-flash`)推迟到 M1 末(STATUS Q4 + ADR-0006 D1)。
+
+响应(同步,默认,201):
 
 ```json
 {
   "id": 42,
-  "status": "ready",
-  "structured": { /* JDStructured */ },
+  "status": "parsed",
+  "structured": { /* JDStructured,见 5-AGENT_DESIGN §3.3 */ },
   "confidence": 0.91,
   "tokens": { "input": 1200, "output": 320 },
   "cost_cny": 0.04
 }
 ```
 
-响应(SSE,`?stream=1`):
+响应(SSE,`?stream=1`,200):
+
 ```
-event: started      data: {"job_id":"...","resource_id":42}
-event: node_started data: {"node":"parse"}
-event: token        data: {"delta":"{"}
-...
-event: result       data: {"resource_id":42,"url":"/v1/jds/42"}
-event: done         data: {"ok":true}
+event: started  data: {"job_id":"<uuid>","resource_id":42}
+event: result   data: {"resource_id":42,"url":"/v1/jds/42"}
+event: done     data: {"ok":true}
 ```
 
-错误:422 `JD_PARSE_FAILED`、502 `LLM_UPSTREAM_ERROR`
+失败路径(SSE):
+
+```
+event: started  data: {"job_id":"<uuid>","resource_id":42}
+event: error    data: {"code":"JD_PARSE_FAILED","detail":"..."}
+event: done     data: {"ok":false}
+```
+
+错误(同步):422 `JD_PARSE_FAILED`(LLM schema 不合法 / 字段为空 / PDF 抽取失败)、502 `LLM_UPSTREAM_ERROR`
+
+> SSE 路径下 HTTP 状态码始终 200(连接已建立),错误通过 `event: error` 传递。
+
+#### `POST /v1/jds`(M4 启用)
+
+直接创建 JD(不调用 LLM,raw_text 占位,初始 `status='parsing'` 等用户 PATCH 或调 `/parse`)。
+
+M1 不实现 — S4 只走 `/v1/jds/parse`。M4 投递追踪需要"已经在做的岗位手动录入"时再补,届时另立 ADR。
 
 #### `GET /v1/jds`
 
@@ -360,23 +370,26 @@ event: done         data: {"ok":true}
 
 | query | 说明 |
 |-------|------|
-| `q` | 全文搜索(title + company + description) |
-| `status` | `draft` / `ready` / `archived` |
+| `q` | 全文搜索(title + company + description,走 `search_tsv` GIN 索引) |
+| `status` | `parsing` / `parsed` / `parse_failed` |
 | `created_after` | RFC3339 |
+| `cursor` / `limit` / `order` | 见 §2.6 |
 
 响应:`{ "data": [JD, ...], "next_cursor": "...", "has_more": false }`
 
 #### `GET /v1/jds/{id}`
 
-返回单个 JD 完整对象(含 `JDStructured`)。
+返回单个 JD 完整对象(含 `JDStructured`)。软删的 / 跨 user 的 → 404(避免存在性泄露,与 §6.9 一致)。
 
 #### `PATCH /v1/jds/{id}`
 
-部分更新。允许字段:`structured`(用户手动修正)、`status`、`notes`。
+部分更新。允许字段:`structured`(用户手动修正)、`status`(仅 `parsing → parsed` 手动确认 / `parsed → parsing` 触发重 parse 由前端调 `/parse`)、`notes`。
+
+> 不允许 PATCH `raw_text`(语义上是源,改了重 parse 才有意义)。
 
 #### `DELETE /v1/jds/{id}`
 
-软删除(`deleted_at = now()`)。返回 204。
+软删除(`deleted_at = NOW()`)。返回 204。已软删的再次调用 → 404。
 
 ---
 
