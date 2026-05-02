@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-02 (M1 进行中:S0.5 / S1 / S2 / S3 已完成且已 push;S4 规划已锁,见 ADR-0006;待开 docs commit + S4-A)
+last_updated: 2026-05-02 (M1 进行中:S0.5 / S1 / S2 / S3 已完成已 push;S4-A / S4-B / S4-C 已完成本地未 push,领先 origin 4 commit;下一刀 S4-D 收尾)
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -15,7 +15,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | S1   | DB + Alembic + 通用列/触发器/枚举(5 条 migration,9 张表) | ✅ |
 | S2   | LLM Client + DummyProvider + Tier 路由 + `llm_calls` 表 | ✅ |
 | S3   | User/File ORM + `/v1/files` 上传(sha256 去重 + 软删 + 200MB 配额),见 ADR-0005 | ✅ |
-| S4   | JDParserAgent(文本 + PDF)+ `/v1/jds/parse` SSE + `/v1/jds` 读改删 + prompt_versions 闭环 | 🚧 规划已锁(ADR-0006),待开工 |
+| S4   | JDParserAgent(文本 + PDF)+ `/v1/jds/parse` SSE + `/v1/jds` 读改删 + prompt_versions 闭环 | 🚧 S4-A / S4-B / S4-C ✅(本地未 push);S4-D(router + SSE + lifespan)待开工 |
 | S5   | 前端:JD 粘贴页 + 结构化结果可视化 + 编辑保存 | pending |
 | S6   | `evals/suites/jd_extract` 50 条 + promptfoo CI(**Week 2 末 DoD**) | pending |
 | S7   | ProfileParserAgent + `/v1/profiles/parse` SSE | pending |
@@ -26,16 +26,22 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 ## 当前 working tree 状态
 
-Working tree 干净,**main 与 origin/main 同步**。最近 commit:
+Working tree 干净,**本地 main 领先 origin/main 4 commit(S4 docs + A/B/C 待 push)**。S4-D 完成后整轮一起 push。最近 commit:
 
 ```
-ae21fde docs(status): close out S3 and queue S4 as next slice
+df12e0c feat(api): jd service + pdf extraction (S4-C)
+9c382cc feat(api): JDParserAgent + prompt_versions startup loader (S4-B)
+b5a3f10 feat(api): add JD ORM + Pydantic schemas (S4-A)
+09230da docs: lock S4 plan in ADR-0006 (jd parse contract)
+ae21fde docs(status): close out S3 and queue S4 as next slice    ← origin/main 在这
 3713a9c feat(api): wire /v1/files routes (S3-C)
-7f5607a feat(api): file upload service + chunked reader (S3-B)
-6db1f30 feat(api): add User/File ORM + files unique index (S3-A)
-9b4c506 docs: lock S3 plan in ADR-0005 (files upload contract)
-1db3c23 feat(api): persist llm_calls via DBCallLogger (S2-E)
 ```
+
+## 当前闸门(S4-C 完成,本地)
+
+- `ruff check` / `ruff format --check`:全绿
+- `mypy --strict apps/api/src apps/api/tests`:72 files,0 issues
+- `pytest --cov --cov-fail-under=70`:**186 passed,98.10%**(123 unit + 63 integration)
 
 ## 当前 docker compose 状态
 
@@ -272,8 +278,81 @@ README.md (项目根)               ✅ 完成(214 行)
 ## 当用户问"开发进度到了?"时
 
 1. 读本文件(STATUS.md)
-2. 简短汇报:M0 / S0.5 / S1 / S2 / S3 全部完成且已 push,S4 规划已锁(ADR-0006);下一刀 S4-A(JD ORM + schemas + 加 pypdfium2)。检查领先量用 `git log origin/main..main --oneline | wc -l`
+2. 简短汇报:M0 / S0.5 / S1 / S2 / S3 已完成已 push;S4 docs + A / B / C 本地完成未 push(领先 origin 4 commit);下一刀 S4-D(routers/jds.py + SSE + lifespan 接线 + 集成测试)。检查领先量用 `git log origin/main..main --oneline | wc -l`
 3. **等待用户指示后再行动**,不要自动开工
+
+## S4 已完成产出(2026-05-02,见 ADR-0006)
+
+```
+apps/api/src/jobcopilot_api/
+├── models/jd.py               # S4-A:JD ORM(无 ORM FK,延续 ADR-0005 D1)
+├── schemas/jds.py             # S4-A:JdSource / JdStatus / JDStructured / JDSkill /
+│                              #       JDParseInput(text/file_id 二选一)/ JDParseResponse /
+│                              #       JDListItem / JDListResponse / JDDetail / JDPatchInput
+├── prompts/jd_parser/
+│   └── v1.0.0.j2              # S4-B:SYSTEM/USER 双段 Jinja2 模板
+├── agents/jd_parser/
+│   └── agent.py               # S4-B:parse_jd 纯函数,prompt_version_id 透到 LLMResult
+├── infra/
+│   ├── prompts.py             # S4-B:扫描 + sha256 hash + upsert + lifespan 缓存 +
+│   │                          #       PromptVersionMismatchError 启动报错
+│   └── pdf.py                 # S4-C:pypdfium2 抽取,PdfExtractionError(422)
+└── services/
+    └── jd_service.py          # S4-C:create_and_parse 两段事务(失败也持久化 raw_text)/
+                               #       list / get / patch / soft_delete / 失败 4 分支
+```
+
+S4-A pyproject 加 `pypdfium2>=4.30.0`,S4-B 加 `jinja2>=3.1.4`。S4-B `main.py`
+lifespan 接线:`app.state.prompt_versions = await load_prompt_versions(get_sessionmaker())`。
+
+**S4 不需要新 migration**(0003 / 0006 已建 jds 表 + ENUM + prompt_versions / llm_calls)。
+
+## S4 期间踩到的小坑(已记录)
+
+1. **prompt_versions 表只有 `template` 单列**(无 system/user 拆分),所以
+   `.j2` 整文件存进 `template`,SYSTEM/USER 标记由 `infra/prompts.py` 启动时
+   解析;hash = sha256(整文件)。ADR-0006 D6 原文写"system_template /
+   user_template / model"是规划时对表结构的误判,实现以 DB 现状为准。
+2. **`async with sessionmaker_() as session, pytest.raises(...)` mypy 报错**
+   ——`pytest.raises` 不是 async 上下文管理器(S3 期间已踩,S4 重犯)。修复:
+   拆成 `async with sessionmaker_() as session:` 内嵌 `with pytest.raises(...):`。
+3. **`pypdfium2` 无类型 stub**——`infra/pdf.py` import 行加
+   `# type: ignore[import-untyped]`。
+4. **Jinja2 `autoescape=False` 触发 ruff S701**——prompts 不是 HTML(自动转义
+   会把 `<jd>` 变成 `&lt;jd&gt;` 喂给 LLM)。`infra/prompts.py` 加 `# noqa: S701`。
+5. **`ASGITransport` 不触发 lifespan**——好事:既有单元/集成测试不会被新加的
+   lifespan DB 调用打到。lifespan 本身不便单测,直接 unit-test
+   `load_prompt_versions` 函数即可。
+
+## S4-D 起步要点(下次开工)
+
+S4-D 范围(对照 ADR-0006 D12):
+
+```
+apps/api/src/jobcopilot_api/routers/jds.py
+- POST /v1/jds/parse              同步:返回 JDParseResponse
+- POST /v1/jds/parse?stream=1     SSE:started → result → done(失败 started → error → done)
+- GET  /v1/jds                    JDListResponse + cursor
+- GET  /v1/jds/{id}               JDDetail
+- PATCH /v1/jds/{id}              JDPatchInput → JDDetail
+- DELETE /v1/jds/{id}             204
+```
+
+依赖装配:
+- `current_user_id` 复用 `routers/_deps.py`(S3-C 已建)
+- `LLMClient` 取自 `infra/llm.get_llm_client()`
+- `LoadedPrompt` 从 `request.app.state.prompt_versions[("jd_parser", "v1.0.0")]` 取
+- SSE 用 `sse-starlette.EventSourceResponse`(已在 deps)
+
+集成测试要点:
+- testcontainers + httpx ASGITransport,跑迁移
+- DummyProvider 注入(覆盖 `get_llm_client` dep)
+- 手动构造 `app.state.prompt_versions = {("jd_parser", "v1.0.0"): LoadedPrompt(id=…)}`
+  (因为 ASGITransport 不跑 lifespan,需要测试夹具自己填)
+- 用例覆盖:golden 同步 + SSE 4 事件 / 失败 SSE 3 事件 / 同步 422 / 同步 502 /
+  GET 列表 + 详情 / PATCH structured / PATCH status / DELETE / 404 跨 user / 404 软删
+
+S4-D 完成后整轮 5 commit(docs + A/B/C/D)一起 `git push`。
 
 ## S3 已完成产出(2026-05-02,见 ADR-0005)
 
