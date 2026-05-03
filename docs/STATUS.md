@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-03 — M1 进行中,S0.5/S1-S9 已落地;S10 待开工
+last_updated: 2026-05-03 — M1 进行中,S0.5/S1-S10 已落地;S11 待开工(dogfood + bad case)
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -21,22 +21,22 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | S7   | ProfileParserAgent + `/v1/profiles/parse` SSE + 5 表写入 + 409 dup user / 软删可重建 | ✅ |
 | S8   | Chunking 纯函数 + Embedding(text-embedding-v4)+ `/rechunk` + `/chunks` + parse SSE 接 chunk | ✅ |
 | S9   | 前端:简历上传(文本+PDF)+ SSE 4 阶段 + detail 表单 + chunks 调试折叠 + delete | ✅ |
-| S10  | `evals/suites/profile_extract` 30 条 + chunk 召回断言 | pending |
+| S10  | `evals/suites/profile_extract` 11 条自造 + 4 metric + chunk 召回断言 | ✅ |
 | S11  | 1 名志愿者 dogfood + bad case 修复(**Week 3 末 DoD**) | pending |
 
-**当前 working tree**:S9 改动 untracked,待 commit & push。续作前检查:`git status --short && git log origin/main..main --oneline | wc -l`。
+**当前 working tree**:S10 改动 untracked,待 commit & push。续作前检查:`git status --short && git log origin/main..main --oneline | wc -l`。
 
-**当前闸门**(S9 完成):本地必须跑 CI 等价命令——后端 `uv run --project apps/api {ruff check . / ruff format --check . / mypy apps/api/src apps/api/tests}` + `pytest -q` **315 passed**(+5 PartialDate 单测)+ `alembic upgrade head` → 0009(未新增 revision);前端 `pnpm install --frozen-lockfile && pnpm lint && pnpm --filter @jobcopilot/web typecheck && pnpm --filter @jobcopilot/schemas typecheck && pnpm --filter @jobcopilot/web build`(routes 注册 `/profiles/new` `/profiles/[id]`);evals `pnpm eval:jd` 13 条 case_pass=2/13。
+**当前闸门**(S10 完成):本地必须跑 CI 等价命令——后端 `uv run --project apps/api {ruff check . / ruff format --check . / mypy apps/api/src apps/api/tests}` + `pytest -q` **315 passed** + `alembic upgrade head` → 0009(未新增 revision);前端 `pnpm install --frozen-lockfile && pnpm lint && pnpm --filter @jobcopilot/web typecheck && pnpm --filter @jobcopilot/schemas typecheck && pnpm --filter @jobcopilot/web build`;evals `pnpm eval:jd` 13 条 case_pass=2/13;**`pnpm eval:profile` 11 条 case_pass=11/11**(schemaValid=1.0 / experienceRecall=1.0 / skillF1=0.988 / chunkRecall=1.0 / 50k tokens / 24s)。
 
 > 2026-05-01 LLM Provider 由 DeepSeek V4 切换到阿里云百炼 Qwen3.6,见 ADR-0003。ADR-0001 复审条件 1(余额 < ¥1)触发时回切。
 
-## 下一刀:S10 profile 评测
+## 下一刀:S11 dogfood + bad case 修复(M1 末)
 
-**边界**:① `evals/suites/profile_extract` 30 条 case(对齐 S6 jd_extract 结构);② chunk 召回断言(每个 expected role/skill 至少命中 1 个 chunk);③ 4 个核心 metric(`schema_valid` / `field_acc` / `chunk_recall` / `cost_per_call`);④ promptfooconfig + workflow_dispatch trigger(沿用 S6 的 CI 模式)。
+**边界**:① 找 1 名志愿者(或自己当志愿者)走端到端流程:粘 JD → 上传简历 → 解析 → 看结构化结果 → 看 chunks;② 收集 ≥ 5 条 high-severity bad case(分类:JD 解析错 / profile 解析错 / chunk 漏召回 / UI 卡点);③ 修可修的(prompt 微调 / bug fix);④ M1 业务 DoD 最后兑现:1 志愿者全流程通 + 日均成本 < ¥1 + 80 条评测达阈(jd 13 + profile 11 当前共 24,差 56 — 推迟 M2)。
 
-**复用**:S6 evals 框架(`promptfoo` + 中文 case + DashScope provider with `enable_thinking: false`);profile_parser v1.0.0 prompt(本切片不升级,只 baseline)。
+**复用**:S5 / S9 全部前端入口已就位;S6 / S10 评测 baseline 已就位。
 
-**不做**:profile prompt v1.0.1 升级(→ M2);PDF 简历 case(M2 加图片);bad case promote 脚本(→ M2,跟 jd_extract 一起做)。
+**不做**:dataset 扩 50 条 / prompt v1.0.2 升级 / 4 新 metric — 全推 M2(STATUS M2 待办累积 14 条,见下文)。
 
 ---
 
@@ -55,6 +55,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 11. **embedding `DataInspectionFailed` 观察**(S8 规划期暴露)— 跑 30+ profile dataset 时若有命中,需对 chunker 加内容脱敏或 retry-skip 策略。
 12. **embedding 写 `llm_calls` 表统一**(S8 规划期暴露)— S8 阶段只 structlog 打印 embedding token + cost;M2 把 schema 通用化(加 `kind` 枚举或拆表)。
 13. **前端 JD 列表页 + 全局导航**(S5 起"列表延后"的兑现)— 调现成 `GET /jds`(cursor 分页已就位),提供卡片列表 / 进入详情 / 删除;同时补简历列表入口与首页导航。M2 起匹配场景需"选哪份 JD",列表才真正有产品意义。
+14. **profile_extract dataset 扩到 30+**(S10 baseline 10-13 条只覆盖核心场景;M2 补 PDF 简历真实样本 / 多轮跳槽 10+ 年 / 冷门行业 / OCR 噪声等长尾)。
 
 ---
 
@@ -71,6 +72,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 - [S7 ProfileParser + 5 表写入](slices/S7-profiles.md) — 子表 DELETE+INSERT / skill 去重 / 409 dup / 软删 partial unique 修复
 - [S8 Chunking + Embedding + /rechunk](slices/S8-chunks.md) — 5 表 → ChunkInput → 1024 维 / embed 在事务外 / parse SSE 末段 best-effort 接 chunk
 - [S9 前端简历闭环 + PartialDate](slices/S9-profile-frontend.md) — `lib/sse.ts` 通用 SSE / `/profiles/new` 双 tab 4 阶段 / `/profiles/[id]` 折叠卡 + 调试 / `_pad_partial_date` 兼容简历缺位日期 / 修 `stats.chunks` 漏算
+- [S10 profile 评测 baseline](slices/S10-profile_extract.md) — 11 条自造 case / 4 metric(schemaValid / experienceRecall / skillF1 / chunkRecall)/ JS 端 chunker 复刻 / 子串包含降级版 chunk_recall(M2 升级真 embedding)
 
 ---
 

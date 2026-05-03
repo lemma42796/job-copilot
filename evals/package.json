@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "eval:jd": "promptfoo eval -c suites/jd_extract/promptfooconfig.yaml --output reports/jd-latest.json",
+    "eval:profile": "promptfoo eval -c suites/profile_extract/promptfooconfig.yaml --output reports/profile-latest.json",
     "eval:view": "promptfoo view",
     "prep:screenshot": "tsx scripts/from-screenshot.ts",
     "prep:synth": "tsx scripts/synth-seed.ts",
