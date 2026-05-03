@@ -106,7 +106,9 @@ export function experienceRecall(output: string, ctx: AssertContext): AssertResu
     const wc = norm(w.company);
     const wt = norm(w.title);
     const found = gotPairs.some(
-      (g) => (g.company.includes(wc) || wc.includes(g.company)) && (g.title.includes(wt) || wt.includes(g.title)),
+      (g) =>
+        (g.company.includes(wc) || wc.includes(g.company)) &&
+        (g.title.includes(wt) || wt.includes(g.title)),
     );
     if (found) hit += 1;
     else missed.push(`${w.company} / ${w.title}`);

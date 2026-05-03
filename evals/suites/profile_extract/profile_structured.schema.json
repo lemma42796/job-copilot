@@ -76,9 +76,7 @@
           "type": "array"
         }
       },
-      "required": [
-        "school"
-      ],
+      "required": ["school"],
       "title": "ProfileEducationItem",
       "type": "object"
     },
@@ -162,10 +160,7 @@
           "type": "array"
         }
       },
-      "required": [
-        "company",
-        "title"
-      ],
+      "required": ["company", "title"],
       "title": "ProfileExperienceItem",
       "type": "object"
     },
@@ -264,9 +259,7 @@
           "title": "Demo Url"
         }
       },
-      "required": [
-        "name"
-      ],
+      "required": ["name"],
       "title": "ProfileProjectItem",
       "type": "object"
     },
@@ -283,26 +276,14 @@
         },
         "category": {
           "default": "other",
-          "enum": [
-            "language",
-            "framework",
-            "tool",
-            "database",
-            "cloud",
-            "other"
-          ],
+          "enum": ["language", "framework", "tool", "database", "cloud", "other"],
           "title": "Category",
           "type": "string"
         },
         "level": {
           "anyOf": [
             {
-              "enum": [
-                "beginner",
-                "intermediate",
-                "advanced",
-                "expert"
-              ],
+              "enum": ["beginner", "intermediate", "advanced", "expert"],
               "type": "string"
             },
             {
@@ -325,10 +306,7 @@
           "title": "Years"
         }
       },
-      "required": [
-        "name",
-        "name_raw"
-      ],
+      "required": ["name", "name_raw"],
       "title": "ProfileSkillItem",
       "type": "object"
     }
