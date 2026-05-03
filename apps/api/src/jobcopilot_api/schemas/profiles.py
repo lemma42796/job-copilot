@@ -11,12 +11,40 @@ DELETE-then-INSERT (Q3 decision in S7 plan).
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+
+_YEAR_RE = re.compile(r"^\d{4}$")
+_YEAR_MONTH_RE = re.compile(r"^(\d{4})-(\d{1,2})$")
+
+
+def _pad_partial_date(v: object) -> object:
+    """Pad resume-style partial dates to `YYYY-MM-DD` so pydantic's `date` accepts them.
+
+    LLMs return dates exactly as written in the resume — `"2020-01"`,
+    `"2016"` — which `datetime.date.fromisoformat` rejects. We pad missing
+    components to `01`; the UI drops the day on render. `""` is treated as
+    `None` (LLMs sometimes emit empty strings instead of nulls).
+    """
+    if not isinstance(v, str):
+        return v
+    s = v.strip()
+    if not s:
+        return None
+    m = _YEAR_MONTH_RE.fullmatch(s)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-01"
+    if _YEAR_RE.fullmatch(s):
+        return f"{s}-01-01"
+    return v
+
+
+PartialDate = Annotated[date | None, BeforeValidator(_pad_partial_date)]
 
 
 class ProfileSource(StrEnum):
@@ -48,8 +76,8 @@ class ProfileExperienceItem(BaseModel):
     company: str
     title: str
     location: str | None = None
-    start_date: date | None = None
-    end_date: date | None = None
+    start_date: PartialDate = None
+    end_date: PartialDate = None
     is_current: bool = False
     description: str = ""
     bullets: list[str] = Field(default_factory=list)
@@ -60,8 +88,8 @@ class ProfileExperienceItem(BaseModel):
 class ProfileProjectItem(BaseModel):
     name: str
     role: str | None = None
-    start_date: date | None = None
-    end_date: date | None = None
+    start_date: PartialDate = None
+    end_date: PartialDate = None
     description: str = ""
     bullets: list[str] = Field(default_factory=list)
     tech_stack: list[str] = Field(default_factory=list)
@@ -82,8 +110,8 @@ class ProfileEducationItem(BaseModel):
     school: str
     degree: str | None = None
     major: str | None = None
-    start_date: date | None = None
-    end_date: date | None = None
+    start_date: PartialDate = None
+    end_date: PartialDate = None
     gpa: float | None = None
     honors: list[str] = Field(default_factory=list)
 

@@ -517,14 +517,18 @@ async def test_rechunk_sse_emits_started_chunking_done(make_app: MakeApp, user_i
 
         resp = await client.post(f"/v1/profiles/{pid}/rechunk", headers=_hdr(user_id))
 
-    assert resp.status_code == 200
-    events = _parse_sse(resp.text)
-    names = [e[0] for e in events]
-    assert names == ["started", "chunking_embedding", "done"]
-    assert events[0][1]["resource_id"] == pid
-    assert events[1][1]["ok"] is True
-    assert events[1][1]["chunks_written"] == 3
-    assert events[2][1] == {"ok": True}
+        assert resp.status_code == 200
+        events = _parse_sse(resp.text)
+        names = [e[0] for e in events]
+        assert names == ["started", "chunking_embedding", "done"]
+        assert events[0][1]["resource_id"] == pid
+        assert events[1][1]["ok"] is True
+        assert events[1][1]["chunks_written"] == 3
+        assert events[2][1] == {"ok": True}
+
+        detail = await client.get(f"/v1/profiles/{pid}", headers=_hdr(user_id))
+    assert detail.status_code == 200
+    assert detail.json()["stats"]["chunks"] == 3
 
 
 @pytest.mark.integration

@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-03 — M1 进行中,S0.5/S1-S8 已落地待 push;S9 待开工
+last_updated: 2026-05-03 — M1 进行中,S0.5/S1-S9 已落地;S10 待开工
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -20,23 +20,23 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | S6   | `evals/suites/jd_extract` MVP(13 条 + 4 指标)+ promptfoo CI workflow_dispatch only | ✅ |
 | S7   | ProfileParserAgent + `/v1/profiles/parse` SSE + 5 表写入 + 409 dup user / 软删可重建 | ✅ |
 | S8   | Chunking 纯函数 + Embedding(text-embedding-v4)+ `/rechunk` + `/chunks` + parse SSE 接 chunk | ✅ |
-| S9   | 前端:简历上传 + 表单 + chunks 可视化(调试) | pending |
+| S9   | 前端:简历上传(文本+PDF)+ SSE 4 阶段 + detail 表单 + chunks 调试折叠 + delete | ✅ |
 | S10  | `evals/suites/profile_extract` 30 条 + chunk 召回断言 | pending |
 | S11  | 1 名志愿者 dogfood + bad case 修复(**Week 3 末 DoD**) | pending |
 
-**当前 working tree**:S8 改动 untracked,待 push。检查领先量:`git log origin/main..main --oneline | wc -l`。
+**当前 working tree**:S9 改动 untracked,待 commit & push。续作前检查:`git status --short && git log origin/main..main --oneline | wc -l`。
 
-**当前闸门**(S8 完成):本地必须跑 CI 等价命令——后端 `uv run --project apps/api {ruff check . / ruff format --check . / mypy apps/api/src apps/api/tests}`(注意 mypy 含 tests 路径,且不带 `--strict`)+ `pytest --cov` 310 passed @ 93.65% + `alembic upgrade head` → 0009(未新增 revision);前端 `pnpm install --frozen-lockfile && pnpm lint && pnpm --filter @jobcopilot/web typecheck && pnpm --filter @jobcopilot/schemas typecheck`;evals `pnpm eval:jd` 13 条 case_pass=2/13(数字写入 `reports/jd-latest.json`)。
+**当前闸门**(S9 完成):本地必须跑 CI 等价命令——后端 `uv run --project apps/api {ruff check . / ruff format --check . / mypy apps/api/src apps/api/tests}` + `pytest -q` **315 passed**(+5 PartialDate 单测)+ `alembic upgrade head` → 0009(未新增 revision);前端 `pnpm install --frozen-lockfile && pnpm lint && pnpm --filter @jobcopilot/web typecheck && pnpm --filter @jobcopilot/schemas typecheck && pnpm --filter @jobcopilot/web build`(routes 注册 `/profiles/new` `/profiles/[id]`);evals `pnpm eval:jd` 13 条 case_pass=2/13。
 
 > 2026-05-01 LLM Provider 由 DeepSeek V4 切换到阿里云百炼 Qwen3.6,见 ADR-0003。ADR-0001 复审条件 1(余额 < ¥1)触发时回切。
 
-## 下一刀:S9 前端
+## 下一刀:S10 profile 评测
 
-**边界**:① 简历 PDF 上传组件(沿用 S5 文件上传模式 + S3 `/v1/files`);② 文本粘贴入口;③ `/profiles/parse` SSE 接入(start → chunking_embedding → result/done 4 阶段进度条);④ profile detail 页(experience / project / skill / education 4 列表 + edit);⑤ `/profiles/{id}/chunks` 调试视图(列出每个 chunk 的 granularity + content + embed_model,折叠态);⑥ patch + 触发 `/rechunk` 按钮;⑦ 错误 UI(409 dup user → 引导 "DELETE 旧的再传")。
+**边界**:① `evals/suites/profile_extract` 30 条 case(对齐 S6 jd_extract 结构);② chunk 召回断言(每个 expected role/skill 至少命中 1 个 chunk);③ 4 个核心 metric(`schema_valid` / `field_acc` / `chunk_recall` / `cost_per_call`);④ promptfooconfig + workflow_dispatch trigger(沿用 S6 的 CI 模式)。
 
-**复用**:S5 jds 页结构(Tailwind v4 / shadcn / `<Link as={Route}>` / openapi-typescript enum import);api.ts 已含 ProfileChunkItem / ProfileChunksResponse(S8 C6)。
+**复用**:S6 evals 框架(`promptfoo` + 中文 case + DashScope provider with `enable_thinking: false`);profile_parser v1.0.0 prompt(本切片不升级,只 baseline)。
 
-**不做**:用户多简历版本管理(→ M3);前端单测(→ M5);chunks 向量可视化(→ M3+ retrieval debug)。
+**不做**:profile prompt v1.0.1 升级(→ M2);PDF 简历 case(M2 加图片);bad case promote 脚本(→ M2,跟 jd_extract 一起做)。
 
 ---
 
@@ -69,6 +69,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 - [S6 评测 baseline + salary_months 全栈](slices/S6-jd_extract.md) — promptfoo + 13 boss / Qwen3.6 多模态 / prompt v1.0.1 / 11 处协同
 - [S7 ProfileParser + 5 表写入](slices/S7-profiles.md) — 子表 DELETE+INSERT / skill 去重 / 409 dup / 软删 partial unique 修复
 - [S8 Chunking + Embedding + /rechunk](slices/S8-chunks.md) — 5 表 → ChunkInput → 1024 维 / embed 在事务外 / parse SSE 末段 best-effort 接 chunk
+- [S9 前端简历闭环 + PartialDate](slices/S9-profile-frontend.md) — `lib/sse.ts` 通用 SSE / `/profiles/new` 双 tab 4 阶段 / `/profiles/[id]` 折叠卡 + 调试 / `_pad_partial_date` 兼容简历缺位日期 / 修 `stats.chunks` 漏算
 
 ---
 
@@ -100,6 +101,8 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 14. **`packages/schemas/src/api.ts` 是 commit 进 repo 的生成产物** [S7 CI 修]——不要重新放进 `.gitignore`(`index.ts` 直接 re-export `./api`,gitignored 会让 lint CI 拿不到 typecheck;`type-sync.yml` 只 PR 跑,push CI 不会重生)。后端加/改路由后流程:① 本地 `uv run --project apps/api python -c "import json; from jobcopilot_api.main import app; print(json.dumps(app.openapi(), ensure_ascii=False))" > /tmp/openapi.json` ② `OPENAPI_FILE=/tmp/openapi.json pnpm --filter @jobcopilot/schemas gen` ③ `git add packages/schemas/src/api.ts` 跟代码一起 commit。drift 由 PR 上 `type-sync.yml` 兜底。
 15. **SSE 副作用编排在 router 而非 service** [S8]——"X 完成顺带做 Y"(parse 后接 chunk 这种)放在 SSE generator 里串调,不要让 service 的 `run_X` 再吞 Y。理由:① 加返回元素破坏既有 caller(`create_and_parse` 的测试 / JD 路径对称);② best-effort 失败语义(parse 不回滚,只 emit warning event)在 router 才能精细表达;③ service 层失败语义统一 raise,router 层才能区分"硬失败 error → done(ok=false)"vs"软失败 chunking_embedding{ok:false} → result → done(ok=true)"。
 16. **embed/IO 在事务外,DB 写在单事务** [S8]——`rebuild_for_profile` 模板:① 读(short tx)② 纯函数 build ③ 慢 IO(无事务)④ DELETE+bulk INSERT(单事务)。绝不 hold PG connection 跨 LLM 调用。后续 retrieval / draft 等需要"读 → LLM → 写"的副作用都套这个分层。
+17. **LLM 抽出来的日期可能是 partial(`YYYY` / `YYYY-MM`)** [S9 LLM 实测暴露]——简历原文常写「2020-01 至今」「2016-2020」,Pydantic `date` 不收;统一用 `PartialDate = Annotated[date \| None, BeforeValidator(_pad_partial_date)]`(`schemas/profiles.py`)兜底,缺位补 `01` 落库。**前端按精度截断显示**:简历日期 → `YYYY-MM`(`profile-edit-form.tsx:fmtMonth`)。后续 JD 解析 / 面试反馈 / 简历定制等任何 LLM 抽出来的 date 字段一律用 `PartialDate`,不要直接 `date | None`。
+18. **SSE 前端要走 fetch + ReadableStream,不能用 EventSource** [S9]——`EventSource` 不支持自定义 header(`X-User-Id` 没法塞),且只能 GET。统一走 `lib/sse.ts:streamSse<TFrame>()` = fetch + `body.getReader()` + TextDecoder + 手解 SSE 帧(`\n\n` 边界)。M5+ 换成 JWT cookie 后可以重新评估,但 POST + SSE 永远过不了 EventSource。
 
 ---
 

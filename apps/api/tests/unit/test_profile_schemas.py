@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -73,6 +73,51 @@ def test_profile_structured_minimal_object_uses_defaults() -> None:
 def test_profile_structured_skill_category_defaults_to_other() -> None:
     obj = ProfileStructured.model_validate({"skills": [{"name": "x", "name_raw": "X"}]})
     assert obj.skills[0].category == "other"
+
+
+# ---- Partial-date normalization (PartialDate) ----
+
+
+def test_partial_date_year_only_pads_to_jan_1() -> None:
+    obj = ProfileStructured.model_validate(
+        {"educations": [{"school": "S", "start_date": "2016", "end_date": "2020"}]}
+    )
+    assert obj.educations[0].start_date == date(2016, 1, 1)
+    assert obj.educations[0].end_date == date(2020, 1, 1)
+
+
+def test_partial_date_year_month_pads_to_first() -> None:
+    obj = ProfileStructured.model_validate(
+        {
+            "experiences": [
+                {"company": "C", "title": "T", "start_date": "2020-01", "end_date": "2023-7"}
+            ]
+        }
+    )
+    assert obj.experiences[0].start_date == date(2020, 1, 1)
+    assert obj.experiences[0].end_date == date(2023, 7, 1)
+
+
+def test_partial_date_full_iso_passes_through() -> None:
+    obj = ProfileStructured.model_validate(
+        {"experiences": [{"company": "C", "title": "T", "start_date": "2020-03-15"}]}
+    )
+    assert obj.experiences[0].start_date == date(2020, 3, 15)
+
+
+def test_partial_date_empty_string_becomes_none() -> None:
+    obj = ProfileStructured.model_validate(
+        {"experiences": [{"company": "C", "title": "T", "start_date": "", "end_date": "  "}]}
+    )
+    assert obj.experiences[0].start_date is None
+    assert obj.experiences[0].end_date is None
+
+
+def test_partial_date_invalid_string_still_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ProfileStructured.model_validate(
+            {"experiences": [{"company": "C", "title": "T", "start_date": "yesterday"}]}
+        )
 
 
 # ---- ProfilePatchInput: extra-forbid ----

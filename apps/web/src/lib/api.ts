@@ -1,5 +1,7 @@
 import type { components } from '@jobcopilot/schemas';
 
+import { type SseFrame, streamSse } from './sse';
+
 const API_BASE_URL =
   (typeof window === 'undefined' ? process.env.INTERNAL_API_BASE_URL : undefined) ??
   process.env.NEXT_PUBLIC_API_BASE_URL ??
@@ -15,6 +17,19 @@ export type JDParseInput = components['schemas']['JDParseInput'];
 export type JDParseResponse = components['schemas']['JDParseResponse'];
 export type JDPatchInput = components['schemas']['JDPatchInput'];
 export type JdStatus = components['schemas']['JdStatus'];
+
+export type FileUploadResponse = components['schemas']['FileUploadResponse'];
+export type ProfileDetail = components['schemas']['ProfileDetail'];
+export type ProfileStructured = components['schemas']['ProfileStructured'];
+export type ProfileExperienceItem = components['schemas']['ProfileExperienceItem'];
+export type ProfileProjectItem = components['schemas']['ProfileProjectItem'];
+export type ProfileSkillItem = components['schemas']['ProfileSkillItem'];
+export type ProfileEducationItem = components['schemas']['ProfileEducationItem'];
+export type ProfileStats = components['schemas']['ProfileStats'];
+export type ProfileParseInput = components['schemas']['ProfileParseInput'];
+export type ProfilePatchInput = components['schemas']['ProfilePatchInput'];
+export type ProfileChunkItem = components['schemas']['ProfileChunkItem'];
+export type ProfileChunksResponse = components['schemas']['ProfileChunksResponse'];
 
 type Problem = {
   type?: string;
@@ -75,6 +90,99 @@ export async function patchJd(id: number, patch: JDPatchInput): Promise<JDDetail
     method: 'PATCH',
     body: JSON.stringify(patch),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+export type FilePurposeValue =
+  | 'jd_pdf'
+  | 'jd_image'
+  | 'profile_pdf'
+  | 'profile_docx'
+  | 'resume_pdf'
+  | 'other';
+
+export async function uploadFile(
+  file: File,
+  purpose: FilePurposeValue,
+): Promise<FileUploadResponse> {
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('purpose', purpose);
+  const res = await fetch(`${API_BASE_URL}/v1/files/upload`, {
+    method: 'POST',
+    body: fd,
+    headers: { 'X-User-Id': USER_ID },
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const problem = (await res.json().catch(() => ({}))) as Problem;
+    throw new ApiError(res.status, problem);
+  }
+  return (await res.json()) as FileUploadResponse;
+}
+
+// ---------------------------------------------------------------------------
+// Profiles
+// ---------------------------------------------------------------------------
+
+export type ProfileParseSseFrame =
+  | SseFrame<'started', { job_id: string; resource_id: number }>
+  | SseFrame<
+      'chunking_embedding',
+      | {
+          ok: true;
+          chunks_written: number;
+          embed_model: string;
+          tokens_in: number;
+          cost_cny: string;
+        }
+      | { ok: false; error: string }
+    >
+  | SseFrame<'result', { resource_id: number; url: string }>
+  | SseFrame<'error', { code: string; detail: string }>
+  | SseFrame<'done', { ok: boolean }>;
+
+export function parseProfile(input: ProfileParseInput): AsyncGenerator<ProfileParseSseFrame> {
+  return streamSse<ProfileParseSseFrame>(`${API_BASE_URL}/v1/profiles/parse`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-User-Id': USER_ID,
+    },
+    body: JSON.stringify(input),
+  });
+}
+
+export function rechunkProfile(profileId: number): AsyncGenerator<ProfileParseSseFrame> {
+  return streamSse<ProfileParseSseFrame>(`${API_BASE_URL}/v1/profiles/${profileId}/rechunk`, {
+    method: 'POST',
+    headers: { 'X-User-Id': USER_ID },
+  });
+}
+
+export async function getProfile(id: number, signal?: AbortSignal): Promise<ProfileDetail> {
+  return jsonFetch<ProfileDetail>(`/v1/profiles/${id}`, { signal });
+}
+
+export async function patchProfile(id: number, patch: ProfilePatchInput): Promise<ProfileDetail> {
+  return jsonFetch<ProfileDetail>(`/v1/profiles/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function deleteProfile(id: number): Promise<void> {
+  await jsonFetch<void>(`/v1/profiles/${id}`, { method: 'DELETE' });
+}
+
+export async function listProfileChunks(
+  id: number,
+  signal?: AbortSignal,
+): Promise<ProfileChunksResponse> {
+  return jsonFetch<ProfileChunksResponse>(`/v1/profiles/${id}/chunks`, { signal });
 }
 
 export { API_BASE_URL };

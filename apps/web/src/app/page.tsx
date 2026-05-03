@@ -22,9 +22,12 @@ export default async function HomePage() {
       <h1 className="text-3xl font-semibold">JobCopilot</h1>
       <p className="mt-2 text-muted">AI 求职副驾</p>
 
-      <div className="mt-8">
+      <div className="mt-8 flex flex-wrap gap-3">
         <Button asChild>
           <Link href="/jds/new">粘贴 JD</Link>
+        </Button>
+        <Button asChild variant="outline">
+          <Link href="/profiles/new">上传简历</Link>
         </Button>
       </div>
 

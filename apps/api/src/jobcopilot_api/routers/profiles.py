@@ -183,6 +183,13 @@ def _list_item(profile: Profile) -> ProfileListItem:
 async def _detail(session: AsyncSession, profile: Profile) -> ProfileDetail:
     exps, projs, skills, edus = await get_children(session, profile_id=profile.id)
     structured = _structured_from_rows(profile, exps, projs, skills, edus)
+    chunks_count = (
+        await session.execute(
+            sa.select(sa.func.count())
+            .select_from(ProfileChunk)
+            .where(ProfileChunk.profile_id == profile.id)
+        )
+    ).scalar_one()
     return ProfileDetail(
         id=profile.id,
         source=ProfileSource(profile.source),
@@ -200,6 +207,7 @@ async def _detail(session: AsyncSession, profile: Profile) -> ProfileDetail:
             projects=len(projs),
             skills=len(skills),
             educations=len(edus),
+            chunks=chunks_count,
         ),
         created_at=profile.created_at,
         updated_at=profile.updated_at,
