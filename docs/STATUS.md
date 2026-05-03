@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-03 — M1 进行中,S0.5/S1-S7 已 push;S8 进行中(C1+C2+C3 已 push,C4 待开工)
+last_updated: 2026-05-03 — M1 进行中,S0.5/S1-S8 已落地待 push;S9 待开工
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -19,30 +19,24 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | S5   | 前端:JD 粘贴页 + 结构化结果可视化 + 编辑保存(同步,SSE / 列表延后) | ✅ |
 | S6   | `evals/suites/jd_extract` MVP(13 条 + 4 指标)+ promptfoo CI workflow_dispatch only | ✅ |
 | S7   | ProfileParserAgent + `/v1/profiles/parse` SSE + 5 表写入 + 409 dup user / 软删可重建 | ✅ |
-| S8   | Chunking 纯函数 + Embedding(text-embedding-v4)+ `/rechunk` | pending |
+| S8   | Chunking 纯函数 + Embedding(text-embedding-v4)+ `/rechunk` + `/chunks` + parse SSE 接 chunk | ✅ |
 | S9   | 前端:简历上传 + 表单 + chunks 可视化(调试) | pending |
 | S10  | `evals/suites/profile_extract` 30 条 + chunk 召回断言 | pending |
 | S11  | 1 名志愿者 dogfood + bad case 修复(**Week 3 末 DoD**) | pending |
 
-**当前 working tree**:干净,与 origin/main 同步。检查领先量:`git log origin/main..main --oneline | wc -l`。
+**当前 working tree**:S8 改动 untracked,待 push。检查领先量:`git log origin/main..main --oneline | wc -l`。
 
-**当前闸门**(S7 完成):本地必须跑 CI 等价命令——后端 `uv run --project apps/api {ruff check . / ruff format --check . / mypy apps/api/src apps/api/tests}`(注意 mypy 含 tests 路径,且不带 `--strict`)+ `pytest --cov` 238 passed @ 97.70% + `alembic upgrade head` → 0009;前端 `pnpm install --frozen-lockfile && pnpm lint && pnpm --filter @jobcopilot/web typecheck && pnpm --filter @jobcopilot/schemas typecheck`;evals `pnpm eval:jd` 13 条 case_pass=2/13(数字写入 `reports/jd-latest.json`)。
+**当前闸门**(S8 完成):本地必须跑 CI 等价命令——后端 `uv run --project apps/api {ruff check . / ruff format --check . / mypy apps/api/src apps/api/tests}`(注意 mypy 含 tests 路径,且不带 `--strict`)+ `pytest --cov` 310 passed @ 93.65% + `alembic upgrade head` → 0009(未新增 revision);前端 `pnpm install --frozen-lockfile && pnpm lint && pnpm --filter @jobcopilot/web typecheck && pnpm --filter @jobcopilot/schemas typecheck`;evals `pnpm eval:jd` 13 条 case_pass=2/13(数字写入 `reports/jd-latest.json`)。
 
 > 2026-05-01 LLM Provider 由 DeepSeek V4 切换到阿里云百炼 Qwen3.6,见 ADR-0003。ADR-0001 复审条件 1(余额 < ¥1)触发时回切。
 
-## 下一刀:S8 规划(已锁,可开工 C1)
+## 下一刀:S9 前端
 
-**边界**:① ChunkBuilder 纯函数(5 表 ORM → ChunkInput,规则照 5-AGENT_DESIGN.md §4.7);② Embedder 抽象(Protocol + DashscopeEmbedder + DummyEmbedder);③ ProfileChunk ORM(表 0005 已建);④ `chunk_service.rebuild_for_profile`(embedder 在事务外,DELETE+bulk INSERT 在单事务);⑤ `POST /v1/profiles/{id}/rechunk`(SSE)+ `GET /chunks`;⑥ `profile_service.run_parse` 末段接 chunk_service;⑦ `api.ts` 同步。
+**边界**:① 简历 PDF 上传组件(沿用 S5 文件上传模式 + S3 `/v1/files`);② 文本粘贴入口;③ `/profiles/parse` SSE 接入(start → chunking_embedding → result/done 4 阶段进度条);④ profile detail 页(experience / project / skill / education 4 列表 + edit);⑤ `/profiles/{id}/chunks` 调试视图(列出每个 chunk 的 granularity + content + embed_model,折叠态);⑥ patch + 触发 `/rechunk` 按钮;⑦ 错误 UI(409 dup user → 引导 "DELETE 旧的再传")。
 
-**已锁决策**:模型 `text-embedding-v4`(0.0005 元/千 tokens,Qwen3-Embedding 系列)/ 维度 1024(显式传 `dimensions=1024`)/ batch ≤ 10(客户端预检)/ Embedder 复用 OpenAI client + base_url(同 DashscopeProvider)/ `metadata.chunker_version="v1"`(不进 prompt_versions)/ DummyEmbedder = sha256→1024 维 + L2 normalize / 错误沿用 S2 LLM* 体系 / 流控 L1 基础重试(单 profile 5-20 请求 < 1s < 30 RPS,不撞限流)。
+**复用**:S5 jds 页结构(Tailwind v4 / shadcn / `<Link as={Route}>` / openapi-typescript enum import);api.ts 已含 ProfileChunkItem / ProfileChunksResponse(S8 C6)。
 
-**百炼 embedding 关键参数**:OpenAI 兼容端点 `/compatible-mode/v1/embeddings`;中国内地 30 RPS / 1.2M TPM(仅输入);单行上限 8192 tokens;429 三子码(`Throttling.{RateQuota/AllocationQuota/BurstRate}`)沿用 `LLMUpstreamError(429)` 映射。
-
-**不做**:embedding 不写 `llm_calls`(→ M2);max_tokens 修复(→ M2);前端可视化(→ S9);召回断言(→ S10);备选模型 fallback / 客户端节流 / 拥塞控制(→ M3+)。
-
-**C1-C6 切分**:① ChunkBuilder + unit test ✅;② Embedder Protocol + Dummy + Dashscope ✅(dry-run 用文档 + OpenAI SDK 抽象 + 同 base_url 项目已跑通三重证据替代,live curl 推到 C4 集成测试一并验);③ ProfileChunk ORM + schemas ✅;④ chunk_service + service test(DummyEmbedder + testcontainers)— **下一刀**;⑤ routers + ProfileParser 接 chunk + 集成 test;⑥ `api.ts` 同步 + 归档卡 `slices/S8-chunks.md`。
-
-**DoD**:pytest ≥ 270 passed,cov ≥ 70% / `agents/chunker.py` ≥ 80%;alembic 不新增 revision(0009 已含表);`/rechunk` 在 Dummy 下端到端通;`/profiles/parse` SSE 末段含 `chunking_embedding`;`api.ts` 同步进 repo。
+**不做**:用户多简历版本管理(→ M3);前端单测(→ M5);chunks 向量可视化(→ M3+ retrieval debug)。
 
 ---
 
@@ -74,6 +68,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 - [S5 前端 JD 闭环](slices/S5-jds-frontend.md) — Tailwind v4 + shadcn / `/jds/new` + `/jds/[id]` / X-User-Id
 - [S6 评测 baseline + salary_months 全栈](slices/S6-jd_extract.md) — promptfoo + 13 boss / Qwen3.6 多模态 / prompt v1.0.1 / 11 处协同
 - [S7 ProfileParser + 5 表写入](slices/S7-profiles.md) — 子表 DELETE+INSERT / skill 去重 / 409 dup / 软删 partial unique 修复
+- [S8 Chunking + Embedding + /rechunk](slices/S8-chunks.md) — 5 表 → ChunkInput → 1024 维 / embed 在事务外 / parse SSE 末段 best-effort 接 chunk
 
 ---
 
@@ -103,6 +98,8 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 12. **DashScope 评测 provider 必须显式关 thinking** [S6]——promptfooconfig 加 `config.passthrough.enable_thinking: false`,否则 qwen3.6-flash 默认 reasoning 拼进 content + 截 max_tokens → schema_invalid。生产走 CHEAP tier(thinking_mode=False),评测对齐。
 13. **每用户单例资源用 partial unique index** [S7]——`UNIQUE (user_id) WHERE deleted_at IS NULL`(`uq_profiles_user_id` / `uq_files_user_sha256` 模式)。普通 UNIQUE 会让"软删 → 重建"流程被旧软删行卡住;ORM 层不要写 `UniqueConstraint("user_id")`(语义不匹配)。
 14. **`packages/schemas/src/api.ts` 是 commit 进 repo 的生成产物** [S7 CI 修]——不要重新放进 `.gitignore`(`index.ts` 直接 re-export `./api`,gitignored 会让 lint CI 拿不到 typecheck;`type-sync.yml` 只 PR 跑,push CI 不会重生)。后端加/改路由后流程:① 本地 `uv run --project apps/api python -c "import json; from jobcopilot_api.main import app; print(json.dumps(app.openapi(), ensure_ascii=False))" > /tmp/openapi.json` ② `OPENAPI_FILE=/tmp/openapi.json pnpm --filter @jobcopilot/schemas gen` ③ `git add packages/schemas/src/api.ts` 跟代码一起 commit。drift 由 PR 上 `type-sync.yml` 兜底。
+15. **SSE 副作用编排在 router 而非 service** [S8]——"X 完成顺带做 Y"(parse 后接 chunk 这种)放在 SSE generator 里串调,不要让 service 的 `run_X` 再吞 Y。理由:① 加返回元素破坏既有 caller(`create_and_parse` 的测试 / JD 路径对称);② best-effort 失败语义(parse 不回滚,只 emit warning event)在 router 才能精细表达;③ service 层失败语义统一 raise,router 层才能区分"硬失败 error → done(ok=false)"vs"软失败 chunking_embedding{ok:false} → result → done(ok=true)"。
+16. **embed/IO 在事务外,DB 写在单事务** [S8]——`rebuild_for_profile` 模板:① 读(short tx)② 纯函数 build ③ 慢 IO(无事务)④ DELETE+bulk INSERT(单事务)。绝不 hold PG connection 跨 LLM 调用。后续 retrieval / draft 等需要"读 → LLM → 写"的副作用都套这个分层。
 
 ---
 
