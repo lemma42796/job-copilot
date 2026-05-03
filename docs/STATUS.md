@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-03 (M1 进行中:S0.5/S1/S2/S3/S4/S5 已 push;S6 完成 baseline 跑通 case_pass=2/13 / 4 metric 数字就绪 / dataset 13 条真实 boss / JDParser prompt v1.0.1;本地领先 origin/main 2 commit;下一刀:S7 ProfileParserAgent)
+last_updated: 2026-05-03 (M1 进行中:S0.5/S1/S2/S3/S4/S5/S6 全部已 push;S6 baseline case_pass=2/13 / 4 metric 数字就绪 / dataset 13 条真实 boss / JDParser prompt v1.0.1;下一刀:S7 ProfileParserAgent)
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -26,7 +26,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 ## 当前 working tree 状态
 
-**本地领先 origin/main 2 commit**(S6 脚手架旧 commit + 即将 commit 的 S6 完成本体)。检查领先量:`git log origin/main..main --oneline | wc -l`。
+干净,与 `origin/main` 同步(`1d6d827` S6 收尾 commit 已 push)。检查领先量:`git log origin/main..main --oneline | wc -l`。
 
 ## S6 baseline(13 条 boss,qwen3.6-flash + JDParser prompt v1.0.1)
 
