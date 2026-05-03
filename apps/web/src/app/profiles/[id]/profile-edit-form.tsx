@@ -307,7 +307,7 @@ function ListSection<T>({
         <CardTitle className="text-base">
           {title} <span className="text-xs text-muted">({items.length})</span>
         </CardTitle>
-        <CardDescription>S9 第一刀只读;后续支持编辑</CardDescription>
+        <CardDescription>当前只读,编辑能力后续切片再开</CardDescription>
       </CardHeader>
       <CardContent>
         {items.length === 0 ? (

@@ -1,6 +1,10 @@
 'use client';
 
-import { JDStructuredSalary_period } from '@jobcopilot/schemas';
+import {
+  JDStructuredEducation,
+  JDStructuredJob_level,
+  JDStructuredSalary_period,
+} from '@jobcopilot/schemas';
 import * as React from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -17,6 +21,9 @@ type EditableState = {
   salary_min: string;
   salary_max: string;
   salary_months: string;
+  years_required: string;
+  job_level: '' | JDStructuredJob_level;
+  education: '' | JDStructuredEducation;
   description: string;
 };
 
@@ -28,6 +35,9 @@ function detailToEditable(jd: JDDetail): EditableState {
     salary_min: jd.salary_min == null ? '' : String(jd.salary_min),
     salary_max: jd.salary_max == null ? '' : String(jd.salary_max),
     salary_months: jd.salary_months == null ? '' : String(jd.salary_months),
+    years_required: jd.years_required == null ? '' : String(jd.years_required),
+    job_level: (jd.job_level as JDStructuredJob_level | null) ?? '',
+    education: (jd.education as JDStructuredEducation | null) ?? '',
     description: jd.description ?? '',
   };
 }
@@ -51,9 +61,9 @@ function buildStructured(jd: JDDetail, edits: EditableState): JDStructured {
     salary_max: toInt(edits.salary_max),
     salary_period: salaryPeriod,
     salary_months: toInt(edits.salary_months),
-    job_level: jd.job_level as JDStructured['job_level'],
-    years_required: jd.years_required,
-    education: jd.education as JDStructured['education'],
+    job_level: edits.job_level === '' ? null : edits.job_level,
+    years_required: toInt(edits.years_required),
+    education: edits.education === '' ? null : edits.education,
     hard_skills: jd.hard_skills,
     soft_skills: jd.soft_skills,
     bonus_skills: jd.bonus_skills,
@@ -62,6 +72,17 @@ function buildStructured(jd: JDDetail, edits: EditableState): JDStructured {
     confidence: Number(jd.parse_confidence ?? '0'),
   };
 }
+
+const SELECT_CLASS =
+  'flex h-9 w-full rounded-md border border-border bg-input px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50';
+
+const JOB_LEVEL_LABEL: Record<JDStructuredJob_level, string> = {
+  [JDStructuredJob_level.intern]: '实习',
+  [JDStructuredJob_level.junior]: '初级',
+  [JDStructuredJob_level.middle]: '中级',
+  [JDStructuredJob_level.senior]: '高级',
+  [JDStructuredJob_level.lead]: '专家 / Lead',
+};
 
 function StatusBadge({ status }: { status: JDDetail['status'] }) {
   const map: Record<JDDetail['status'], { label: string; className: string }> = {
@@ -219,6 +240,52 @@ export function JdEditForm({ jd }: { jd: JDDetail }) {
                 />
               </div>
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="years_required">经验年数</Label>
+              <Input
+                id="years_required"
+                type="number"
+                inputMode="numeric"
+                placeholder="如 3"
+                value={form.years_required}
+                onChange={(e) => update('years_required', e.target.value)}
+                disabled={saving}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="job_level">职级</Label>
+              <select
+                id="job_level"
+                className={SELECT_CLASS}
+                value={form.job_level}
+                onChange={(e) => update('job_level', e.target.value as EditableState['job_level'])}
+                disabled={saving}
+              >
+                <option value="">未指定</option>
+                {Object.values(JDStructuredJob_level).map((v) => (
+                  <option key={v} value={v}>
+                    {JOB_LEVEL_LABEL[v]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="education">学历</Label>
+              <select
+                id="education"
+                className={SELECT_CLASS}
+                value={form.education}
+                onChange={(e) => update('education', e.target.value as EditableState['education'])}
+                disabled={saving}
+              >
+                <option value="">未指定</option>
+                {Object.values(JDStructuredEducation).map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -249,7 +316,7 @@ export function JdEditForm({ jd }: { jd: JDDetail }) {
         <Card>
           <CardHeader>
             <CardTitle className="text-base">技能</CardTitle>
-            <CardDescription>S5 第一刀只读;后续支持编辑</CardDescription>
+            <CardDescription>当前只读,编辑能力后续切片再开</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <SkillList title="硬技能" skills={currentJd.hard_skills} />
