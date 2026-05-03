@@ -1,6 +1,6 @@
 # JobCopilot
 
-> **AI 求职副驾**——给 1-3 年跳槽开发者的 LLM 应用工程化代表作。
+> **AI 求职助手**——给 1-3 年跳槽开发者的 LLM 应用工程化代表作。
 >
 > 一行 `docker compose up` 启动,本地优先,数据不出机器。
 
@@ -61,7 +61,7 @@ JobCopilot 把"找一份更好工作"拆成可被 LLM Agent 处理的一连串�
 | **反幻觉** | ResumeReviewer 对抗集 fabrication recall ≥ 0.95 | `6-EVAL_PLAN §8` |
 | **评测体系** | 200 条评测集 + LLM-as-Judge + GitHub Actions 不退化 | `6-EVAL_PLAN` |
 | **成本工程** | Tier 路由 + Prompt Cache(命中率 ≥ 70% 简历定制场景)| `2-TECH_DESIGN §4.3` |
-| **多模态** | `qwen3.6-vl-flash` 直接 OCR + 抽取一步完成 | `5-AGENT_DESIGN §3` |
+| **多模态** | `qwen3.6-flash` 原生多模态,直接 OCR + 抽取一步完成 | `5-AGENT_DESIGN §3` |
 | **MCP Server** | 5 工具 + 1 资源,接 Claude Desktop | `7-ROADMAP M5` |
 | **可观测** | Langfuse 自托管 trace,每次响应附 `X-Langfuse-Trace-Id` | `2-TECH_DESIGN §6` |
 | **本地优先** | docker compose 一键起 + BYOK,数据不出机器 | `1-PRD §5.3` |
@@ -145,7 +145,7 @@ DEEPSEEK_API_KEY=sk-xxx
 | 结构化输出 / Function Calling | Pydantic Schema + JSON Schema 强约束 | `4-API_SPEC §1.2` / `5-AGENT_DESIGN §1.4` |
 | 评测体系 / Eval-as-Code | 200 条评测集 + promptfoo + CI 不退化 | `6-EVAL_PLAN` / `evals/` |
 | LLM-as-Judge | qwen3.6-plus 思考开,Cohen's kappa ≥ 0.7 季度复审 | `6-EVAL_PLAN §6.3,§13.2` |
-| 多模态 LLM(OCR / 视觉)| `qwen3.6-vl-flash` 一步出结构化 JD | `5-AGENT_DESIGN §3.4` |
+| 多模态 LLM(OCR / 视觉)| `qwen3.6-flash` 原生多模态,一步出结构化 JD | `5-AGENT_DESIGN §3.4` |
 | 流式协议 / 长任务 SSE | EventSource + node_started/token/result/done 事件协议 | `4-API_SPEC §5` |
 | Prompt Cache 成本工程 | Tier 路由 + 前缀稳定布局,缓存命中 ≥ 70% | `2-TECH_DESIGN §4.3` |
 | 多 Provider 抽象层 | LLMProvider Protocol + Qwen / DeepSeek 双实现 | `2-TECH_DESIGN §4` / `apps/api/llm/` |

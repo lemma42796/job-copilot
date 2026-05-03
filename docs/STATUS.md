@@ -54,6 +54,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 10. **`.github/workflows/eval.yml` 启用 push/PR trigger**(取消注释 + 配 GitHub Secret `DASHSCOPE_API_KEY_EVAL`,见 EVAL_PLAN §10.5)。
 11. **embedding `DataInspectionFailed` 观察**(S8 规划期暴露)— 跑 30+ profile dataset 时若有命中,需对 chunker 加内容脱敏或 retry-skip 策略。
 12. **embedding 写 `llm_calls` 表统一**(S8 规划期暴露)— S8 阶段只 structlog 打印 embedding token + cost;M2 把 schema 通用化(加 `kind` 枚举或拆表)。
+13. **前端 JD 列表页 + 全局导航**(S5 起"列表延后"的兑现)— 调现成 `GET /jds`(cursor 分页已就位),提供卡片列表 / 进入详情 / 删除;同时补简历列表入口与首页导航。M2 起匹配场景需"选哪份 JD",列表才真正有产品意义。
 
 ---
 
@@ -103,6 +104,8 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 16. **embed/IO 在事务外,DB 写在单事务** [S8]——`rebuild_for_profile` 模板:① 读(short tx)② 纯函数 build ③ 慢 IO(无事务)④ DELETE+bulk INSERT(单事务)。绝不 hold PG connection 跨 LLM 调用。后续 retrieval / draft 等需要"读 → LLM → 写"的副作用都套这个分层。
 17. **LLM 抽出来的日期可能是 partial(`YYYY` / `YYYY-MM`)** [S9 LLM 实测暴露]——简历原文常写「2020-01 至今」「2016-2020」,Pydantic `date` 不收;统一用 `PartialDate = Annotated[date \| None, BeforeValidator(_pad_partial_date)]`(`schemas/profiles.py`)兜底,缺位补 `01` 落库。**前端按精度截断显示**:简历日期 → `YYYY-MM`(`profile-edit-form.tsx:fmtMonth`)。后续 JD 解析 / 面试反馈 / 简历定制等任何 LLM 抽出来的 date 字段一律用 `PartialDate`,不要直接 `date | None`。
 18. **SSE 前端要走 fetch + ReadableStream,不能用 EventSource** [S9]——`EventSource` 不支持自定义 header(`X-User-Id` 没法塞),且只能 GET。统一走 `lib/sse.ts:streamSse<TFrame>()` = fetch + `body.getReader()` + TextDecoder + 手解 SSE 帧(`\n\n` 边界)。M5+ 换成 JWT cookie 后可以重新评估,但 POST + SSE 永远过不了 EventSource。
+19. **模型 ID 唯一锁定 `qwen3.6-flash`** [S6 教训,2026-05-03 全仓修齐]——文本/PDF/图片**全走同一个模型**(Qwen3.6 主模型已合并 VL,无需独立 vl 档);embedding 走 `text-embedding-v4`。**禁止再写**:`qwen3.6-vl-flash`(规划名,百炼实际无)/ `qwen3-vl-flash`(Qwen3 时代旧名)/ `qwen-flash` / `qwen-plus` / `qwen-vl-max` 等通用名(不在项目锁定清单)。`lint.yml` 的 `model-id-lint` job 用 grep 兜底防回归;`docs/slices/` 下的历史归档卡作为踩坑记录保留旧名,grep 已 `--exclude-dir=slices`。
+20. **生产 UI 文案不暴露切片编号 / 内部命名** [S5/S9 老备注泄露,2026-05-03 修]——`<CardDescription>`、`<p>`、placeholder、错误文案、按钮 label 等**用户可见文本**里不要出现 `S5` / `S9` / `M1` / `第一刀` / `本切片` 等内部记号。开发期的"TODO / 只读 / 暂未支持"等提示,统一用无切片号的措辞(如"当前只读,编辑能力后续切片再开")。真正的 dev hint 走 `console.log` / `data-*` / 注释,绝不进 DOM。**审查时机**:每个前端切片 PR review 时 grep 一次 `\bS[0-9]+\b|第一刀|本切片`;后续可在 `lint.yml` 加 grep job 兜底(类比 19 条的 `model-id-lint`)。
 
 ---
 

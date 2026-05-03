@@ -154,7 +154,7 @@ class JDStructured(BaseModel):
 ### 3.4 模型与配置
 
 - 文本/PDF 文本输入:`qwen3.6-flash`,关闭思考模式
-- 图片输入:`qwen3.6-vl-flash`(多模态),关闭思考模式
+- 图片输入:同样走 `qwen3.6-flash`(原生多模态),关闭思考模式
 - 强制输出格式:`response_format={"type": "json_schema", "json_schema": JDStructured.schema()}`
 - 温度:0.0(抽取任务无需创造性)
 

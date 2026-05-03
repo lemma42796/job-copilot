@@ -41,3 +41,22 @@ jobs:
       - run: pnpm lint
       - run: pnpm --filter @jobcopilot/web typecheck
       - run: pnpm --filter @jobcopilot/schemas typecheck
+
+  model-id-lint:
+    name: stale model id check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Forbid stale Qwen model IDs (see STATUS.md 永久约束 19)
+        run: |
+          set -e
+          if grep -rEn "qwen[0-9.\-]*vl[a-z\-]*|qwen-vl|qwen-plus|qwen-flash|qwen-max" \
+              --include="*.py" --include="*.md" --include="*.ts" --include="*.tsx" \
+              --include="*.yaml" --include="*.yml" --include="*.json" \
+              --exclude-dir=node_modules --exclude-dir=.next --exclude-dir=.venv \
+              --exclude-dir=__pycache__ --exclude-dir=slices \
+              --exclude=STATUS.md --exclude=lint.yml \
+              .; then
+            echo "::error::发现过时模型 ID。项目唯一模型是 qwen3.6-flash(详见 STATUS.md 永久约束 19)。docs/slices/ 已豁免(历史踩坑记录)。"
+            exit 1
+          fi

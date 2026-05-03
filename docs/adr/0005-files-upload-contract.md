@@ -228,7 +228,7 @@ S3 不调 LLM,本 ADR 不影响 ADR-0004 / `llm_calls` 表行为。
 ## 不在本 ADR 范围
 
 - PDF 文本抽取(S4)
-- 图片 OCR / qwen3.6-vl-flash(M1 末,STATUS Q4)
+- 图片 OCR / qwen3.6-flash 原生多模态(M1 末,STATUS Q4)
 - 单用户限流横切(M1 末)
 - 硬删 GC 后台任务(M3-M4)
 - 跨 user bytes 去重(隐私评估未做)

@@ -2,7 +2,7 @@
   "name": "jobcopilot",
   "version": "0.0.1",
   "private": true,
-  "description": "JobCopilot — AI 求职副驾(monorepo root)",
+  "description": "JobCopilot — AI 求职助手(monorepo root)",
   "license": "MIT",
   "engines": {
     "node": ">=20",

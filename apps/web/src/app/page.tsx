@@ -20,7 +20,10 @@ export default async function HomePage() {
   return (
     <main className="mx-auto max-w-3xl px-6 py-16">
       <h1 className="text-3xl font-semibold">JobCopilot</h1>
-      <p className="mt-2 text-muted">AI 求职副驾</p>
+      <p className="mt-2 text-muted">AI 求职助手</p>
+      <p className="mt-4 text-sm text-muted">
+        粘贴感兴趣的岗位 JD,再上传你的简历,即可得到匹配分析、能力差距与改进建议。
+      </p>
 
       <div className="mt-8 flex flex-wrap gap-3">
         <Button asChild>

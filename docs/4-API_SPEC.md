@@ -323,7 +323,7 @@ data: <json_payload>
 { "file_id": 123, "source": "pdf_upload" }
 ```
 
-> 图片入口(`source: "image_upload"`,走 `qwen3.6-vl-flash`)推迟到 M1 末(STATUS Q4 + ADR-0006 D1)。
+> 图片入口(`source: "image_upload"`,走 `qwen3.6-flash` 原生多模态)推迟到 M1 末(STATUS Q4 + ADR-0006 D1)。
 
 响应(同步,默认,201):
 

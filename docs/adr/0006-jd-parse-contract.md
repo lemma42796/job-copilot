@@ -35,7 +35,7 @@ S4 进入 M1"数据入口贯通"的第一条 LLM 抽取链路。ADR-0004 锁定�
 |---|---|---|
 | `text_paste` | `{ text: str }` | ✅ |
 | `pdf_upload` | `{ file_id: int }`(引用 S3 已上传的 `purpose=jd_pdf`) | ✅ |
-| `image_upload` | `{ image_b64 }` 或 `{ file_id }` 走 qwen3.6-vl-flash | ⏭ M1 末(STATUS Q4) |
+| `image_upload` | `{ image_b64 }` 或 `{ file_id }` 走 qwen3.6-flash 原生多模态 | ⏭ M1 末(STATUS Q4) |
 | `extension_paste` | 浏览器扩展粘贴 | ⏭ M5+ |
 
 理由:STATUS Q1 已决 PDF 工具为 `pypdfium2`;STATUS Q4 已决图片入口推迟;S3 D4 留好了 `purpose=jd_pdf`,S4 不接 file_id 等于浪费上一切片产出。
@@ -240,7 +240,7 @@ S4 是首个真实使用 LLM 的切片。LLMClient / DummyProvider / DBCallLogge
 
 1. dogfood 显示用户大量重复 parse 同一段 raw_text(浪费 cost)— D9 加去重
 2. evals(S6)显示 `confidence < 0.5` 误报多 / `title` 空判定误杀 — D8 阈值或字段调整
-3. 真实 PDF 简历 / JD 中扫描件比例显著(> 20%)— D10 提前上图片入口(qwen3.6-vl-flash),将本 ADR 范围扩到 image_upload
+3. 真实 PDF 简历 / JD 中扫描件比例显著(> 20%)— D10 提前上图片入口(qwen3.6-flash 原生多模态),将本 ADR 范围扩到 image_upload
 4. DashScope OpenAI compat 后续支持原生 token 流 — D4 SSE 事件可加 `token`(对前端展示有价值)
 
 ## 相关
@@ -258,7 +258,7 @@ S4 是首个真实使用 LLM 的切片。LLMClient / DummyProvider / DBCallLogge
 
 ## 不在本 ADR 范围
 
-- 图片 JD 入口 / qwen3.6-vl-flash(M1 末,STATUS Q4)
+- 图片 JD 入口 / qwen3.6-flash 原生多模态(M1 末,STATUS Q4)
 - POST `/v1/jds`(raw_text 占位,M4 投递追踪)
 - ProfileParserAgent / `/v1/profiles/parse`(S7,与本 ADR 同结构,届时另立 ADR-0007)
 - 投递归档 status `archived` ENUM 扩展(M4)

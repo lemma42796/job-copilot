@@ -172,7 +172,7 @@ curl http://localhost:8000/v1/health # ← {"status":"ok",...}
 
 | 风险 | 触发 | 回退 |
 |------|------|------|
-| qwen3.6-vl-flash 中文 OCR 抽取效果差 | `jd_extract` 图片子集 < 70% | 改为前置 PaddleOCR 抽取文本后再走 flash |
+| qwen3.6-flash 多模态 OCR 中文抽取效果差 | `jd_extract` 图片子集 < 70% | 前置 PaddleOCR 抽文本后再走 flash 文本输入 |
 | `text-embedding-v4` 中文召回不稳 | `profile_extract` chunk_retrieval < 80% | 切回 BGE-M3(SiliconFlow,加 1 个外部依赖)或回退 v3 |
 | 阿里云 ¥15 在 W3 末耗尽 | 触发 ADR-0003 复审条件 1 | 半天内切到 DeepSeek(等价 Tier 路由) |
 

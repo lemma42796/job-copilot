@@ -1,13 +1,12 @@
 /**
  * Screenshot → candidate dataset row.
  *
- * Two-pass pipeline:
- *   1. qwen-vl-max-latest reads the image and emits raw JD text
- *      (handles Chinese OCR + layout reconstruction)
- *   2. qwen-plus reads that text and emits JDStructured ground truth
- *      (uses a labelling-specific prompt distinct from the production
- *      JDParser prompt v1.0.0 — different prompt avoids baking JDParser's
- *      bias into ground truth)
+ * Two-pass pipeline (both stages call qwen3.6-flash, which is natively
+ * multimodal — Qwen3.6 已合并 VL,无需独立模型):
+ *   1. OCR pass: image → raw JD text (Chinese OCR + layout reconstruction)
+ *   2. Label pass: text → JDStructured ground truth, using a labelling-specific
+ *      prompt distinct from the production JDParser prompt v1.0.0 (avoids
+ *      baking JDParser's bias into ground truth)
  *
  * Output: one promptfoo Test JSONL line per image to stdout. Users review
  * and append to `suites/jd_extract/dataset.jsonl` after manual fixup
@@ -17,7 +16,7 @@
  * Usage:
  *   pnpm --filter @jobcopilot/evals run prep:screenshot raw/boss-001.png raw/boss-002.png
  *
- * Cost: roughly ¥0.05 per image (vl) + ¥0.02 (plus). 15 images ≈ ¥1.
+ * Cost: roughly ¥0.07 per image (OCR + label, both qwen3.6-flash). 15 images ≈ ¥1.
  */
 import { readFileSync } from 'node:fs';
 import { basename, extname } from 'node:path';

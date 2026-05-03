@@ -23,7 +23,7 @@ evals/
 │   ├── assertions.ts           # title_exact / hard_skill_f1 / salary_match
 │   └── dataset.jsonl           # 15 条样本(含 ground truth)
 ├── scripts/
-│   ├── from-screenshot.ts      # 截图 → 文本 + ground truth 候选(qwen-vl-max + qwen-plus)
+│   ├── from-screenshot.ts      # 截图 → 文本 + ground truth 候选(qwen3.6-flash 两阶段)
 │   └── synth-seed.ts           # 纯 LLM 合成 1-2 条临时种子(管道开发期用)
 ├── raw/                        # ★ gitignore — 你本地的截图
 └── reports/                    # ★ gitignore — 跑评测的 artifact
@@ -46,7 +46,7 @@ evals/
 
 1. 截图 Boss 上的 JD(或复制邮件 / LinkedIn 文本)放到 `evals/raw/`
 2. 跑 `pnpm --filter @jobcopilot/evals run prep:screenshot evals/raw/<file>.png`
-3. 脚本输出一行候选 jsonl(带 `qwen-vl-max` 转的文本 + `qwen-plus` 抽的 ground truth)
+3. 脚本输出一行候选 jsonl(`qwen3.6-flash` 两阶段:OCR 转的文本 + 标注 prompt 抽的 ground truth)
 4. **人工核对**这一行(改公司名占位、改错的 ground truth 字段),确认后追加到 `suites/jd_extract/dataset.jsonl`
 5. 本地跑 `pnpm run eval:jd` 验证仍通过
 
@@ -62,10 +62,10 @@ evals/
 
 ## 接口
 
-走 DashScope OpenAI 兼容模式调 `qwen-flash`(评测目标模型,Tier=CHEAP):
+走 DashScope OpenAI 兼容模式调 `qwen3.6-flash`(评测目标模型,Tier=CHEAP):
 
 ```yaml
-provider: openai:chat:qwen-flash
+provider: openai:chat:qwen3.6-flash
 apiBaseUrl: https://dashscope.aliyuncs.com/compatible-mode/v1
 temperature: 0
 seed: 42

@@ -191,7 +191,7 @@ related:
 | Embedding | 百炼 `text-embedding-v4`(1024 维) | BGE-M3 via SiliconFlow / OpenAI text-embedding-3 | 与 Qwen3.6 同生态,百炼一站到位,免外部依赖;v4 单价 0.0005 元/千 tokens(v3 是 0.0007),Qwen3-Embedding 系列 |
 | Reranker | bge-reranker-v2-m3 via API | 本地推理 | 远端调用避免本地依赖,~2ms 延迟可接受 |
 | PDF 解析 | MinerU | Unstructured / PyMuPDF | 中文版面分析能力最强,对简历表格/段落识别准确 |
-| 多模态 OCR | `qwen3.6-vl-flash` | PaddleOCR + 后处理 | 2026 年多模态 LLM OCR 已优于传统管线,且与主 Provider 同生态 |
+| 多模态 OCR | `qwen3.6-flash`(原生多模态) | PaddleOCR + 后处理 | 2026 年多模态 LLM OCR 已优于传统管线,且与主 Provider 同生态;Qwen3.6 主模型已合并 VL,无需独立模型 |
 | 前端框架 | Next.js 15(App Router) | Vite + React Router / Remix | RSC + 流式 + Vercel AI SDK 一体化,SEO 友好 |
 | 前端 UI | Tailwind 4 + shadcn/ui | Ant Design / MUI | 设计系统轻量、可定制 |
 | 前端状态 | TanStack Query + Zustand | Redux / Jotai | Query 管 server state,Zustand 管 ui state,职责清晰 |
@@ -489,7 +489,7 @@ services:
 **问题**:JD 来源多样(文本/截图/PDF),格式不一,公司名/薪资/技能词五花八门。
 
 **方案**:
-- 多模态输入管道:文本 → 直接 LLM;PDF → MinerU 抽取文本;图片 → `qwen3.6-vl-flash` 直接 OCR + 抽取一步完成
+- 多模态输入管道:文本 → 直接 LLM;PDF → MinerU 抽取文本;图片 → `qwen3.6-flash` 原生多模态,直接 OCR + 抽取一步完成
 - Pydantic Schema + Function Calling 强约束输出
 - 技能词归一化字典(`LangChain` / `langchain` / `Lang Chain` → `langchain`)
 - 失败兜底:抽取置信度低时返回 raw text + 部分字段,允许用户手填
