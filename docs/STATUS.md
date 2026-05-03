@@ -26,7 +26,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 **当前 working tree**:干净,与 origin/main 同步。检查领先量:`git log origin/main..main --oneline | wc -l`。
 
-**当前闸门**(S7 完成):后端 ruff/mypy 全绿、`pytest --cov` 238 passed @ 97.70%、`alembic upgrade head` → 0009;前端 typecheck/lint/build ✓ 4 路由;evals `pnpm eval:jd` 13 条 case_pass=2/13(数字写入 `reports/jd-latest.json`)。
+**当前闸门**(S7 完成):本地必须跑 CI 等价命令——后端 `uv run --project apps/api {ruff check . / ruff format --check . / mypy apps/api/src apps/api/tests}`(注意 mypy 含 tests 路径,且不带 `--strict`)+ `pytest --cov` 238 passed @ 97.70% + `alembic upgrade head` → 0009;前端 `pnpm install --frozen-lockfile && pnpm lint && pnpm --filter @jobcopilot/web typecheck && pnpm --filter @jobcopilot/schemas typecheck`;evals `pnpm eval:jd` 13 条 case_pass=2/13(数字写入 `reports/jd-latest.json`)。
 
 > 2026-05-01 LLM Provider 由 DeepSeek V4 切换到阿里云百炼 Qwen3.6,见 ADR-0003。ADR-0001 复审条件 1(余额 < ¥1)触发时回切。
 
@@ -84,6 +84,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 11. **Parser prompt 升级 promote 4 步** [S6]——① 写 `prompts/<agent>/vX.Y.Z.j2` SYSTEM/USER 双段;② router `PROMPT_KEY` 改新版本;③ 测试 fixture 版本号同步;④ 启动 lifespan 自动 upsert,旧版本保留 history。
 12. **DashScope 评测 provider 必须显式关 thinking** [S6]——promptfooconfig 加 `config.passthrough.enable_thinking: false`,否则 qwen3.6-flash 默认 reasoning 拼进 content + 截 max_tokens → schema_invalid。生产走 CHEAP tier(thinking_mode=False),评测对齐。
 13. **每用户单例资源用 partial unique index** [S7]——`UNIQUE (user_id) WHERE deleted_at IS NULL`(`uq_profiles_user_id` / `uq_files_user_sha256` 模式)。普通 UNIQUE 会让"软删 → 重建"流程被旧软删行卡住;ORM 层不要写 `UniqueConstraint("user_id")`(语义不匹配)。
+14. **`packages/schemas/src/api.ts` 是 commit 进 repo 的生成产物** [S7 CI 修]——不要重新放进 `.gitignore`(`index.ts` 直接 re-export `./api`,gitignored 会让 lint CI 拿不到 typecheck;`type-sync.yml` 只 PR 跑,push CI 不会重生)。后端加/改路由后流程:① 本地 `uv run --project apps/api python -c "import json; from jobcopilot_api.main import app; print(json.dumps(app.openapi(), ensure_ascii=False))" > /tmp/openapi.json` ② `OPENAPI_FILE=/tmp/openapi.json pnpm --filter @jobcopilot/schemas gen` ③ `git add packages/schemas/src/api.ts` 跟代码一起 commit。drift 由 PR 上 `type-sync.yml` 兜底。
 
 ---
 
