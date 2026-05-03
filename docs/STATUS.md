@@ -26,7 +26,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 **当前 working tree**:S10 改动 untracked,待 commit & push。续作前检查:`git status --short && git log origin/main..main --oneline | wc -l`。
 
-**当前闸门**(S10 完成):本地必须跑 CI 等价命令——后端 `uv run --project apps/api {ruff check . / ruff format --check . / mypy apps/api/src apps/api/tests}` + `pytest -q` **315 passed** + `alembic upgrade head` → 0009(未新增 revision);前端 `pnpm install --frozen-lockfile && pnpm lint && pnpm --filter @jobcopilot/web typecheck && pnpm --filter @jobcopilot/schemas typecheck && pnpm --filter @jobcopilot/web build`;evals `pnpm eval:jd` 13 条 case_pass=2/13;**`pnpm eval:profile` 11 条 case_pass=11/11**(schemaValid=1.0 / experienceRecall=1.0 / skillF1=0.988 / chunkRecall=1.0 / 50k tokens / 24s)。
+**当前闸门**(S10 完成):本地必须跑 CI 等价命令——后端 `uv run --project apps/api {ruff check . / ruff format --check . / mypy apps/api/src apps/api/tests}` + `pytest -q` **315 passed** + `alembic upgrade head` → 0009(未新增 revision);前端/全仓 `pnpm install --frozen-lockfile && pnpm lint && pnpm --filter @jobcopilot/web typecheck && pnpm --filter @jobcopilot/schemas typecheck && pnpm --filter @jobcopilot/web build`(**`pnpm lint` = 根 biome,扫 monorepo 全部 .ts/.tsx/.json/.yaml,包括 evals/——任何包加 .ts/.json 后必须本地跑一次,S10 漏跑导致 6df7459 fixup**);evals `pnpm eval:jd` 13 条 case_pass=2/13;**`pnpm eval:profile` 11 条 case_pass=11/11**(schemaValid=1.0 / experienceRecall=1.0 / skillF1=0.988 / chunkRecall=1.0 / 50k tokens / 24s)。
 
 > 2026-05-01 LLM Provider 由 DeepSeek V4 切换到阿里云百炼 Qwen3.6,见 ADR-0003。ADR-0001 复审条件 1(余额 < ¥1)触发时回切。
 
