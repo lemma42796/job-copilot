@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-03 — M1 进行中,S0.5/S1-S7 已 push;S8 规划已对齐(等 v3/v4 拍板开工)
+last_updated: 2026-05-03 — M1 进行中,S0.5/S1-S7 已 push;S8 进行中(C1+C2+C3 已 push,C4 待开工)
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -19,7 +19,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | S5   | 前端:JD 粘贴页 + 结构化结果可视化 + 编辑保存(同步,SSE / 列表延后) | ✅ |
 | S6   | `evals/suites/jd_extract` MVP(13 条 + 4 指标)+ promptfoo CI workflow_dispatch only | ✅ |
 | S7   | ProfileParserAgent + `/v1/profiles/parse` SSE + 5 表写入 + 409 dup user / 软删可重建 | ✅ |
-| S8   | Chunking 纯函数 + Embedding(text-embedding-v3)+ `/rechunk` | pending |
+| S8   | Chunking 纯函数 + Embedding(text-embedding-v4)+ `/rechunk` | pending |
 | S9   | 前端:简历上传 + 表单 + chunks 可视化(调试) | pending |
 | S10  | `evals/suites/profile_extract` 30 条 + chunk 召回断言 | pending |
 | S11  | 1 名志愿者 dogfood + bad case 修复(**Week 3 末 DoD**) | pending |
@@ -30,19 +30,17 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 > 2026-05-01 LLM Provider 由 DeepSeek V4 切换到阿里云百炼 Qwen3.6,见 ADR-0003。ADR-0001 复审条件 1(余额 < ¥1)触发时回切。
 
-## 下一刀:S8 规划(已对齐,**等用户拍 v3 vs v4 后开工**)
+## 下一刀:S8 规划(已锁,可开工 C1)
 
 **边界**:① ChunkBuilder 纯函数(5 表 ORM → ChunkInput,规则照 5-AGENT_DESIGN.md §4.7);② Embedder 抽象(Protocol + DashscopeEmbedder + DummyEmbedder);③ ProfileChunk ORM(表 0005 已建);④ `chunk_service.rebuild_for_profile`(embedder 在事务外,DELETE+bulk INSERT 在单事务);⑤ `POST /v1/profiles/{id}/rechunk`(SSE)+ `GET /chunks`;⑥ `profile_service.run_parse` 末段接 chunk_service;⑦ `api.ts` 同步。
 
-**已锁决策**:维度 1024(显式传 `dimensions=1024`)/ batch ≤ 10(客户端预检)/ Embedder 复用 OpenAI client + base_url(同 DashscopeProvider)/ `metadata.chunker_version="v1"`(不进 prompt_versions)/ DummyEmbedder = sha256→1024 维 + L2 normalize / 错误沿用 S2 LLM* 体系 / 流控 L1 基础重试(单 profile 5-20 请求 < 1s < 30 RPS,不撞限流)。
+**已锁决策**:模型 `text-embedding-v4`(0.0005 元/千 tokens,Qwen3-Embedding 系列)/ 维度 1024(显式传 `dimensions=1024`)/ batch ≤ 10(客户端预检)/ Embedder 复用 OpenAI client + base_url(同 DashscopeProvider)/ `metadata.chunker_version="v1"`(不进 prompt_versions)/ DummyEmbedder = sha256→1024 维 + L2 normalize / 错误沿用 S2 LLM* 体系 / 流控 L1 基础重试(单 profile 5-20 请求 < 1s < 30 RPS,不撞限流)。
 
 **百炼 embedding 关键参数**:OpenAI 兼容端点 `/compatible-mode/v1/embeddings`;中国内地 30 RPS / 1.2M TPM(仅输入);单行上限 8192 tokens;429 三子码(`Throttling.{RateQuota/AllocationQuota/BurstRate}`)沿用 `LLMUpstreamError(429)` 映射。
 
-**待用户拍板**:**embedding 模型 v3 还是 v4**(推 v4:0.0005 vs 0.0007 元/千 tokens + 同 1024 维 + Qwen3-Embedding 系列)。拍板后改 `5-AGENT_DESIGN.md §4.7` (`text-embedding-vX`)同步。
-
 **不做**:embedding 不写 `llm_calls`(→ M2);max_tokens 修复(→ M2);前端可视化(→ S9);召回断言(→ S10);备选模型 fallback / 客户端节流 / 拥塞控制(→ M3+)。
 
-**C1-C6 切分**:① ChunkBuilder + unit test;② Embedder Protocol + Dummy + Dashscope(**开工前 curl `/embeddings` dry-run**,对齐永久约束「批量 LLM 前 dry-run」);③ ProfileChunk ORM + schemas;④ chunk_service + service test(DummyEmbedder + testcontainers);⑤ routers + ProfileParser 接 chunk + 集成 test;⑥ `api.ts` 同步 + 归档卡 `slices/S8-chunks.md`。
+**C1-C6 切分**:① ChunkBuilder + unit test ✅;② Embedder Protocol + Dummy + Dashscope ✅(dry-run 用文档 + OpenAI SDK 抽象 + 同 base_url 项目已跑通三重证据替代,live curl 推到 C4 集成测试一并验);③ ProfileChunk ORM + schemas ✅;④ chunk_service + service test(DummyEmbedder + testcontainers)— **下一刀**;⑤ routers + ProfileParser 接 chunk + 集成 test;⑥ `api.ts` 同步 + 归档卡 `slices/S8-chunks.md`。
 
 **DoD**:pytest ≥ 270 passed,cov ≥ 70% / `agents/chunker.py` ≥ 80%;alembic 不新增 revision(0009 已含表);`/rechunk` 在 Dummy 下端到端通;`/profiles/parse` SSE 末段含 `chunking_embedding`;`api.ts` 同步进 repo。
 

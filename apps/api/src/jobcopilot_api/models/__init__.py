@@ -8,6 +8,7 @@ from jobcopilot_api.models.jd import Jd
 from jobcopilot_api.models.llm_call import LlmCall
 from jobcopilot_api.models.profile import (
     Profile,
+    ProfileChunk,
     ProfileEducation,
     ProfileExperience,
     ProfileProject,
@@ -23,6 +24,7 @@ __all__ = [
     "Jd",
     "LlmCall",
     "Profile",
+    "ProfileChunk",
     "ProfileEducation",
     "ProfileExperience",
     "ProfileProject",

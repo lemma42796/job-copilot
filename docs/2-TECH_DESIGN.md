@@ -188,7 +188,7 @@ related:
 | 缓存 | 进程内 LRU + Postgres unlogged table | Redis | 同上,本地部署不引入额外服务 |
 | LLM SDK | OpenAI Python SDK(指向百炼兼容端点 `https://dashscope.aliyuncs.com/compatible-mode/v1`) | LangChain / LlamaIndex | 详见 ADR-0003(supersedes 0001) |
 | Agent 编排 | LangGraph 0.2+ | 自研 / CrewAI / AutoGen | 状态机抽象成熟,与 LangChain 解耦后体积可控 |
-| Embedding | 百炼 `text-embedding-v3`(1024 维) | BGE-M3 via SiliconFlow / OpenAI text-embedding-3 | 与 Qwen3.6 同生态,百炼一站到位,免外部依赖 |
+| Embedding | 百炼 `text-embedding-v4`(1024 维) | BGE-M3 via SiliconFlow / OpenAI text-embedding-3 | 与 Qwen3.6 同生态,百炼一站到位,免外部依赖;v4 单价 0.0005 元/千 tokens(v3 是 0.0007),Qwen3-Embedding 系列 |
 | Reranker | bge-reranker-v2-m3 via API | 本地推理 | 远端调用避免本地依赖,~2ms 延迟可接受 |
 | PDF 解析 | MinerU | Unstructured / PyMuPDF | 中文版面分析能力最强,对简历表格/段落识别准确 |
 | 多模态 OCR | `qwen3.6-vl-flash` | PaddleOCR + 后处理 | 2026 年多模态 LLM OCR 已优于传统管线,且与主 Provider 同生态 |

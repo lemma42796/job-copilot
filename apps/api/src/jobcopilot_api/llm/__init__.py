@@ -15,6 +15,13 @@ from jobcopilot_api.llm.client import (
     ProviderResponse,
 )
 from jobcopilot_api.llm.db_logger import DBCallLogger
+from jobcopilot_api.llm.embedders import (
+    DashscopeEmbedder,
+    DummyEmbedder,
+    Embedder,
+    EmbeddingResult,
+    embed_cost_for,
+)
 from jobcopilot_api.llm.errors import (
     LLMAuthError,
     LLMError,
@@ -29,6 +36,10 @@ __all__ = [
     "BaseLLMClient",
     "CallLogger",
     "DBCallLogger",
+    "DashscopeEmbedder",
+    "DummyEmbedder",
+    "Embedder",
+    "EmbeddingResult",
     "LLMAuthError",
     "LLMClient",
     "LLMError",
@@ -45,6 +56,7 @@ __all__ = [
     "ProviderResponse",
     "Tier",
     "cost_for",
+    "embed_cost_for",
     "price_table",
     "tier_to_model",
 ]

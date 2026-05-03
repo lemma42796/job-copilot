@@ -1,11 +1,16 @@
-"""Profile + child ORMs. DATA_MODEL §3.3-§3.7 / migrations 0004 + 0009.
+"""Profile + child ORMs. DATA_MODEL §3.3-§3.7 / migrations 0004 + 0005 + 0009.
 
 Per ADR-0005 D1 we never navigate FKs from Python (e.g. no
 `Profile.experiences` `relationship()`) — child queries always go
 through `select(ProfileExperience).where(profile_id == ...)`. DB-only
 FKs (CASCADE on parent delete) live in migration 0004.
 
-`profile_chunks` lives in S8 and is intentionally absent here.
+`ProfileChunk` (migration 0005) maps `content` + `embedding` (1024-dim
+pgvector) + `metadata` JSONB. The Python attribute is `chunk_metadata`
+because the bare name `metadata` collides with `DeclarativeBase.metadata`
+(class-level `MetaData` registry). The DB column name stays `metadata`.
+The DDL-only `content_tsv` (Postgres-computed tsvector for FTS) is
+intentionally absent from the ORM, mirroring the `Jd.search_tsv` pattern.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -53,6 +59,14 @@ SKILL_LEVEL_ENUM = postgresql.ENUM(
     "advanced",
     "expert",
     name="skill_level",
+    create_type=False,
+)
+CHUNK_GRANULARITY_ENUM = postgresql.ENUM(
+    "experience",
+    "project",
+    "skill",
+    "summary",
+    name="chunk_granularity",
     create_type=False,
 )
 
@@ -221,6 +235,40 @@ class ProfileEducation(Base, IDMixin):
     )
 
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ProfileChunk(Base, IDMixin):
+    __tablename__ = "profile_chunks"
+
+    profile_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    granularity: Mapped[str] = mapped_column(CHUNK_GRANULARITY_ENUM, nullable=False)
+    source_table: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    # `content_tsv` (DDL-computed tsvector) is intentionally omitted; FTS queries
+    # use raw `to_tsquery` against the column without ORM round-trip.
+
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024))
+
+    # DB column is `metadata`; Python attr renamed to dodge `DeclarativeBase.metadata`.
+    chunk_metadata: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        postgresql.JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+    )
+
+    embed_model: Mapped[str | None] = mapped_column(String(50))
+    embed_version: Mapped[str | None] = mapped_column(String(20))
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

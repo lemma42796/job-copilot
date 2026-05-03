@@ -154,7 +154,7 @@ curl http://localhost:8000/v1/health # ← {"status":"ok",...}
 |------|------|
 | `profile_chunks` 表 + 多粒度 chunk 策略实现 | 4h |
 | `ProfileParserAgent` + `/v1/profiles/parse` SSE | 6h |
-| Embedding 接入(`text-embedding-v3`)+ `pgvector` HNSW 索引 | 3h |
+| Embedding 接入(`text-embedding-v4`)+ `pgvector` HNSW 索引 | 3h |
 | 前端:简历上传 + 解析结果表单 + chunks 可视化(调试用) | 6h |
 | `evals/suites/profile_extract` 数据集 30 条 + 端到端 chunk 召回断言 | 6h |
 | 与 1 位志愿者 dogfood,收集第一波 bad cases | 2h |
@@ -173,7 +173,7 @@ curl http://localhost:8000/v1/health # ← {"status":"ok",...}
 | 风险 | 触发 | 回退 |
 |------|------|------|
 | qwen3.6-vl-flash 中文 OCR 抽取效果差 | `jd_extract` 图片子集 < 70% | 改为前置 PaddleOCR 抽取文本后再走 flash |
-| `text-embedding-v3` 中文召回不稳 | `profile_extract` chunk_retrieval < 80% | 切回 BGE-M3(SiliconFlow,加 1 个外部依赖) |
+| `text-embedding-v4` 中文召回不稳 | `profile_extract` chunk_retrieval < 80% | 切回 BGE-M3(SiliconFlow,加 1 个外部依赖)或回退 v3 |
 | 阿里云 ¥15 在 W3 末耗尽 | 触发 ADR-0003 复审条件 1 | 半天内切到 DeepSeek(等价 Tier 路由) |
 
 ---

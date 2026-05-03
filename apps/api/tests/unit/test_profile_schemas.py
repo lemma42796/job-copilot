@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from pydantic import ValidationError
 
 from jobcopilot_api.schemas.profiles import (
+    ProfileChunkItem,
+    ProfileChunksResponse,
     ProfileParseInput,
     ProfilePatchInput,
     ProfileSource,
@@ -83,3 +87,51 @@ def test_patch_input_accepts_partial_status_only() -> None:
     obj = ProfilePatchInput(status="parsed")
     assert obj.status == "parsed"
     assert obj.structured is None
+
+
+# ---------- ProfileChunk wire schemas ----------
+
+
+def _chunk_payload(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "id": 100,
+        "granularity": "experience",
+        "source_table": "profile_experiences",
+        "source_id": 10,
+        "content": "公司:ACME\n职位:SWE",
+        "embed_model": "text-embedding-v4",
+        "embed_version": "v1",
+        "metadata": {"chunker_version": "v1"},
+        "created_at": datetime(2026, 5, 3, tzinfo=UTC),
+        "updated_at": datetime(2026, 5, 3, tzinfo=UTC),
+    }
+    base.update(overrides)
+    return base
+
+
+def test_chunk_item_accepts_all_four_granularities() -> None:
+    for g in ("experience", "project", "skill", "summary"):
+        ProfileChunkItem.model_validate(_chunk_payload(granularity=g))
+
+
+def test_chunk_item_rejects_unknown_granularity() -> None:
+    with pytest.raises(ValidationError):
+        ProfileChunkItem.model_validate(_chunk_payload(granularity="education"))
+
+
+def test_chunk_item_allows_null_embed_model_and_version() -> None:
+    obj = ProfileChunkItem.model_validate(_chunk_payload(embed_model=None, embed_version=None))
+    assert obj.embed_model is None
+    assert obj.embed_version is None
+
+
+def test_chunk_item_does_not_expose_embedding_field() -> None:
+    """The 1024-dim float[] is intentionally absent from the wire shape."""
+    assert "embedding" not in ProfileChunkItem.model_fields
+
+
+def test_chunks_response_wraps_list_and_total() -> None:
+    items = [ProfileChunkItem.model_validate(_chunk_payload(id=i)) for i in (1, 2, 3)]
+    resp = ProfileChunksResponse(data=items, total=3)
+    assert resp.total == 3
+    assert [c.id for c in resp.data] == [1, 2, 3]

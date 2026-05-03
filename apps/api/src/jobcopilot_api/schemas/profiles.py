@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -207,3 +207,33 @@ class ProfilePatchInput(BaseModel):
     status: Literal["parsing", "parsed"] | None = None
     target_salary_min: int | None = None
     target_salary_max: int | None = None
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/profiles/{id}/chunks (S8 C5)
+# ---------------------------------------------------------------------------
+
+
+ChunkGranularity = Literal["experience", "project", "skill", "summary"]
+
+
+class ProfileChunkItem(BaseModel):
+    """One `profile_chunks` row. The 1024-dim `embedding` is intentionally
+    not exposed — the route is for debugging/visualization, not retrieval,
+    and shipping float[1024] per row blows up the payload."""
+
+    id: int
+    granularity: ChunkGranularity
+    source_table: str
+    source_id: int
+    content: str
+    embed_model: str | None
+    embed_version: str | None
+    metadata: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProfileChunksResponse(BaseModel):
+    data: list[ProfileChunkItem]
+    total: int

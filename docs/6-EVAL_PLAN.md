@@ -476,7 +476,7 @@ CI 启动:`docker compose -f docker-compose.eval.yml up -d` 后 `psql -f fixture
 
 ### 11.2 Embedding 缓存
 
-百炼 `text-embedding-v3` 输出确定(同输入同 vector,API 文档保证)。CI 缓存策略:
+百炼 `text-embedding-v4` 输出确定(同输入同 vector,API 文档保证)。CI 缓存策略:
 
 - 第一次运行写 `evals/cache/embeddings.parquet`
 - 后续 CI 读缓存,不再调 API

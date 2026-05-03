@@ -332,7 +332,7 @@ class ProfileStructured(BaseModel):
 解析完成后:
 
 1. 为每个 `experience` / `project` / `skill` / `summary` 各生成一个 chunk 文本
-2. 调用百炼 `text-embedding-v3`(1024 维)
+2. 调用百炼 `text-embedding-v4`(1024 维,显式传 `dimensions=1024`)
 3. 写入 `profile_chunks` 表
 
 Chunk 文本组装规则(伪代码):
