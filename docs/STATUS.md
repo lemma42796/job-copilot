@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-03 (M1 进行中:S0.5/S1/S2/S3/S4/S5/S6 全部已 push;S6 baseline case_pass=2/13 / 4 metric 数字就绪 / dataset 13 条真实 boss / JDParser prompt v1.0.1;下一刀:S7 ProfileParserAgent)
+last_updated: 2026-05-03 (M1 进行中:S0.5/S1/S2/S3/S4/S5/S6/S7 全部已 push;S7 ProfileParser + /v1/profiles SSE + 5 表写入 / migration 0009 / pytest 238 passed;下一刀:S8 Chunking + Embedding)
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -18,7 +18,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | S4   | JDParserAgent(文本 + PDF)+ `/v1/jds/parse` SSE + `/v1/jds` 读改删 + prompt_versions 闭环 | ✅ |
 | S5   | 前端:JD 粘贴页 + 结构化结果可视化 + 编辑保存(同步,SSE / 列表延后) | ✅ |
 | S6   | `evals/suites/jd_extract` MVP(13 条 + 4 指标 title/skill_f1/salary/salary_months)+ promptfoo CI workflow_dispatch only(50 条全量 / 8 指标 / bad case promote / push trigger 推 M2) | ✅ |
-| S7   | ProfileParserAgent + `/v1/profiles/parse` SSE | pending |
+| S7   | ProfileParserAgent + `/v1/profiles/parse` SSE + 5 表(profile + 4 children)写入 + 409 重复 user / 软删可重建 | ✅ |
 | S8   | Chunking 纯函数 + Embedding(text-embedding-v3)+ `/rechunk` | pending |
 | S9   | 前端:简历上传 + 表单 + chunks 可视化(调试) | pending |
 | S10  | `evals/suites/profile_extract` 30 条 + chunk 召回断言 | pending |
@@ -26,7 +26,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 ## 当前 working tree 状态
 
-干净,与 `origin/main` 同步(`1d6d827` S6 收尾 commit 已 push)。检查领先量:`git log origin/main..main --oneline | wc -l`。
+S7 落盘完毕,本地领先 origin/main 1 commit(待 push)。检查领先量:`git log origin/main..main --oneline | wc -l`。
 
 ## S6 baseline(13 条 boss,qwen3.6-flash + JDParser prompt v1.0.1)
 
@@ -55,13 +55,13 @@ S6 DoD = "基线能跑通"(0 errors / 4 metric 真实数字),已达成。详见 
 9. **`salaryMonthsAcc` 改自定义聚合**(只算 want!=null 样本的精确 acc,去掉 null 拉高分母的水分)。
 10. **`.github/workflows/eval.yml` 启用 push/PR trigger**(取消注释 + 配 GitHub Secret `DASHSCOPE_API_KEY_EVAL`,见 EVAL_PLAN §10.5)。
 
-## 当前闸门(S6 完成)
+## 当前闸门(S7 完成)
 
 后端:
 - `ruff check` / `ruff format --check`:全绿
-- `mypy --strict apps/api/src apps/api/tests`:74 files,0 issues
-- `pytest --cov --cov-fail-under=70`:**200 passed,93.63%**
-- `alembic upgrade head`:**0008** 应用到 dev DB
+- `mypy --strict apps/api/src`:50 files,0 issues
+- `pytest --cov --cov-fail-under=70`:**238 passed,97.70%**
+- `alembic upgrade head`:**0009** 应用到 dev DB
 
 前端:
 - `pnpm --filter @jobcopilot/web typecheck`:0 errors
@@ -90,6 +90,7 @@ S1 期间手动起了 postgres 单容器开发(`docker compose up -d postgres`),
 - [S4 JD 解析](slices/S4-jds.md) — JDParserAgent / SSE / prompt_versions(见 ADR-0006)
 - [S5 前端 JD 闭环](slices/S5-jds-frontend.md) — Tailwind v4 + shadcn / `/jds/new` + `/jds/[id]` / X-User-Id header
 - [S6 评测 baseline + salary_months 全栈](slices/S6-jd_extract.md) — promptfoo + 13 条 boss / Qwen3.6 原生多模态 / prompt v1.0.1 promote / 全栈加字段 11 处协同
+- [S7 ProfileParser + 5 表写入](slices/S7-profiles.md) — 子表 DELETE+INSERT / skill 去重 / 409 dup user / 软删 partial unique 修复
 
 ---
 
@@ -139,6 +140,7 @@ ROADMAP 已有:1 志愿者全流程通 / ≥5 bad case high severity 修 / 日�
 10. **JDStructured 加字段全栈协同 11 处** [来自 S6]——eval `jd_structured.schema.json` + `JDStructured` pydantic + `JDDetail`(含 `JDListItem` 看是否透出)+ `Jd` ORM + alembic migration + JDParser prompt vX.Y.Z + service `_apply_structured` + router `_structured_from_jd` / `_detail` + 前端 form / detail UI + 评测 `assertions.ts` / `promptfooconfig.yaml`,漏一处启动报错或 baseline 数据丢失。S7 ProfileStructured 加字段沿用此清单。
 11. **JDParser prompt 升级 promote 4 步** [来自 S6]——① 写 `prompts/jd_parser/vX.Y.Z.j2`(SYSTEM/USER 双段);② `routers/jds.py:PROMPT_KEY` 改新版本;③ `tests/integration/test_jds_router.py` fixture 版本号同步;④ 启动 lifespan 自动 upsert,旧版本保留 history。S7 ProfileParser prompt 升级同流程。
 12. **DashScope 评测 provider 必须显式关 thinking** [来自 S6]——promptfooconfig 加 `config.passthrough.enable_thinking: false`,否则 qwen3.6-flash 默认深度思考拼 reasoning 进 content + 截 max_tokens → schema_invalid。生产 JDParser 走 CHEAP tier(thinking_mode=False),评测对齐。S10 profile_extract suite 同样加。
+13. **每用户单例资源用 partial unique index** [来自 S7]——`UNIQUE (user_id) WHERE deleted_at IS NULL`(`uq_profiles_user_id` 模式,沿用 S3 `uq_files_user_sha256`)。普通 UNIQUE 会让"软删旧的 → 重 parse 新的"流程被旧软删行卡住,且 ORM 层不要写 `UniqueConstraint("user_id")`(语义不匹配,会误导)。M3 多版本档案启用前 profiles 沿用此约束;后续若加 `default_resume` / `current_match` 等单例资源同样。
 
 ---
 
