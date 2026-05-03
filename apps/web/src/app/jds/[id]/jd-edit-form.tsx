@@ -16,6 +16,7 @@ type EditableState = {
   location: string;
   salary_min: string;
   salary_max: string;
+  salary_months: string;
   description: string;
 };
 
@@ -26,6 +27,7 @@ function detailToEditable(jd: JDDetail): EditableState {
     location: jd.location ?? '',
     salary_min: jd.salary_min == null ? '' : String(jd.salary_min),
     salary_max: jd.salary_max == null ? '' : String(jd.salary_max),
+    salary_months: jd.salary_months == null ? '' : String(jd.salary_months),
     description: jd.description ?? '',
   };
 }
@@ -48,6 +50,7 @@ function buildStructured(jd: JDDetail, edits: EditableState): JDStructured {
     salary_min: toInt(edits.salary_min),
     salary_max: toInt(edits.salary_max),
     salary_period: salaryPeriod,
+    salary_months: toInt(edits.salary_months),
     job_level: jd.job_level as JDStructured['job_level'],
     years_required: jd.years_required,
     education: jd.education as JDStructured['education'],
@@ -180,7 +183,7 @@ export function JdEditForm({ jd }: { jd: JDDetail }) {
                 disabled={saving}
               />
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               <div className="space-y-2">
                 <Label htmlFor="salary_min">薪资下限</Label>
                 <Input
@@ -200,6 +203,18 @@ export function JdEditForm({ jd }: { jd: JDDetail }) {
                   inputMode="numeric"
                   value={form.salary_max}
                   onChange={(e) => update('salary_max', e.target.value)}
+                  disabled={saving}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="salary_months">X 薪</Label>
+                <Input
+                  id="salary_months"
+                  type="number"
+                  inputMode="numeric"
+                  placeholder="如 14"
+                  value={form.salary_months}
+                  onChange={(e) => update('salary_months', e.target.value)}
                   disabled={saving}
                 />
               </div>

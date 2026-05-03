@@ -34,8 +34,8 @@ const client = new OpenAI({
   baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
 });
 
-const VL_MODEL = process.env.JD_OCR_MODEL ?? 'qwen-vl-max-latest';
-const TEXT_MODEL = process.env.JD_LABEL_MODEL ?? 'qwen-plus';
+const VL_MODEL = process.env.JD_OCR_MODEL ?? 'qwen3.6-flash';
+const TEXT_MODEL = process.env.JD_LABEL_MODEL ?? 'qwen3.6-flash';
 
 const OCR_PROMPT =
   '请把这张招聘 JD 截图里的所有可见文字按原版面顺序完整提取出来。只输出 JD 正文文字本身,不要任何解释、标题、排版说明。保留段落分隔,空行用空行表示。';
@@ -52,6 +52,7 @@ schema:
   "salary_min": int | null,         // 月薪下限(整数,人民币元),"15-25k" → 15000
   "salary_max": int | null,         // 月薪上限
   "salary_period": "monthly" | "yearly",
+  "salary_months": int | null,      // JD 写明的 "X 薪" 数(14/16 等);未写则 null
   "job_level": "intern"|"junior"|"middle"|"senior"|"lead" | null,
   "years_required": int | null,     // 经验年数门槛,"3 年以上" → 3
   "education": "专科"|"本科"|"硕士"|"博士" | null,  // 取硬性下限
@@ -62,8 +63,10 @@ schema:
 规则:
 - 字段不可见 / 不确定时返回 null,不要猜。
 - 薪资模糊词("面议" / "薪资到位")→ salary_min/max 都 null。
-- "15-25K·14 薪" → monthly 月薪 15000-25000。
-- "30万-50万" → yearly 年薪 300000-500000。
+- "15-25K·14 薪" → monthly,salary_min=15000,salary_max=25000,salary_months=14。
+- "20-30K"(无 X 薪标识)→ monthly 20000-30000,salary_months=null。
+- "30万-50万" → yearly 年薪 300000-500000,salary_months=null(年薪通常不带 X 薪)。
+- job_level:在校 / 应届 / 实习 → junior(不要标 intern,intern 仅指明确的"实习生"岗位)。
 - 学历:"本科及以上"→"本科"(取硬性下限);"硕士优先"也→"本科"。
 - hard_skills 不超过 12 个,只挑 JD 明确点名的硬技能(语言/框架/工具/数据库),不要软技能。`;
 

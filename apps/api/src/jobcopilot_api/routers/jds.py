@@ -60,7 +60,7 @@ from jobcopilot_api.services.jd_service import (
 
 router = APIRouter(tags=["jds"])
 
-PROMPT_KEY: tuple[str, str] = ("jd_parser", "v1.0.0")
+PROMPT_KEY: tuple[str, str] = ("jd_parser", "v1.0.1")
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +82,7 @@ def _structured_from_jd(jd: Jd) -> JDStructured:
         salary_min=jd.salary_min,
         salary_max=jd.salary_max,
         salary_period=jd.salary_period or "monthly",
+        salary_months=jd.salary_months,
         job_level=jd.job_level,
         years_required=jd.years_required,
         education=jd.education,
@@ -137,6 +138,7 @@ def _detail(jd: Jd) -> JDDetail:
         salary_max=jd.salary_max,
         salary_currency=jd.salary_currency,
         salary_period=jd.salary_period,
+        salary_months=jd.salary_months,
         job_level=jd.job_level,
         years_required=jd.years_required,
         education=jd.education,

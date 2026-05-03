@@ -1,21 +1,25 @@
 name: Eval Regression
 
+# S6 阶段只手动触发(GitHub Actions UI 点 "Run workflow")。
+# M2 数据集扩到 50 条 + Δ ≤ -2pp 比对脚本就位时,把下面的 push / pull_request
+# 触发器恢复(注释里保留原 paths 配置)。本地随时可跑 `pnpm eval:jd`。
 on:
-  push:
-    branches: [main]
-    paths:
-      - "apps/api/src/jobcopilot_api/agents/**"
-      - "apps/api/src/jobcopilot_api/llm/**"
-      - "apps/api/src/jobcopilot_api/prompts/**"
-      - "evals/**"
-      - ".github/workflows/eval.yml"
-  pull_request:
-    paths:
-      - "apps/api/src/jobcopilot_api/agents/**"
-      - "apps/api/src/jobcopilot_api/llm/**"
-      - "apps/api/src/jobcopilot_api/prompts/**"
-      - "evals/**"
-      - ".github/workflows/eval.yml"
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - "apps/api/src/jobcopilot_api/agents/**"
+  #     - "apps/api/src/jobcopilot_api/llm/**"
+  #     - "apps/api/src/jobcopilot_api/prompts/**"
+  #     - "evals/**"
+  #     - ".github/workflows/eval.yml"
+  # pull_request:
+  #   paths:
+  #     - "apps/api/src/jobcopilot_api/agents/**"
+  #     - "apps/api/src/jobcopilot_api/llm/**"
+  #     - "apps/api/src/jobcopilot_api/prompts/**"
+  #     - "evals/**"
+  #     - ".github/workflows/eval.yml"
 
 concurrency:
   group: eval-${{ github.ref }}

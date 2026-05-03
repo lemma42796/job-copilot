@@ -14,7 +14,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import BigInteger, Integer, Numeric, String, Text
+from sqlalchemy import BigInteger, Integer, Numeric, SmallInteger, String, Text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import text
@@ -57,6 +57,7 @@ class Jd(Base, IDMixin, TimestampMixin):
     salary_max: Mapped[int | None] = mapped_column(Integer)
     salary_currency: Mapped[str | None] = mapped_column(String(10), server_default="CNY")
     salary_period: Mapped[str | None] = mapped_column(String(10), server_default="monthly")
+    salary_months: Mapped[int | None] = mapped_column(SmallInteger)
 
     job_level: Mapped[str | None] = mapped_column(String(50))
     years_required: Mapped[int | None] = mapped_column(Integer)

@@ -1,7 +1,7 @@
 /**
- * promptfoo prompt loader for JDParser v1.0.0.
+ * promptfoo prompt loader for JDParser v1.0.1.
  *
- * Reads `apps/api/src/jobcopilot_api/prompts/jd_parser/v1.0.0.j2`, splits
+ * Reads `apps/api/src/jobcopilot_api/prompts/jd_parser/v1.0.1.j2`, splits
  * SYSTEM / USER blocks (mirrors `apps/api/src/jobcopilot_api/infra/prompts.py`
  * regex), renders `{{ jd_text }}` placeholder, then appends the
  * JDStructured JSON schema to the user message — mirrors production
@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEMPLATE_PATH = resolve(
   __dirname,
-  '../../../apps/api/src/jobcopilot_api/prompts/jd_parser/v1.0.0.j2',
+  '../../../apps/api/src/jobcopilot_api/prompts/jd_parser/v1.0.1.j2',
 );
 const SCHEMA_PATH = resolve(__dirname, './jd_structured.schema.json');
 

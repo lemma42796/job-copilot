@@ -1,8 +1,9 @@
 /**
- * jd_extract 断言。MVP 3 个指标(EVAL_PLAN §3.2 初始列):
- *   - titleExact      ≥ 0.92
- *   - hardSkillF1     ≥ 0.85
- *   - salaryMatch     ≥ 0.85
+ * jd_extract 断言。MVP 4 个指标(EVAL_PLAN §3.2 初始列 + S6 阶段 3 加 X 薪):
+ *   - titleExact          ≥ 0.92
+ *   - hardSkillF1         ≥ 0.85
+ *   - salaryMatch         ≥ 0.85
+ *   - salaryMonthsAcc     观察(MVP 不设硬阈值,M2 ratchet)
  *
  * 阈值在 promptfooconfig.yaml 的 suite 级 metric 上设(单 case 不强制),
  * 单 case 返回 score ∈ [0,1] 让 promptfoo 算均值。
@@ -17,6 +18,7 @@ interface JDExpected {
   hard_skills?: JDSkillExpected[];
   salary_min?: number | null;
   salary_max?: number | null;
+  salary_months?: number | null;
 }
 
 interface AssertContext {
@@ -135,5 +137,30 @@ export function salaryMatch(output: string, ctx: AssertContext): AssertResult {
     reason: pass
       ? 'match within ±10%'
       : `wrong_salary: want [${wantMin}, ${wantMax}], got [${gotMin}, ${gotMax}]`,
+  };
+}
+
+/**
+ * X 薪准确率(conditional)。ground truth 没标(want=null)→ 给 1 分(中性,不
+ * 拉低均值);有标 → 严比 got === want。代价是分母被 null 样本撑高,数值偏乐观,
+ * 但保留 model 真错时的扣分;MVP 阶段不设硬阈值,只看趋势。M2 改成自定义聚合
+ * 只算"有标"样本的精确 acc。
+ */
+export function salaryMonthsAcc(output: string, ctx: AssertContext): AssertResult {
+  const parsed = safeJson(output);
+  if (!parsed) return { pass: false, score: 0, reason: 'schema_invalid: not JSON' };
+
+  const want = ctx.vars.expected.salary_months ?? null;
+  const got = (parsed.salary_months as number | null | undefined) ?? null;
+
+  if (want === null) {
+    return { pass: true, score: 1, reason: 'skip (ground truth null)' };
+  }
+
+  const pass = got === want;
+  return {
+    pass,
+    score: pass ? 1 : 0,
+    reason: pass ? `match: ${got}` : `wrong_months: want ${want}, got ${got}`,
   };
 }

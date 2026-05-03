@@ -59,6 +59,10 @@ class JDStructured(BaseModel):
     salary_min: int | None = None
     salary_max: int | None = None
     salary_period: Literal["monthly", "yearly"] = "monthly"
+    salary_months: int | None = Field(
+        default=None,
+        description="JD 写明的 'X 薪' 数(14/16 等),代表年终奖月数;JD 未写则 None",
+    )
     job_level: Literal["intern", "junior", "middle", "senior", "lead"] | None = None
     years_required: int | None = None
     education: Literal["专科", "本科", "硕士", "博士"] | None = None
@@ -164,6 +168,7 @@ class JDDetail(BaseModel):
     salary_max: int | None
     salary_currency: str | None
     salary_period: str | None
+    salary_months: int | None
     job_level: str | None
     years_required: int | None
     education: str | None

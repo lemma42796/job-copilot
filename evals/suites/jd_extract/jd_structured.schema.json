@@ -94,6 +94,19 @@
       "title": "Salary Period",
       "type": "string"
     },
+    "salary_months": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "JD 写明的 'X 薪' 数(14/16 等),代表年终奖月数;JD 未写则 null",
+      "title": "Salary Months"
+    },
     "job_level": {
       "anyOf": [
         {

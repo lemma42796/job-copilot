@@ -265,6 +265,7 @@ def _apply_structured(
     jd.salary_max = parsed.salary_max
     jd.salary_currency = "CNY"  # ADR-0006 D5
     jd.salary_period = parsed.salary_period
+    jd.salary_months = parsed.salary_months
     jd.job_level = parsed.job_level
     jd.years_required = parsed.years_required
     jd.education = parsed.education

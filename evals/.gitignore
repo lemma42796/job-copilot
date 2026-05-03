@@ -6,6 +6,9 @@ raw/
 reports/
 cache/
 
+# Local prep workspace (review files / per-entry edits / dry-run logs)
+tmp/
+
 # Node
 node_modules/
 *.log

@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-02 (M1 进行中:S0.5/S1/S2/S3/S4 已 push;S5 本地完成未 push;S6 脚手架完成 dataset 2/15 种子,等用户补 13 条 Boss 截图 + 配 GitHub secret;下一刀:用户截 3 张 → from-screenshot 跑通)
+last_updated: 2026-05-03 (M1 进行中:S0.5/S1/S2/S3/S4/S5 已 push;S6 完成 baseline 跑通 case_pass=2/13 / 4 metric 数字就绪 / dataset 13 条真实 boss / JDParser prompt v1.0.1;本地领先 origin/main 2 commit;下一刀:S7 ProfileParserAgent)
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -17,7 +17,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | S3   | User/File ORM + `/v1/files` 上传(sha256 去重 + 软删 + 200MB 配额),见 ADR-0005 | ✅ |
 | S4   | JDParserAgent(文本 + PDF)+ `/v1/jds/parse` SSE + `/v1/jds` 读改删 + prompt_versions 闭环 | ✅ |
 | S5   | 前端:JD 粘贴页 + 结构化结果可视化 + 编辑保存(同步,SSE / 列表延后) | ✅ |
-| S6   | `evals/suites/jd_extract` MVP(15 条 + 3 指标 title/skill_f1/salary)+ promptfoo CI(**Week 2 末 DoD**;50 条全量 / 8 指标 / bad case promote 推 M2) | 进行中 |
+| S6   | `evals/suites/jd_extract` MVP(13 条 + 4 指标 title/skill_f1/salary/salary_months)+ promptfoo CI workflow_dispatch only(50 条全量 / 8 指标 / bad case promote / push trigger 推 M2) | ✅ |
 | S7   | ProfileParserAgent + `/v1/profiles/parse` SSE | pending |
 | S8   | Chunking 纯函数 + Embedding(text-embedding-v3)+ `/rechunk` | pending |
 | S9   | 前端:简历上传 + 表单 + chunks 可视化(调试) | pending |
@@ -26,40 +26,51 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 ## 当前 working tree 状态
 
-**本地领先 origin/main**(S5 + S6 脚手架未 push)。检查领先量:`git log origin/main..main --oneline | wc -l`。
+**本地领先 origin/main 2 commit**(S6 脚手架旧 commit + 即将 commit 的 S6 完成本体)。检查领先量:`git log origin/main..main --oneline | wc -l`。
 
-## S6 下一刀(MVP 推进步骤)
+## S6 baseline(13 条 boss,qwen3.6-flash + JDParser prompt v1.0.1)
 
-脚手架已就绪(`evals/` workspace + `.github/workflows/eval.yml`),dataset 当前 2/15(全合成种子)。
+| Metric | Mean | Pass / Total | 阈值 | 状态 |
+|---|---|---|---|---|
+| titleExact | 0.769 | 10/13 | 0.92 | ❌ |
+| hardSkillF1 | 0.67 | 3/13 | 0.85 | ❌ |
+| salaryMatch | 1.00 | 13/13 | 0.85 | ✅ |
+| salaryMonthsAcc | 1.00 | 13/13 | 观察 | ✅(want=null 给 1 分含水分) |
+| **case-level pass** | | **2/13 (15.38%)** | | — |
 
-剩余:
-1. **你截 3 张 Boss JD 图** → `evals/raw/boss/*.png`(.gitignore,不入仓库)
-2. `pnpm --filter @jobcopilot/evals run prep:screenshot evals/raw/boss/*.png` → 输出 3 行候选 JSONL 到 stdout
-3. **人工核对** 3 行(脱敏公司名 → `[CompanyA]/[CompanyB]/[CompanyC]`,改错的 ground truth 字段),追加到 `evals/suites/jd_extract/dataset.jsonl`
-4. 删掉 dataset.jsonl 头 2 条合成种子,本地跑 `pnpm eval:jd` 验证 3 条全过(LOCAL `DASHSCOPE_API_KEY_EVAL` 必填)
-5. GitHub Settings → Secrets → New `DASHSCOPE_API_KEY_EVAL`(独立 Key,与生产分开,见 EVAL_PLAN §10.5)
-6. push 前再补 12 张图重复 2-3 步 → 凑 15 条
-7. push → CI 触发 → 全绿即 S6 完成
+S6 DoD = "基线能跑通"(0 errors / 4 metric 真实数字),已达成。详见 `slices/S6-jd_extract.md`。
 
-下方 6 个 M2 待办**不**进 S6:
-- 50 条全量(剩 35 条:OCR 7 / 邮件 8 / 极短 3 / 薪资模糊 2 / 标准中文 15)
-- `level_acc` / `confidence_calibration` / `latency_p95` / `cost_per_call_cny` 4 个指标
-- bad case 表 + promote 脚本 + 月度 triage(EVAL_PLAN §12)
-- 跑 3 次取中位数(EVAL_PLAN §11.3)
-- 不退化策略(Δ ≤ -2pp 比对 main baseline)
-- PR comment 脚本
+## M2 待办(从 S6 暴露 / 推迟)
 
-## 当前闸门(S5 完成)
+跑 13 张 Boss 真实 JD 评测暴露 + S6 阶段 deferred,M2 处理:
+
+1. **生产 LLMClient 没设 `max_tokens`**(`apps/api/src/jobcopilot_api/llm/`)→ DashScope 默认值偏低,长 JD 走 `/v1/jds/parse` 会输出截断 JSON。评测侧已用 `max_tokens=2048` 绕过。修复时加到 `LLMClient.complete()` + 各 Tier 默认值。
+2. **JDParser prompt v1.0.2**(修 baseline 不达阈):① "hard_skills 不抽厂商名/概念名"规则(修 hardSkillF1=0.67);② "title 抽到第一行末,不拼后续 metadata"规则(修 titleExact=0.769)。
+3. **dataset 扩 50 条**(剩 37 条:OCR 7 / 邮件 8 / 极短 3 / 薪资模糊 2 / 标准中文 17)。
+4. **4 新 metric**:`level_acc` / `confidence_calibration` / `latency_p95` / `cost_per_call_cny`。
+5. **bad case 表 + promote 脚本 + 月度 triage**(EVAL_PLAN §12)。
+6. **跑 3 次取中位数**(EVAL_PLAN §11.3)。
+7. **不退化策略**:Δ ≤ -2pp 比对 main baseline。
+8. **PR comment 脚本**。
+9. **`salaryMonthsAcc` 改自定义聚合**(只算 want!=null 样本的精确 acc,去掉 null 拉高分母的水分)。
+10. **`.github/workflows/eval.yml` 启用 push/PR trigger**(取消注释 + 配 GitHub Secret `DASHSCOPE_API_KEY_EVAL`,见 EVAL_PLAN §10.5)。
+
+## 当前闸门(S6 完成)
 
 后端:
 - `ruff check` / `ruff format --check`:全绿
 - `mypy --strict apps/api/src apps/api/tests`:74 files,0 issues
-- `pytest --cov --cov-fail-under=70`:**200 passed,93.61%**
+- `pytest --cov --cov-fail-under=70`:**200 passed,93.63%**
+- `alembic upgrade head`:**0008** 应用到 dev DB
 
 前端:
 - `pnpm --filter @jobcopilot/web typecheck`:0 errors
 - `pnpm --filter @jobcopilot/web lint`(biome):0 errors
 - `pnpm --filter @jobcopilot/web build`(Next 15 + Tailwind v4 + typedRoutes):✓ 4 路由
+
+Evals:
+- `pnpm --filter @jobcopilot/evals typecheck`:0 errors
+- `pnpm eval:jd`(13 条 boss):**0 errors / case_pass=2/13 / 4 metric 数字写入 reports/jd-latest.json**
 
 ## 当前 docker compose 状态
 
@@ -78,6 +89,7 @@ S1 期间手动起了 postgres 单容器开发(`docker compose up -d postgres`),
 - [S3 Files 上传](slices/S3-files.md) — sha256 去重 / 软删 / 200MB 配额(见 ADR-0005)
 - [S4 JD 解析](slices/S4-jds.md) — JDParserAgent / SSE / prompt_versions(见 ADR-0006)
 - [S5 前端 JD 闭环](slices/S5-jds-frontend.md) — Tailwind v4 + shadcn / `/jds/new` + `/jds/[id]` / X-User-Id header
+- [S6 评测 baseline + salary_months 全栈](slices/S6-jd_extract.md) — promptfoo + 13 条 boss / Qwen3.6 原生多模态 / prompt v1.0.1 promote / 全栈加字段 11 处协同
 
 ---
 
@@ -124,6 +136,9 @@ ROADMAP 已有:1 志愿者全流程通 / ≥5 bad case high severity 修 / 日�
 7. **typedRoutes 字符串拼接需要 `as Route`** [来自 S5]——Next 15 `experimental.typedRoutes` 启用,`<Link href={...}>` / `router.push(`/jds/${id}`)` 字符串模板被推断为 `string`,需要 `import type { Route } from 'next'; ... as Route`。S9 简历列表跳详情同样。
 8. **openapi-typescript `--enum` 必须用 enum value** [来自 S5]——`scripts/generate.mjs` 用了 `--enum`,生成的是 TypeScript enum 类型而非 string literal union。前端 `source: 'text_paste'` typecheck 会报错,必须 `import { JDParseInputSource } from '@jobcopilot/schemas'; ... source: JDParseInputSource.text_paste`。
 9. **Tailwind v4 主题色用 `@theme` 注册** [来自 S5]——`@theme { --color-* }` 自动生成 `bg-* / text-* / border-*` utility(`bg-accent`、`text-muted`、`border-border` 等);**没有 `tailwind.config.ts`**(v4 默认全文件扫)。S9 前端表单沿用此 token 命名。
+10. **JDStructured 加字段全栈协同 11 处** [来自 S6]——eval `jd_structured.schema.json` + `JDStructured` pydantic + `JDDetail`(含 `JDListItem` 看是否透出)+ `Jd` ORM + alembic migration + JDParser prompt vX.Y.Z + service `_apply_structured` + router `_structured_from_jd` / `_detail` + 前端 form / detail UI + 评测 `assertions.ts` / `promptfooconfig.yaml`,漏一处启动报错或 baseline 数据丢失。S7 ProfileStructured 加字段沿用此清单。
+11. **JDParser prompt 升级 promote 4 步** [来自 S6]——① 写 `prompts/jd_parser/vX.Y.Z.j2`(SYSTEM/USER 双段);② `routers/jds.py:PROMPT_KEY` 改新版本;③ `tests/integration/test_jds_router.py` fixture 版本号同步;④ 启动 lifespan 自动 upsert,旧版本保留 history。S7 ProfileParser prompt 升级同流程。
+12. **DashScope 评测 provider 必须显式关 thinking** [来自 S6]——promptfooconfig 加 `config.passthrough.enable_thinking: false`,否则 qwen3.6-flash 默认深度思考拼 reasoning 进 content + 截 max_tokens → schema_invalid。生产 JDParser 走 CHEAP tier(thinking_mode=False),评测对齐。S10 profile_extract suite 同样加。
 
 ---
 

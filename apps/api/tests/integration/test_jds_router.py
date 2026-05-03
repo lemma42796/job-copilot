@@ -149,7 +149,7 @@ def prompt() -> LoadedPrompt:
     return LoadedPrompt(
         id=1,
         agent_name="jd_parser",
-        version="v1.0.0",
+        version="v1.0.1",
         system="you are a JD parser",
         user_template="parse: {{ jd_text }}",
         template_hash="x" * 64,
@@ -170,7 +170,7 @@ def make_app(
 
     def _make(llm: LLMClient) -> FastAPI:
         app = create_app()
-        app.state.prompt_versions = {("jd_parser", "v1.0.0"): prompt}
+        app.state.prompt_versions = {("jd_parser", "v1.0.1"): prompt}
 
         async def _override_session() -> AsyncIterator[AsyncSession]:
             async with sessionmaker_() as session:
