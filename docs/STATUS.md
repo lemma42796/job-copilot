@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-03 — M1 进行中,S0.5/S1/S2/S3/S4/S5/S6/S7 已 push;下一刀 S8(chunking + embedding)
+last_updated: 2026-05-03 — M1 进行中,S0.5/S1-S7 已 push;S8 规划已对齐(等 v3/v4 拍板开工)
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -30,6 +30,24 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 > 2026-05-01 LLM Provider 由 DeepSeek V4 切换到阿里云百炼 Qwen3.6,见 ADR-0003。ADR-0001 复审条件 1(余额 < ¥1)触发时回切。
 
+## 下一刀:S8 规划(已对齐,**等用户拍 v3 vs v4 后开工**)
+
+**边界**:① ChunkBuilder 纯函数(5 表 ORM → ChunkInput,规则照 5-AGENT_DESIGN.md §4.7);② Embedder 抽象(Protocol + DashscopeEmbedder + DummyEmbedder);③ ProfileChunk ORM(表 0005 已建);④ `chunk_service.rebuild_for_profile`(embedder 在事务外,DELETE+bulk INSERT 在单事务);⑤ `POST /v1/profiles/{id}/rechunk`(SSE)+ `GET /chunks`;⑥ `profile_service.run_parse` 末段接 chunk_service;⑦ `api.ts` 同步。
+
+**已锁决策**:维度 1024(显式传 `dimensions=1024`)/ batch ≤ 10(客户端预检)/ Embedder 复用 OpenAI client + base_url(同 DashscopeProvider)/ `metadata.chunker_version="v1"`(不进 prompt_versions)/ DummyEmbedder = sha256→1024 维 + L2 normalize / 错误沿用 S2 LLM* 体系 / 流控 L1 基础重试(单 profile 5-20 请求 < 1s < 30 RPS,不撞限流)。
+
+**百炼 embedding 关键参数**:OpenAI 兼容端点 `/compatible-mode/v1/embeddings`;中国内地 30 RPS / 1.2M TPM(仅输入);单行上限 8192 tokens;429 三子码(`Throttling.{RateQuota/AllocationQuota/BurstRate}`)沿用 `LLMUpstreamError(429)` 映射。
+
+**待用户拍板**:**embedding 模型 v3 还是 v4**(推 v4:0.0005 vs 0.0007 元/千 tokens + 同 1024 维 + Qwen3-Embedding 系列)。拍板后改 `5-AGENT_DESIGN.md §4.7` (`text-embedding-vX`)同步。
+
+**不做**:embedding 不写 `llm_calls`(→ M2);max_tokens 修复(→ M2);前端可视化(→ S9);召回断言(→ S10);备选模型 fallback / 客户端节流 / 拥塞控制(→ M3+)。
+
+**C1-C6 切分**:① ChunkBuilder + unit test;② Embedder Protocol + Dummy + Dashscope(**开工前 curl `/embeddings` dry-run**,对齐永久约束「批量 LLM 前 dry-run」);③ ProfileChunk ORM + schemas;④ chunk_service + service test(DummyEmbedder + testcontainers);⑤ routers + ProfileParser 接 chunk + 集成 test;⑥ `api.ts` 同步 + 归档卡 `slices/S8-chunks.md`。
+
+**DoD**:pytest ≥ 270 passed,cov ≥ 70% / `agents/chunker.py` ≥ 80%;alembic 不新增 revision(0009 已含表);`/rechunk` 在 Dummy 下端到端通;`/profiles/parse` SSE 末段含 `chunking_embedding`;`api.ts` 同步进 repo。
+
+---
+
 ## M2 待办(从 S6 暴露 / 推迟)
 
 1. **生产 LLMClient 没设 `max_tokens`** → DashScope 默认值偏低,长 JD 输出截断 JSON。评测侧已用 `max_tokens=2048` 绕过。修 `LLMClient.complete()` + 各 Tier 默认值。
@@ -42,6 +60,8 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 8. **PR comment 脚本**。
 9. **`salaryMonthsAcc` 改自定义聚合**(去掉 want=null 拉高分母的水分)。
 10. **`.github/workflows/eval.yml` 启用 push/PR trigger**(取消注释 + 配 GitHub Secret `DASHSCOPE_API_KEY_EVAL`,见 EVAL_PLAN §10.5)。
+11. **embedding `DataInspectionFailed` 观察**(S8 规划期暴露)— 跑 30+ profile dataset 时若有命中,需对 chunker 加内容脱敏或 retry-skip 策略。
+12. **embedding 写 `llm_calls` 表统一**(S8 规划期暴露)— S8 阶段只 structlog 打印 embedding token + cost;M2 把 schema 通用化(加 `kind` 枚举或拆表)。
 
 ---
 
