@@ -357,7 +357,9 @@ async def _seed_profile(client: AsyncClient, app: FastAPI, uid: int) -> int:
     )
     events = _parse_sse(resp.text)
     started = next(d for name, d in events if name == "started")
-    return int(started["resource_id"])  # type: ignore[arg-type]
+    rid = started["resource_id"]
+    assert isinstance(rid, int)
+    return rid
 
 
 @pytest.mark.integration

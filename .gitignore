@@ -43,7 +43,8 @@ node_modules/
 .npm/
 
 # Generated
-packages/schemas/src/api.ts
+# packages/schemas/src/api.ts: NOT ignored — committed so lint CI doesn't need to boot the API.
+# Drift is caught on PR by .github/workflows/type-sync.yml; locally regen with `pnpm gen:api`.
 apps/api/openapi.json
 
 # Playwright
