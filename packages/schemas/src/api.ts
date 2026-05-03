@@ -164,6 +164,40 @@ export interface paths {
         readonly patch: operations["patch_v1_profiles__profile_id__patch"];
         readonly trace?: never;
     };
+    readonly "/v1/profiles/{profile_id}/rechunk": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Rebuild a profile's chunks (SSE) */
+        readonly post: operations["rechunk_v1_profiles__profile_id__rechunk_post"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/v1/profiles/{profile_id}/chunks": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List a profile's chunks (no embedding payload) */
+        readonly get: operations["chunks_v1_profiles__profile_id__chunks_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -481,6 +515,52 @@ export interface components {
          * @enum {string}
          */
         readonly JdStatus: JdStatus;
+        /**
+         * ProfileChunkItem
+         * @description One `profile_chunks` row. The 1024-dim `embedding` is intentionally
+         *     not exposed — the route is for debugging/visualization, not retrieval,
+         *     and shipping float[1024] per row blows up the payload.
+         */
+        readonly ProfileChunkItem: {
+            /** Id */
+            readonly id: number;
+            /**
+             * Granularity
+             * @enum {string}
+             */
+            readonly granularity: ProfileChunkItemGranularity;
+            /** Source Table */
+            readonly source_table: string;
+            /** Source Id */
+            readonly source_id: number;
+            /** Content */
+            readonly content: string;
+            /** Embed Model */
+            readonly embed_model: string | null;
+            /** Embed Version */
+            readonly embed_version: string | null;
+            /** Metadata */
+            readonly metadata: {
+                readonly [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            readonly created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            readonly updated_at: string;
+        };
+        /** ProfileChunksResponse */
+        readonly ProfileChunksResponse: {
+            /** Data */
+            readonly data: readonly components["schemas"]["ProfileChunkItem"][];
+            /** Total */
+            readonly total: number;
+        };
         /**
          * ProfileDetail
          * @description Full profile + children, returned by GET /v1/profiles/{id}.
@@ -1259,6 +1339,72 @@ export interface operations {
             };
         };
     };
+    readonly rechunk_v1_profiles__profile_id__rechunk_post: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: {
+                readonly "X-User-Id"?: number | null;
+            };
+            readonly path: {
+                readonly profile_id: number;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description SSE stream */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly chunks_v1_profiles__profile_id__chunks_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: {
+                readonly "X-User-Id"?: number | null;
+            };
+            readonly path: {
+                readonly profile_id: number;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["ProfileChunksResponse"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
 }
 export enum PathsV1JdsGetParametersQueryStatus {
     parsing = "parsing",
@@ -1308,6 +1454,12 @@ export enum JdStatus {
     parsing = "parsing",
     parsed = "parsed",
     parse_failed = "parse_failed"
+}
+export enum ProfileChunkItemGranularity {
+    experience = "experience",
+    project = "project",
+    skill = "skill",
+    summary = "summary"
 }
 export enum ProfileParseInputSource {
     text_paste = "text_paste",

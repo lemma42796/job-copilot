@@ -28,11 +28,12 @@ from testcontainers.postgres import PostgresContainer
 from jobcopilot_api.infra.db import get_session
 from jobcopilot_api.infra.prompts import LoadedPrompt
 from jobcopilot_api.llm.client import BaseLLMClient, LLMClient, MemoryCallLogger
+from jobcopilot_api.llm.embedders import DummyEmbedder, EmbeddingResult
 from jobcopilot_api.llm.errors import LLMUpstreamError
 from jobcopilot_api.llm.providers.dummy import DummyProvider
 from jobcopilot_api.main import create_app
 from jobcopilot_api.models import User
-from jobcopilot_api.routers.profiles import _llm_dep, _sessionmaker_dep
+from jobcopilot_api.routers.profiles import _embedder_dep, _llm_dep, _sessionmaker_dep
 
 ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
 
@@ -195,6 +196,10 @@ def make_app(
         app.dependency_overrides[get_session] = _override_session
         app.dependency_overrides[_llm_dep] = lambda: llm
         app.dependency_overrides[_sessionmaker_dep] = lambda: sessionmaker_
+        # Default embedder is Dummy (deterministic, offline). Tests that
+        # need to inject a failing embedder override _embedder_dep again
+        # AFTER calling make_app.
+        app.dependency_overrides[_embedder_dep] = DummyEmbedder
         return app
 
     return _make
@@ -242,7 +247,9 @@ def _parse_sse(body: str) -> list[tuple[str, dict[str, object]]]:
 
 
 @pytest.mark.integration
-async def test_parse_sse_success_emits_started_result_done(make_app: MakeApp, user_id: int) -> None:
+async def test_parse_sse_success_emits_started_chunking_result_done(
+    make_app: MakeApp, user_id: int
+) -> None:
     app = make_app(_client_with_response(GOLDEN_LLM_OUTPUT))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
@@ -253,15 +260,52 @@ async def test_parse_sse_success_emits_started_result_done(make_app: MakeApp, us
     assert resp.status_code == 200
     events = _parse_sse(resp.text)
     names = [e[0] for e in events]
-    assert names == ["started", "result", "done"]
+    assert names == ["started", "chunking_embedding", "result", "done"]
 
     started = events[0][1]
     assert isinstance(started["resource_id"], int)
 
-    result = events[1][1]
+    chunk_evt = events[1][1]
+    assert chunk_evt["ok"] is True
+    # GOLDEN_LLM_OUTPUT has summary + 1 exp + 0 proj + 1 skill + 1 edu(skipped).
+    assert chunk_evt["chunks_written"] == 3
+    assert chunk_evt["embed_model"] == DummyEmbedder().model
+
+    result = events[2][1]
     assert result["resource_id"] == started["resource_id"]
     assert result["url"] == f"/v1/profiles/{started['resource_id']}"
-    assert events[2][1] == {"ok": True}
+    assert events[3][1] == {"ok": True}
+
+
+@pytest.mark.integration
+async def test_parse_sse_chunk_failure_still_emits_result_done(
+    make_app: MakeApp, user_id: int
+) -> None:
+    """Chunking is best-effort: an embedder explosion should NOT mark
+    the parse as failed. The frontend gets `chunking_embedding{ok:false}`
+    and can prompt the user to retry via POST /rechunk."""
+
+    class _BoomEmbedder:
+        model = "boom-v0"
+
+        async def embed(self, texts: list[str]) -> EmbeddingResult:
+            del texts
+            raise RuntimeError("embed exploded")
+
+    app = make_app(_client_with_response(GOLDEN_LLM_OUTPUT))
+    app.dependency_overrides[_embedder_dep] = _BoomEmbedder
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/profiles/parse",
+            json={"text": _long_resume(), "source": "text_paste"},
+            headers=_hdr(user_id),
+        )
+    events = _parse_sse(resp.text)
+    names = [e[0] for e in events]
+    assert names == ["started", "chunking_embedding", "result", "done"]
+    assert events[1][1]["ok"] is False
+    assert "embed exploded" in str(events[1][1]["error"])
+    assert events[3][1] == {"ok": True}
 
 
 @pytest.mark.integration
@@ -458,3 +502,139 @@ async def test_delete_profile_then_reparse_succeeds(make_app: MakeApp, user_id: 
 
         pid2 = await _seed_profile(client, app, user_id)
         assert pid2 != pid1
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/profiles/{id}/rechunk + GET /v1/profiles/{id}/chunks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+async def test_rechunk_sse_emits_started_chunking_done(make_app: MakeApp, user_id: int) -> None:
+    app = make_app(_client_with_response(GOLDEN_LLM_OUTPUT))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        pid = await _seed_profile(client, app, user_id)
+
+        resp = await client.post(f"/v1/profiles/{pid}/rechunk", headers=_hdr(user_id))
+
+    assert resp.status_code == 200
+    events = _parse_sse(resp.text)
+    names = [e[0] for e in events]
+    assert names == ["started", "chunking_embedding", "done"]
+    assert events[0][1]["resource_id"] == pid
+    assert events[1][1]["ok"] is True
+    assert events[1][1]["chunks_written"] == 3
+    assert events[2][1] == {"ok": True}
+
+
+@pytest.mark.integration
+async def test_rechunk_sse_wrong_user_emits_error_without_started(
+    make_app: MakeApp, user_id: int, other_user_id: int
+) -> None:
+    app = make_app(_client_with_response(GOLDEN_LLM_OUTPUT))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        pid = await _seed_profile(client, app, user_id)
+
+        resp = await client.post(f"/v1/profiles/{pid}/rechunk", headers=_hdr(other_user_id))
+
+    events = _parse_sse(resp.text)
+    names = [e[0] for e in events]
+    assert names == ["error", "done"]
+    assert events[0][1]["code"] == "NOT_FOUND"
+
+
+@pytest.mark.integration
+async def test_rechunk_sse_embed_failure_emits_error(make_app: MakeApp, user_id: int) -> None:
+    """Standalone /rechunk treats embedder failures as `error` (unlike
+    the parse tail, where chunking is best-effort)."""
+
+    class _BoomEmbedder:
+        model = "boom-v0"
+
+        async def embed(self, texts: list[str]) -> EmbeddingResult:
+            del texts
+            raise RuntimeError("kaboom")
+
+    app = make_app(_client_with_response(GOLDEN_LLM_OUTPUT))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        pid = await _seed_profile(client, app, user_id)
+        # Swap embedder AFTER seeding so the initial parse-tail rebuild succeeds.
+        app.dependency_overrides[_embedder_dep] = _BoomEmbedder
+
+        resp = await client.post(f"/v1/profiles/{pid}/rechunk", headers=_hdr(user_id))
+
+    events = _parse_sse(resp.text)
+    names = [e[0] for e in events]
+    assert names == ["started", "error", "done"]
+    assert events[1][1]["code"] == "EMBED_FAILED"
+
+
+@pytest.mark.integration
+async def test_get_chunks_returns_rows_without_embedding_payload(
+    make_app: MakeApp, user_id: int
+) -> None:
+    app = make_app(_client_with_response(GOLDEN_LLM_OUTPUT))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        pid = await _seed_profile(client, app, user_id)
+
+        resp = await client.get(f"/v1/profiles/{pid}/chunks", headers=_hdr(user_id))
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # GOLDEN_LLM_OUTPUT: 1 summary + 1 exp + 1 skill = 3 chunks (0 projects, 1 edu skipped).
+    assert body["total"] == 3
+    assert len(body["data"]) == 3
+    grans = {row["granularity"] for row in body["data"]}
+    assert grans == {"summary", "experience", "skill"}
+    sample = body["data"][0]
+    assert "embedding" not in sample  # never expose 1024-dim payload over the wire
+    assert sample["metadata"] == {"chunker_version": "v1"}
+    assert sample["embed_model"] == DummyEmbedder().model
+
+
+@pytest.mark.integration
+async def test_get_chunks_404_for_other_user(
+    make_app: MakeApp, user_id: int, other_user_id: int
+) -> None:
+    app = make_app(_client_with_response(GOLDEN_LLM_OUTPUT))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        pid = await _seed_profile(client, app, user_id)
+
+        resp = await client.get(f"/v1/profiles/{pid}/chunks", headers=_hdr(other_user_id))
+
+    assert resp.status_code == 404
+    assert resp.json()["code"] == "NOT_FOUND"
+
+
+@pytest.mark.integration
+async def test_rechunk_after_patch_reflects_new_skills(make_app: MakeApp, user_id: int) -> None:
+    """End-to-end: PATCH children → /rechunk → GET /chunks shows the new
+    skill chunks. Verifies rebuild really uses the latest child rows."""
+    app = make_app(_client_with_response(GOLDEN_LLM_OUTPUT))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        pid = await _seed_profile(client, app, user_id)
+
+        await client.patch(
+            f"/v1/profiles/{pid}",
+            json={
+                "structured": {
+                    "full_name": "李四",
+                    "summary": "Go 工程师",
+                    "skills": [
+                        {"name": "go", "name_raw": "Go", "category": "language"},
+                        {"name": "rust", "name_raw": "Rust", "category": "language"},
+                    ],
+                }
+            },
+            headers=_hdr(user_id),
+        )
+        await client.post(f"/v1/profiles/{pid}/rechunk", headers=_hdr(user_id))
+
+        resp = await client.get(f"/v1/profiles/{pid}/chunks", headers=_hdr(user_id))
+
+    body = resp.json()
+    # 1 summary + 0 exp + 0 proj + 2 skills = 3 chunks
+    assert body["total"] == 3
+    skill_contents = sorted(row["content"] for row in body["data"] if row["granularity"] == "skill")
+    assert any("go" in c.lower() for c in skill_contents)
+    assert any("rust" in c.lower() for c in skill_contents)

@@ -7,12 +7,16 @@
 
 Endpoints:
 
-- POST   /v1/profiles/parse?stream=1   SSE: started → result → done
-                                         (failure: started → error → done)
+- POST   /v1/profiles/parse            SSE: started → chunking_embedding → result → done
+                                         (LLM fail: started → error → done;
+                                          chunk fail: started → chunking_embedding{ok:false}
+                                          → result → done — parse already committed)
 - GET    /v1/profiles                  ProfileListResponse (cursor)
 - GET    /v1/profiles/{id}             ProfileDetail (with structured)
 - PATCH  /v1/profiles/{id}             ProfileDetail
 - DELETE /v1/profiles/{id}             204
+- POST   /v1/profiles/{id}/rechunk     SSE: started → chunking_embedding → done
+- GET    /v1/profiles/{id}/chunks      ProfileChunksResponse (no embedding payload)
 """
 
 from __future__ import annotations
@@ -21,18 +25,23 @@ import json
 from collections.abc import AsyncIterator
 from typing import Annotated, Any
 
+import sqlalchemy as sa
+import structlog
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sse_starlette.sse import EventSourceResponse
 
 from jobcopilot_api.errors import JobCopilotError
 from jobcopilot_api.infra.db import get_session, get_sessionmaker
+from jobcopilot_api.infra.embedder import get_embedder
 from jobcopilot_api.infra.llm import get_llm_client
 from jobcopilot_api.infra.prompts import LoadedPrompt
 from jobcopilot_api.infra.request_id import generate_uuid7
 from jobcopilot_api.llm.client import LLMClient
+from jobcopilot_api.llm.embedders import Embedder
 from jobcopilot_api.models import (
     Profile,
+    ProfileChunk,
     ProfileEducation,
     ProfileExperience,
     ProfileProject,
@@ -40,6 +49,8 @@ from jobcopilot_api.models import (
 )
 from jobcopilot_api.routers._deps import current_user_id
 from jobcopilot_api.schemas.profiles import (
+    ProfileChunkItem,
+    ProfileChunksResponse,
     ProfileDetail,
     ProfileEducationItem,
     ProfileExperienceItem,
@@ -54,6 +65,7 @@ from jobcopilot_api.schemas.profiles import (
     ProfileStatus,
     ProfileStructured,
 )
+from jobcopilot_api.services.chunk_service import RebuildResult, rebuild_for_profile
 from jobcopilot_api.services.profile_service import (
     create_pending_profile,
     get_children,
@@ -63,6 +75,8 @@ from jobcopilot_api.services.profile_service import (
     run_parse,
     soft_delete_profile,
 )
+
+log = structlog.get_logger(__name__)
 
 router = APIRouter(tags=["profiles"])
 
@@ -209,6 +223,10 @@ def _sessionmaker_dep() -> async_sessionmaker[AsyncSession]:
     return get_sessionmaker()
 
 
+def _embedder_dep() -> Embedder:
+    return get_embedder()
+
+
 # ---------------------------------------------------------------------------
 # POST /v1/profiles/parse — SSE only
 # ---------------------------------------------------------------------------
@@ -226,6 +244,7 @@ async def parse(
     user_id: Annotated[int, Depends(current_user_id)],
     llm: Annotated[LLMClient, Depends(_llm_dep)],
     sessionmaker_: Annotated[async_sessionmaker[AsyncSession], Depends(_sessionmaker_dep)],
+    embedder: Annotated[Embedder, Depends(_embedder_dep)],
 ) -> EventSourceResponse:
     prompt = _resolve_prompt(request)
     return EventSourceResponse(
@@ -235,6 +254,7 @@ async def parse(
             body=body,
             llm=llm,
             prompt=prompt,
+            embedder=embedder,
         )
     )
 
@@ -246,11 +266,16 @@ async def _sse_parse(
     body: ProfileParseInput,
     llm: LLMClient,
     prompt: LoadedPrompt,
+    embedder: Embedder,
 ) -> AsyncIterator[dict[str, str]]:
     """Yield the SSE sequence for /v1/profiles/parse.
 
-    Same shape as JD: pre-insert failures (text too short, PDF garbage,
-    duplicate user) skip `started` and emit `error → done`.
+    Same pre-insert failure handling as JD (skip `started`, emit
+    `error → done`). After `run_parse` succeeds, kick off
+    `rebuild_for_profile` and emit `chunking_embedding`. Chunking
+    failure does NOT roll back the parse — the profile row is already
+    `parsed` in DB; the caller can hit `POST /rechunk` later. We emit
+    `chunking_embedding{ok:false}` so the client can surface a banner.
     """
     job_id = generate_uuid7()
     try:
@@ -282,8 +307,59 @@ async def _sse_parse(
         yield _sse("done", {"ok": False})
         return
 
+    yield _sse(
+        "chunking_embedding",
+        await _try_rebuild_payload(
+            sessionmaker=sessionmaker,
+            user_id=user_id,
+            profile_id=profile_id,
+            embedder=embedder,
+            trace_id=job_id,
+        ),
+    )
+
     yield _sse("result", {"resource_id": profile_id, "url": f"/v1/profiles/{profile_id}"})
     yield _sse("done", {"ok": True})
+
+
+async def _try_rebuild_payload(
+    *,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    user_id: int,
+    profile_id: int,
+    embedder: Embedder,
+    trace_id: str,
+) -> dict[str, Any]:
+    """Best-effort rebuild for the parse SSE tail. Returns the
+    `chunking_embedding` event payload; never raises."""
+    try:
+        result = await rebuild_for_profile(
+            sessionmaker,
+            user_id=user_id,
+            profile_id=profile_id,
+            embedder=embedder,
+            trace_id=trace_id,
+        )
+    except Exception as exc:
+        log.warning(
+            "profile_parse.chunk_failed",
+            profile_id=profile_id,
+            user_id=user_id,
+            error=str(exc),
+            trace_id=trace_id,
+        )
+        return {"ok": False, "error": str(exc)}
+    return _rebuild_payload(result)
+
+
+def _rebuild_payload(result: RebuildResult) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "chunks_written": result.chunks_written,
+        "embed_model": result.embed_model,
+        "tokens_in": result.tokens_in,
+        "cost_cny": str(result.cost_cny),
+    }
 
 
 def _sse(event: str, data: dict[str, Any]) -> dict[str, str]:
@@ -355,3 +431,127 @@ async def delete(
 ) -> None:
     async with session.begin():
         await soft_delete_profile(session, user_id=user_id, profile_id=profile_id)
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/profiles/{id}/rechunk — SSE
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/profiles/{profile_id}/rechunk",
+    response_model=None,
+    responses={200: {"description": "SSE stream"}},
+    summary="Rebuild a profile's chunks (SSE)",
+)
+async def rechunk(
+    profile_id: int,
+    user_id: Annotated[int, Depends(current_user_id)],
+    sessionmaker_: Annotated[async_sessionmaker[AsyncSession], Depends(_sessionmaker_dep)],
+    embedder: Annotated[Embedder, Depends(_embedder_dep)],
+) -> EventSourceResponse:
+    return EventSourceResponse(
+        _sse_rechunk(
+            sessionmaker=sessionmaker_,
+            user_id=user_id,
+            profile_id=profile_id,
+            embedder=embedder,
+        )
+    )
+
+
+async def _sse_rechunk(
+    *,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    user_id: int,
+    profile_id: int,
+    embedder: Embedder,
+) -> AsyncIterator[dict[str, str]]:
+    """Yield the rechunk SSE sequence.
+
+    Mirrors parse SSE: ownership check before `started` (so 404 / wrong-
+    user appears as `error → done` without a misleading `started`).
+    Embed failures are surfaced as `error → done` (unlike the parse
+    tail where the parse already succeeded and we keep going).
+    """
+    job_id = generate_uuid7()
+    try:
+        async with sessionmaker() as session:
+            await get_profile(session, user_id=user_id, profile_id=profile_id)
+    except JobCopilotError as exc:
+        yield _sse("error", {"code": exc.code, "detail": exc.detail})
+        yield _sse("done", {"ok": False})
+        return
+
+    yield _sse("started", {"job_id": job_id, "resource_id": profile_id})
+
+    try:
+        result = await rebuild_for_profile(
+            sessionmaker,
+            user_id=user_id,
+            profile_id=profile_id,
+            embedder=embedder,
+            trace_id=job_id,
+        )
+    except JobCopilotError as exc:
+        yield _sse("error", {"code": exc.code, "detail": exc.detail})
+        yield _sse("done", {"ok": False})
+        return
+    except Exception as exc:
+        log.warning(
+            "profile_rechunk.failed", profile_id=profile_id, error=str(exc), trace_id=job_id
+        )
+        yield _sse("error", {"code": "EMBED_FAILED", "detail": str(exc)})
+        yield _sse("done", {"ok": False})
+        return
+
+    yield _sse("chunking_embedding", _rebuild_payload(result))
+    yield _sse("done", {"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/profiles/{id}/chunks
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/profiles/{profile_id}/chunks",
+    response_model=ProfileChunksResponse,
+    summary="List a profile's chunks (no embedding payload)",
+)
+async def chunks(
+    profile_id: int,
+    user_id: Annotated[int, Depends(current_user_id)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ProfileChunksResponse:
+    profile = await get_profile(session, user_id=user_id, profile_id=profile_id)
+    rows = list(
+        (
+            await session.execute(
+                sa.select(ProfileChunk)
+                .where(ProfileChunk.profile_id == profile.id)
+                .order_by(ProfileChunk.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return ProfileChunksResponse(
+        data=[_chunk_item(r) for r in rows],
+        total=len(rows),
+    )
+
+
+def _chunk_item(row: ProfileChunk) -> ProfileChunkItem:
+    return ProfileChunkItem(
+        id=row.id,
+        granularity=row.granularity,
+        source_table=row.source_table,
+        source_id=row.source_id,
+        content=row.content,
+        embed_model=row.embed_model,
+        embed_version=row.embed_version,
+        metadata=dict(row.chunk_metadata),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
