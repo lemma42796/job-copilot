@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Anchor `.env` to monorepo root so launching uvicorn from any subdirectory
+# (apps/api vs project root) loads the same file. Layout:
+# apps/api/src/jobcopilot_api/settings.py → parents[4] = monorepo root
+_PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",
         env_prefix="JOBCOPILOT_",
         extra="ignore",
