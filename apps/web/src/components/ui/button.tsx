@@ -11,8 +11,7 @@ const buttonVariants = cva(
       variant: {
         default:
           'bg-accent text-white shadow-[0_1px_2px_rgba(0,0,0,0.08)] hover:bg-[var(--color-accent-hover)]',
-        outline:
-          'border border-border bg-surface text-foreground hover:bg-input',
+        outline: 'border border-border bg-surface text-foreground hover:bg-input',
         ghost: 'text-foreground hover:bg-input',
         destructive:
           'bg-[var(--color-danger)] text-white shadow-[0_1px_2px_rgba(0,0,0,0.08)] hover:opacity-90',
