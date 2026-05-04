@@ -57,15 +57,23 @@ function buildStructured(p: ProfileDetail, top: EditableTop): ProfileStructured 
 
 function StatusBadge({ status }: { status: ProfileDetail['status'] }) {
   const map: Record<ProfileDetail['status'], { label: string; cls: string }> = {
-    parsing: { label: '解析中', cls: 'bg-yellow-500/20 text-yellow-300' },
-    parsed: { label: '已解析', cls: 'bg-green-500/20 text-green-300' },
+    parsing: {
+      label: '解析中',
+      cls: 'bg-[var(--color-warning-bg)] text-[var(--color-warning-fg)] border border-[var(--color-warning-border)]/40',
+    },
+    parsed: {
+      label: '已解析',
+      cls: 'bg-[var(--color-success-bg)] text-[var(--color-success-fg)] border border-[var(--color-success-border)]/40',
+    },
     parse_failed: {
       label: '解析失败',
-      cls: 'bg-[var(--color-danger)]/20 text-[var(--color-danger)]',
+      cls: 'bg-[var(--color-danger)]/10 text-[var(--color-danger)]',
     },
   };
   const v = map[status];
-  return <span className={`rounded px-2 py-0.5 text-xs font-medium ${v.cls}`}>{v.label}</span>;
+  return (
+    <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${v.cls}`}>{v.label}</span>
+  );
 }
 
 export function ProfileEditForm({ profile }: { profile: ProfileDetail }) {

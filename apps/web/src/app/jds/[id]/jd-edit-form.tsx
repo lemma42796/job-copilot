@@ -86,16 +86,26 @@ const JOB_LEVEL_LABEL: Record<JDStructuredJob_level, string> = {
 
 function StatusBadge({ status }: { status: JDDetail['status'] }) {
   const map: Record<JDDetail['status'], { label: string; className: string }> = {
-    parsing: { label: '解析中', className: 'bg-yellow-500/20 text-yellow-300' },
-    parsed: { label: '已解析', className: 'bg-green-500/20 text-green-300' },
+    parsing: {
+      label: '解析中',
+      className:
+        'bg-[var(--color-warning-bg)] text-[var(--color-warning-fg)] border border-[var(--color-warning-border)]/40',
+    },
+    parsed: {
+      label: '已解析',
+      className:
+        'bg-[var(--color-success-bg)] text-[var(--color-success-fg)] border border-[var(--color-success-border)]/40',
+    },
     parse_failed: {
       label: '解析失败',
-      className: 'bg-[var(--color-danger)]/20 text-[var(--color-danger)]',
+      className: 'bg-[var(--color-danger)]/10 text-[var(--color-danger)]',
     },
   };
   const v = map[status];
   return (
-    <span className={`rounded px-2 py-0.5 text-xs font-medium ${v.className}`}>{v.label}</span>
+    <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${v.className}`}>
+      {v.label}
+    </span>
   );
 }
 

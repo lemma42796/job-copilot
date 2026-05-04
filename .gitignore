@@ -16,6 +16,9 @@ Thumbs.db
 .env.*.local
 !.env.example
 
+# Local dogfood fixtures (test resumes / JDs)
+fixtures/
+
 # Python
 __pycache__/
 *.py[cod]

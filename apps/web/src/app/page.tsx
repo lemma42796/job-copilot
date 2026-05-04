@@ -18,31 +18,33 @@ export default async function HomePage() {
   const state = await loadHealth();
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-16">
-      <h1 className="text-3xl font-semibold">JobCopilot</h1>
-      <p className="mt-2 text-muted">AI 求职助手</p>
-      <p className="mt-4 text-sm text-muted">
+    <main className="mx-auto max-w-3xl px-6 py-24">
+      <h1 className="text-5xl font-semibold tracking-tight">JobCopilot</h1>
+      <p className="mt-3 text-xl text-muted">AI 求职助手</p>
+      <p className="mt-6 max-w-xl text-[15px] leading-relaxed text-muted">
         粘贴感兴趣的岗位 JD,再上传你的简历,即可得到匹配分析、能力差距与改进建议。
       </p>
 
-      <div className="mt-8 flex flex-wrap gap-3">
-        <Button asChild>
+      <div className="mt-10 flex flex-wrap gap-3">
+        <Button asChild size="lg">
           <Link href="/jds/new">粘贴 JD</Link>
         </Button>
-        <Button asChild variant="outline">
+        <Button asChild size="lg" variant="outline">
           <Link href="/profiles/new">上传简历</Link>
         </Button>
       </div>
 
-      <h2 className="mt-12 text-xl font-semibold">API 状态</h2>
-      <div className="mt-2 text-sm text-muted">
+      <h2 className="mt-20 text-base font-semibold tracking-tight text-muted uppercase">
+        API 状态
+      </h2>
+      <div className="mt-2 text-sm">
         {state.kind === 'ok' ? (
-          <p>
-            <span className="font-medium text-accent">{state.data.status}</span> v
+          <p className="text-muted">
+            <span className="font-medium text-accent">{state.data.status}</span> · v
             {state.data.version} · env {state.data.env} · {state.data.timestamp}
           </p>
         ) : (
-          <p>
+          <p className="text-muted">
             <span className="font-medium text-[var(--color-danger)]">down</span> · {state.message}
           </p>
         )}

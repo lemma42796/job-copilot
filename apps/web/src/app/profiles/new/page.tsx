@@ -167,10 +167,10 @@ export default function NewProfilePage() {
           <CardTitle>上传简历</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="mb-4 inline-flex rounded-md border border-border bg-input p-1 text-sm">
+          <div className="mb-4 inline-flex rounded-full bg-input p-1 text-sm">
             <button
               type="button"
-              className={`rounded px-3 py-1 ${mode === 'text' ? 'bg-foreground text-background' : 'text-muted hover:text-foreground'}`}
+              className={`rounded-full px-4 py-1.5 transition-all ${mode === 'text' ? 'bg-surface text-foreground shadow-[var(--shadow-apple-sm)]' : 'text-muted hover:text-foreground'}`}
               onClick={() => setMode('text')}
               disabled={pending}
             >
@@ -178,7 +178,7 @@ export default function NewProfilePage() {
             </button>
             <button
               type="button"
-              className={`rounded px-3 py-1 ${mode === 'pdf' ? 'bg-foreground text-background' : 'text-muted hover:text-foreground'}`}
+              className={`rounded-full px-4 py-1.5 transition-all ${mode === 'pdf' ? 'bg-surface text-foreground shadow-[var(--shadow-apple-sm)]' : 'text-muted hover:text-foreground'}`}
               onClick={() => setMode('pdf')}
               disabled={pending}
             >
@@ -255,7 +255,7 @@ export default function NewProfilePage() {
             ) : null}
 
             {warning ? (
-              <p className="rounded border border-yellow-500/40 bg-yellow-500/10 p-2 text-sm text-yellow-300">
+              <p className="rounded-xl border border-[var(--color-warning-border)]/40 bg-[var(--color-warning-bg)] p-3 text-sm text-[var(--color-warning-fg)]">
                 {warning}
               </p>
             ) : null}

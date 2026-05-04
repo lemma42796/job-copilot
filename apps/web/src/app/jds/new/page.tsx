@@ -88,10 +88,10 @@ export default function NewJdPage() {
           <CardTitle>粘贴 JD</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="mb-4 inline-flex rounded-md border border-border bg-input p-1 text-sm">
+          <div className="mb-4 inline-flex rounded-full bg-input p-1 text-sm">
             <button
               type="button"
-              className={`rounded px-3 py-1 ${mode === 'text' ? 'bg-foreground text-background' : 'text-muted hover:text-foreground'}`}
+              className={`rounded-full px-4 py-1.5 transition-all ${mode === 'text' ? 'bg-surface text-foreground shadow-[var(--shadow-apple-sm)]' : 'text-muted hover:text-foreground'}`}
               onClick={() => setMode('text')}
               disabled={pending}
             >
@@ -99,7 +99,7 @@ export default function NewJdPage() {
             </button>
             <button
               type="button"
-              className={`rounded px-3 py-1 ${mode === 'pdf' ? 'bg-foreground text-background' : 'text-muted hover:text-foreground'}`}
+              className={`rounded-full px-4 py-1.5 transition-all ${mode === 'pdf' ? 'bg-surface text-foreground shadow-[var(--shadow-apple-sm)]' : 'text-muted hover:text-foreground'}`}
               onClick={() => setMode('pdf')}
               disabled={pending}
             >
