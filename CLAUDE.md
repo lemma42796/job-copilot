@@ -13,6 +13,7 @@
 - 用户问"进度到哪"→ 读 STATUS.md → 简短汇报 → 等指示
 - 用户没说改文档,就只改代码
 - Bash 输出尽量收紧:`pytest -q`(不是 `-v`)、`git log --oneline -5`、长输出加 `| head` 或 `| wc -l`
+- **所有测试 / 自动化验证由用户手动跑**——改完代码后**不要主动**启动 `pytest` / `mypy` / `ruff` / `pnpm typecheck` / `pnpm lint` / `pnpm build` / `playwright` / `puppeteer` / 截图工具 / `curl localhost:*` 抓 HTML 等任何自动化校验。只口头描述期望(URL / 操作步骤 / 期望看到的字段或数字),让用户在浏览器或终端自己验。**例外**:用户明确说"跑闸门"/"跑测试"/"跑 typecheck"等指令时再跑。
 
 ## 切片完成更新流程
 
