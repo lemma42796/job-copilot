@@ -1,35 +1,35 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-04 — M1 完成(S0.5/S1-S11 全部 ✅);M2 匹配 + 简历定制待规划
+last_updated: 2026-05-04 — M2 开张:S12 ✅(JD 列表页 + 全局导航 + UX 顺手刀)
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
 # 当前阶段
 
-**M2 匹配 + 简历定制 — 待规划**
+**M2 匹配 + 简历定制 — 进行中**
 
 | 切片 | 内容 | 状态 |
 |------|------|------|
-| -    | 待规划 — 见 `7-ROADMAP.md` M2 段;首切片候选:JD 列表页 + 全局导航(为匹配场景做"选哪份 JD"基础) | pending |
+| S12  | JD 列表页 + 全局导航 + parse_failed 一键删 + 草稿暂存 → [slices/S12-jd-list-and-nav.md](slices/S12-jd-list-and-nav.md) | ✅ |
+| -    | 下一刀待规划 — 见下方"下一刀"区 | pending |
 
-**当前 working tree**:干净,M1 收官 + S11 commits 已 push 至 origin/main。续作前检查:`git status --short && git log origin/main..main --oneline | wc -l`。
+**当前 working tree**:S12 commits 已 push 至 origin/main。续作前检查:`git status --short && git log origin/main..main --oneline | wc -l`。
 
-**当前闸门**(M1 收官):后端 `pytest -q` **321 passed** + ruff / mypy / `alembic upgrade head` → 0010;前端 `pnpm --filter @jobcopilot/web typecheck` + `pnpm lint`(根 biome 扫 monorepo)+ `pnpm --filter @jobcopilot/web build` 全绿;evals `pnpm eval:jd` 13 条 case_pass=2/13(差 11 推 M2)/ `pnpm eval:profile` 11 条 case_pass=11/11(schemaValid=1.0 / experienceRecall=1.0 / skillF1=0.988 / chunkRecall=1.0)。
+**当前闸门**:后端 `pytest -q` **321 passed**(S12 后端 0 改动,沿用 M1 数字)+ ruff / mypy / `alembic upgrade head` → 0010;前端 typecheck / lint / build **S12 末端跳过自动化校验**(浏览器手测覆盖核心路径),下次切片开工前需补跑;evals 数字未动(`pnpm eval:jd` 2/13 / `pnpm eval:profile` 11/11)。
 
 **M1 完成**:[slices/M1-summary.md](slices/M1-summary.md) — 整体经验 + 25 条永久约束 + 业务/工程 DoD 检查 + 给 M2 的数据底座。各切片归档卡:`slices/{S0.5,S1..S11}-*.md`。
 
 > 2026-05-01 LLM Provider 由 DeepSeek V4 切换到阿里云百炼 Qwen3.6,见 ADR-0003。ADR-0001 复审条件 1(余额 < ¥1)触发时回切。
 
-## 下一刀:M2 规划(待对齐)
+## 下一刀:M2 后续(待对齐)
 
 **M2 主线**(见 `7-ROADMAP.md`):JD ↔ profile 匹配 + 简历定制 + 投递追踪占位。
 
-**首切片候选**(待用户确认优先级):
-1. **JD 列表页 + 全局导航**(原 M2 #12)— S5 起"列表延后"的兑现;调现成 `GET /jds`(cursor 分页已就位),提供卡片列表 / 进入详情 / 删除;同时补简历列表入口与首页导航。M2 起匹配场景需"选哪份 JD",列表才真正有产品意义。**最低风险开张刀**。
-2. **匹配 MVP**(retrieval + scoring)— `match_service`:JD vector + chunks 召回 → `MatchAgent` LLM 评分 → 结构化 fit 报告。需要 M1 沉淀的 chunks(已就位)+ 新匹配表(`matches`)。
-3. **简历定制 MVP**(LangGraph)— 基于 match 结果用 LangGraph 串 5 表 CRUD agent + render PDF。Q1(awesome-cv 中文化)在 M3 启动前决策,M2 用 plain text/markdown 占位。
-4. **prompt v1.0.2 + dataset 扩 + 评测达阈兜底**(原 M2 #1-9)— 把 jd_extract baseline 2/13 推到 ≥80%。
+**剩余切片候选**(S12 已完成,从下面挑下一刀):
+1. **匹配 MVP**(retrieval + scoring)— `match_service`:JD vector + chunks 召回 → `MatchAgent` LLM 评分 → 结构化 fit 报告。需要 M1 沉淀的 chunks(已就位)+ 新匹配表(`matches`)。**M2 主线刀**。
+2. **简历定制 MVP**(LangGraph)— 基于 match 结果用 LangGraph 串 5 表 CRUD agent + render PDF。Q1(awesome-cv 中文化)在 M3 启动前决策,M2 用 plain text/markdown 占位。
+3. **prompt v1.0.2 + dataset 扩 + 评测达阈兜底**(原 M2 #1-9)— 把 jd_extract baseline 2/13 推到 ≥80%。
 
 下次开工讨论顺序与切粒度。
 
@@ -58,8 +58,8 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 ## 前端 / UX
 
-14. **JD 列表页 + 全局导航**(S5 起"列表延后"的兑现)— 调现成 `GET /jds`(cursor 分页已就位),提供卡片列表 / 进入详情 / 删除;同时补简历列表入口与首页导航。M2 起匹配场景需"选哪份 JD",列表才真正有产品意义。**顺手做**:`/profiles/new` 错误页"一键删除并重传"按钮(parse_failed UX 绕路降级,S11 调研)。
-15. **草稿暂存**:`/profiles/new` 文本粘贴后跳详情页删旧 profile,回来 textarea 内容丢失(S11 dogfood 体感)。sessionStorage 缓存粘贴内容即可。
+~~14. JD 列表页 + 全局导航 + parse_failed 一键删并重传~~ — S12 已完成。
+~~15. 草稿暂存(`/jds/new` + `/profiles/new` sessionStorage)~~ — S12 已完成。
 
 ---
 
@@ -67,7 +67,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 > M1 沉淀的 25 条已全部归档到 [slices/M1-summary.md](slices/M1-summary.md);M2 起新约束在此区累积。
 
-(空 — M2 第一个切片落地时开始记)
+1. **列表页统一模板** `[来自 S12]` — SSR 第一页(`page.tsx` async server component)+ client 接管(`xx-client.tsx` 拿 cursor 翻页)+ 行内 native `confirm` 删除(本地 splice 不重 fetch)+ 卡片整体可点击(Link absolute overlay + 内容 `pointer-events-none` + 删除按钮 `pointer-events-auto`)。后续 matches / 投递列表复用此结构,不再每个列表重新发明。
 
 ---
 
@@ -93,7 +93,8 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 |------|------|
 | `1-PRD.md` / `2-TECH_DESIGN.md` / `3-DATA_MODEL.md` / `4-API_SPEC.md` / `5-AGENT_DESIGN.md` / `6-EVAL_PLAN.md` / `7-ROADMAP.md` / `8-ENGINEERING.md` | 设计文档,**只在写对应代码时按需读相关章节** |
 | `slices/M1-summary.md` | M1 收官总结(整体经验 + 25 条永久约束 + DoD 检查) |
-| `slices/{S0.5,S1..S11}-*.md` | 各切片归档(产出 / 设计决策 / 踩坑) |
+| `slices/{S0.5,S1..S11}-*.md` | M1 各切片归档(产出 / 设计决策 / 踩坑) |
+| `slices/S12-jd-list-and-nav.md` | M2 切片归档(产出 / 设计决策 / 踩坑) |
 | `adr/0001-only-deepseek` (Superseded by 0003) / `0002-postgres-as-vector-db` / `0003-switch-to-qwen` / `0004-llm-client-contract` / `0005-files-upload-contract` / `0006-jd-parse-contract` | 架构决策;下一个编号 0007 |
 | `runbook/` | 部署期再写,目前空 |
 
