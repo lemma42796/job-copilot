@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-03 — M1 进行中,S0.5/S1-S10 已落地;S11 待开工(dogfood + bad case)
+last_updated: 2026-05-04 — M1 进行中;S11 dogfood 进行中,bad case #1/#2 已修(SSE 起手 user 校验 + schema error 透 detail);M2 待办 #1 提前兑(max_tokens 透传)
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -22,11 +22,11 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | S8   | Chunking 纯函数 + Embedding(text-embedding-v4)+ `/rechunk` + `/chunks` + parse SSE 接 chunk | ✅ |
 | S9   | 前端:简历上传(文本+PDF)+ SSE 4 阶段 + detail 表单 + chunks 调试折叠 + delete | ✅ |
 | S10  | `evals/suites/profile_extract` 11 条自造 + 4 metric + chunk 召回断言 | ✅ |
-| S11  | 1 名志愿者 dogfood + bad case 修复(**Week 3 末 DoD**) | pending |
+| S11  | 1 名志愿者 dogfood + bad case 修复(**Week 3 末 DoD**) | 进行中 |
 
-**当前 working tree**:S10 改动 untracked,待 commit & push。续作前检查:`git status --short && git log origin/main..main --oneline | wc -l`。
+**当前 working tree**:干净,S11 dogfood 阶段性进展(bad case #1/#2 + M2#1 max_tokens)已 commit & push 至 origin/main。续作前检查:`git status --short && git log origin/main..main --oneline | wc -l`。
 
-**当前闸门**(S10 完成):本地必须跑 CI 等价命令——后端 `uv run --project apps/api {ruff check . / ruff format --check . / mypy apps/api/src apps/api/tests}` + `pytest -q` **315 passed** + `alembic upgrade head` → 0009(未新增 revision);前端/全仓 `pnpm install --frozen-lockfile && pnpm lint && pnpm --filter @jobcopilot/web typecheck && pnpm --filter @jobcopilot/schemas typecheck && pnpm --filter @jobcopilot/web build`(**`pnpm lint` = 根 biome,扫 monorepo 全部 .ts/.tsx/.json/.yaml,包括 evals/——任何包加 .ts/.json 后必须本地跑一次,S10 漏跑导致 6df7459 fixup**);evals `pnpm eval:jd` 13 条 case_pass=2/13;**`pnpm eval:profile` 11 条 case_pass=11/11**(schemaValid=1.0 / experienceRecall=1.0 / skillF1=0.988 / chunkRecall=1.0 / 50k tokens / 24s)。
+**当前闸门**(S11 进行中):本地必须跑 CI 等价命令——后端 `uv run --project apps/api {ruff check . / ruff format --check . / mypy apps/api/src apps/api/tests}` + `pytest -q` **318 passed**(+3:`test_llm_client` max_tokens 链路 + `test_profile_service` user 不存在分支) + `alembic upgrade head` → 0009(未新增 revision);前端/全仓 `pnpm install --frozen-lockfile && pnpm lint && pnpm --filter @jobcopilot/web typecheck && pnpm --filter @jobcopilot/schemas typecheck && pnpm --filter @jobcopilot/web build`(**`pnpm lint` = 根 biome,扫 monorepo 全部 .ts/.tsx/.json/.yaml,包括 evals/——任何包加 .ts/.json 后必须本地跑一次,S10 漏跑导致 6df7459 fixup**);evals `pnpm eval:jd` 13 条 case_pass=2/13;**`pnpm eval:profile` 11 条 case_pass=11/11**(schemaValid=1.0 / experienceRecall=1.0 / skillF1=0.988 / chunkRecall=1.0 / 50k tokens / 24s)。
 
 > 2026-05-01 LLM Provider 由 DeepSeek V4 切换到阿里云百炼 Qwen3.6,见 ADR-0003。ADR-0001 复审条件 1(余额 < ¥1)触发时回切。
 
@@ -36,26 +36,32 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 **复用**:S5 / S9 全部前端入口已就位;S6 / S10 评测 baseline 已就位。
 
-**不做**:dataset 扩 50 条 / prompt v1.0.2 升级 / 4 新 metric — 全推 M2(STATUS M2 待办累积 14 条,见下文)。
+**进行中进展**(2/5 bad case 已修,自当志愿者期间发现):
+- **#1 SSE 起手 user 不存在静默** — 用户 id 不存在时,`profiles` INSERT 撞 `fk_profiles_user_id` IntegrityError 在 SSE generator 起手抛,前端拿到 0 字节 close,看不到任何错误。修法:`create_pending_jd` / `create_pending_profile` 入门先 `SELECT 1 FROM users WHERE id = ?`,不存在 → `NotFoundError` → SSE `error → done` 显式回报。
+- **#2 LLM schema error 不可调试** — `LLMSchemaInvalidError` 之前只回 "JSON 不符合 schema",dogfood 时无法定位是哪个字段;现在把 Pydantic 校验路径前 500 字符透到 SSE `error.detail`(`jd_service` / `profile_service` 对称)。
+- 顺手提前兑 **M2 待办 #1**(`max_tokens` 透传 + Tier 默认 8192/8192/16384)— bad case 调试期间发现长简历 JSON 截断,根因就是这条。
+
+**不做**:dataset 扩 50 条 / prompt v1.0.2 升级 / 4 新 metric — 全推 M2(STATUS M2 待办累积 13 条,见下文)。
 
 ---
 
 ## M2 待办(从 S6 暴露 / 推迟)
 
-1. **生产 LLMClient 没设 `max_tokens`** → DashScope 默认值偏低,长 JD 输出截断 JSON。评测侧已用 `max_tokens=2048` 绕过。修 `LLMClient.complete()` + 各 Tier 默认值。
-2. **JDParser prompt v1.0.2** 修 baseline 不达阈:① "hard_skills 不抽厂商名/概念名"(修 hardSkillF1=0.67);② "title 抽到第一行末"(修 titleExact=0.769)。
-3. **dataset 扩 50 条**(剩 37:OCR 7 / 邮件 8 / 极短 3 / 薪资模糊 2 / 标准中文 17)。
-4. **4 新 metric**:`level_acc` / `confidence_calibration` / `latency_p95` / `cost_per_call_cny`。
-5. **bad case 表 + promote 脚本 + 月度 triage**(EVAL_PLAN §12)。
-6. **跑 3 次取中位数**(EVAL_PLAN §11.3)。
-7. **不退化策略**:Δ ≤ -2pp 比对 main baseline。
-8. **PR comment 脚本**。
-9. **`salaryMonthsAcc` 改自定义聚合**(去掉 want=null 拉高分母的水分)。
-10. **`.github/workflows/eval.yml` 启用 push/PR trigger**(取消注释 + 配 GitHub Secret `DASHSCOPE_API_KEY_EVAL`,见 EVAL_PLAN §10.5)。
-11. **embedding `DataInspectionFailed` 观察**(S8 规划期暴露)— 跑 30+ profile dataset 时若有命中,需对 chunker 加内容脱敏或 retry-skip 策略。
-12. **embedding 写 `llm_calls` 表统一**(S8 规划期暴露)— S8 阶段只 structlog 打印 embedding token + cost;M2 把 schema 通用化(加 `kind` 枚举或拆表)。
-13. **前端 JD 列表页 + 全局导航**(S5 起"列表延后"的兑现)— 调现成 `GET /jds`(cursor 分页已就位),提供卡片列表 / 进入详情 / 删除;同时补简历列表入口与首页导航。M2 起匹配场景需"选哪份 JD",列表才真正有产品意义。
-14. **profile_extract dataset 扩到 30+**(S10 baseline 10-13 条只覆盖核心场景;M2 补 PDF 简历真实样本 / 多轮跳槽 10+ 年 / 冷门行业 / OCR 噪声等长尾)。
+> **已兑现(S11 期间)**:~~原 #1 生产 LLMClient 没设 `max_tokens`~~ — `TierConfig` 加 `default_max_tokens`(CHEAP/STANDARD=8192,PREMIUM=16384)+ `LLMRequest` / `ProviderRequest` 全链路透传;dashscope provider payload 加 `max_tokens` 字段。
+
+1. **JDParser prompt v1.0.2** 修 baseline 不达阈:① "hard_skills 不抽厂商名/概念名"(修 hardSkillF1=0.67);② "title 抽到第一行末"(修 titleExact=0.769)。
+2. **dataset 扩 50 条**(剩 37:OCR 7 / 邮件 8 / 极短 3 / 薪资模糊 2 / 标准中文 17)。
+3. **4 新 metric**:`level_acc` / `confidence_calibration` / `latency_p95` / `cost_per_call_cny`。
+4. **bad case 表 + promote 脚本 + 月度 triage**(EVAL_PLAN §12)。
+5. **跑 3 次取中位数**(EVAL_PLAN §11.3)。
+6. **不退化策略**:Δ ≤ -2pp 比对 main baseline。
+7. **PR comment 脚本**。
+8. **`salaryMonthsAcc` 改自定义聚合**(去掉 want=null 拉高分母的水分)。
+9. **`.github/workflows/eval.yml` 启用 push/PR trigger**(取消注释 + 配 GitHub Secret `DASHSCOPE_API_KEY_EVAL`,见 EVAL_PLAN §10.5)。
+10. **embedding `DataInspectionFailed` 观察**(S8 规划期暴露)— 跑 30+ profile dataset 时若有命中,需对 chunker 加内容脱敏或 retry-skip 策略。
+11. **embedding 写 `llm_calls` 表统一**(S8 规划期暴露)— S8 阶段只 structlog 打印 embedding token + cost;M2 把 schema 通用化(加 `kind` 枚举或拆表)。
+12. **前端 JD 列表页 + 全局导航**(S5 起"列表延后"的兑现)— 调现成 `GET /jds`(cursor 分页已就位),提供卡片列表 / 进入详情 / 删除;同时补简历列表入口与首页导航。M2 起匹配场景需"选哪份 JD",列表才真正有产品意义。
+13. **profile_extract dataset 扩到 30+**(S10 baseline 10-13 条只覆盖核心场景;M2 补 PDF 简历真实样本 / 多轮跳槽 10+ 年 / 冷门行业 / OCR 噪声等长尾)。
 
 ---
 
