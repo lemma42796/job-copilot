@@ -14,7 +14,7 @@ from jobcopilot_api.infra.db import get_sessionmaker
 from jobcopilot_api.infra.logging import setup_logging
 from jobcopilot_api.infra.prompts import load_prompt_versions
 from jobcopilot_api.infra.request_id import RequestIDMiddleware
-from jobcopilot_api.routers import files, health, jds, matches, profiles
+from jobcopilot_api.routers import files, health, jds, matches, profiles, resumes
 from jobcopilot_api.settings import settings
 
 
@@ -57,6 +57,7 @@ def create_app() -> FastAPI:
     app.include_router(jds.router, prefix="/v1")
     app.include_router(profiles.router, prefix="/v1")
     app.include_router(matches.router, prefix="/v1")
+    app.include_router(resumes.router, prefix="/v1")
 
     return app
 

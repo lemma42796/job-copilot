@@ -7,6 +7,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import type { MatchDetail, MatchedSkill, MissingSkill } from '@/lib/api';
 import { formatRelative } from '@/lib/format';
 
+import { ResumeTrigger } from './resume-trigger';
+
 const SEVERITY_LABELS: Record<MissingSkill['severity'], string> = {
   critical: '硬性缺失',
   major: '重要短板',
@@ -38,6 +40,7 @@ export function MatchResultView({ match }: { match: MatchDetail }) {
           <MatchedSkillsCard skills={structured.matched_skills ?? []} />
           <MissingSkillsCard skills={structured.missing_skills ?? []} />
           <SuggestionsCard suggestions={structured.suggestions ?? []} />
+          <ResumeTrigger match={match} />
         </>
       ) : null}
     </div>

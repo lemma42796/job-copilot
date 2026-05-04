@@ -44,6 +44,13 @@ export type MatchedSkill = components['schemas']['MatchedSkill'];
 export type MissingSkill = components['schemas']['MissingSkill'];
 export type MatchStatus = components['schemas']['MatchStatus'];
 
+export type ResumeCreateInput = components['schemas']['ResumeCreateInput'];
+export type ResumeDetail = components['schemas']['ResumeDetail'];
+export type ResumeListItem = components['schemas']['ResumeListItem'];
+export type ResumeListResponse = components['schemas']['ResumeListResponse'];
+export type ResumeStatus = components['schemas']['ResumeStatus'];
+export type ReviewFinding = components['schemas']['ReviewFinding'];
+
 type Problem = {
   type?: string;
   title?: string;
@@ -271,6 +278,65 @@ export async function listMatches(
 
 export async function deleteMatch(id: number): Promise<void> {
   await jsonFetch<void>(`/v1/matches/${id}`, { method: 'DELETE' });
+}
+
+// ---------------------------------------------------------------------------
+// Resumes(简历定制)
+// ---------------------------------------------------------------------------
+
+export type ResumeSseFrame =
+  | SseFrame<'started', { job_id: string; resource_id: number }>
+  | SseFrame<
+      'result',
+      {
+        resource_id: number;
+        url: string;
+        status: ResumeStatus;
+        review_passed: boolean | null;
+      }
+    >
+  | SseFrame<'error', { code: string; detail: string }>
+  | SseFrame<'done', { ok: boolean }>;
+
+export function createResume(input: ResumeCreateInput): AsyncGenerator<ResumeSseFrame> {
+  return streamSse<ResumeSseFrame>(`${API_BASE_URL}/v1/resumes/generate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-User-Id': USER_ID,
+    },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getResume(id: number, signal?: AbortSignal): Promise<ResumeDetail> {
+  return jsonFetch<ResumeDetail>(`/v1/resumes/${id}`, { signal });
+}
+
+export async function listResumes(
+  opts: {
+    cursor?: string | null;
+    limit?: number;
+    jdId?: number;
+    profileId?: number;
+    matchId?: number;
+    signal?: AbortSignal;
+  } = {},
+): Promise<ResumeListResponse> {
+  const params = new URLSearchParams();
+  if (opts.cursor) params.set('cursor', opts.cursor);
+  if (opts.limit) params.set('limit', String(opts.limit));
+  if (opts.jdId) params.set('jd_id', String(opts.jdId));
+  if (opts.profileId) params.set('profile_id', String(opts.profileId));
+  if (opts.matchId) params.set('match_id', String(opts.matchId));
+  const qs = params.toString();
+  return jsonFetch<ResumeListResponse>(`/v1/resumes${qs ? `?${qs}` : ''}`, {
+    signal: opts.signal,
+  });
+}
+
+export async function deleteResume(id: number): Promise<void> {
+  await jsonFetch<void>(`/v1/resumes/${id}`, { method: 'DELETE' });
 }
 
 export { API_BASE_URL };

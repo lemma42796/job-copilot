@@ -33,6 +33,11 @@ const NAV: NavGroup[] = [
     title: '匹配',
     items: [{ href: '/matches', label: '全部匹配', icon: <SparkIcon />, match: 'prefix' }],
   },
+  {
+    key: 'resumes',
+    title: '简历定制',
+    items: [{ href: '/resumes', label: '全部定制简历', icon: <PenIcon />, match: 'prefix' }],
+  },
 ];
 
 function isActive(item: NavItem, pathname: string, siblings: readonly NavItem[]): boolean {
@@ -138,6 +143,15 @@ function SparkIcon() {
         d="M8 2 L9.5 6.5 L14 8 L9.5 9.5 L8 14 L6.5 9.5 L2 8 L6.5 6.5 Z"
         strokeLinejoin="round"
       />
+    </svg>
+  );
+}
+
+function PenIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+      <path d="M11.5 2.5 13.5 4.5 5 13H3v-2L11.5 2.5Z" strokeLinejoin="round" />
+      <path d="M10 4 12 6" strokeLinecap="round" />
     </svg>
   );
 }

@@ -16,6 +16,8 @@ from jobcopilot_api.models.profile import (
     ProfileSkill,
 )
 from jobcopilot_api.models.prompt_version import PromptVersion
+from jobcopilot_api.models.resume import Resume
+from jobcopilot_api.models.resume_version import ResumeVersion
 from jobcopilot_api.models.user import User
 
 __all__ = [
@@ -32,6 +34,8 @@ __all__ = [
     "ProfileProject",
     "ProfileSkill",
     "PromptVersion",
+    "Resume",
+    "ResumeVersion",
     "TimestampMixin",
     "User",
 ]
