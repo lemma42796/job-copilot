@@ -28,6 +28,11 @@ const NAV: NavGroup[] = [
       { href: '/profiles/new', label: '新建简历', icon: <UserIcon />, match: 'exact' },
     ],
   },
+  {
+    key: 'matches',
+    title: '匹配',
+    items: [{ href: '/matches', label: '全部匹配', icon: <SparkIcon />, match: 'prefix' }],
+  },
 ];
 
 function isActive(item: NavItem, pathname: string, siblings: readonly NavItem[]): boolean {
@@ -122,6 +127,17 @@ function ListIcon() {
       <circle cx="2.75" cy="4" r="0.6" fill="currentColor" stroke="none" />
       <circle cx="2.75" cy="8" r="0.6" fill="currentColor" stroke="none" />
       <circle cx="2.75" cy="12" r="0.6" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+function SparkIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+      <path
+        d="M8 2 L9.5 6.5 L14 8 L9.5 9.5 L8 14 L6.5 9.5 L2 8 L6.5 6.5 Z"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

@@ -198,6 +198,42 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/v1/matches": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List matches (cursor-paginated) */
+        readonly get: operations["list__v1_matches_get"];
+        readonly put?: never;
+        /** Create a match analysis (SSE only) */
+        readonly post: operations["create_v1_matches_post"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/v1/matches/{match_id}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Get a match */
+        readonly get: operations["get_v1_matches__match_id__get"];
+        readonly put?: never;
+        readonly post?: never;
+        /** Soft-delete a match */
+        readonly delete: operations["delete_v1_matches__match_id__delete"];
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -515,6 +551,171 @@ export interface components {
          * @enum {string}
          */
         readonly JdStatus: JdStatus;
+        /**
+         * MatchCreateInput
+         * @description Body for POST /v1/matches。API_SPEC §6.5。
+         */
+        readonly MatchCreateInput: {
+            /** Jd Id */
+            readonly jd_id: number;
+            /** Profile Id */
+            readonly profile_id: number;
+            /** @default quick */
+            readonly depth: components["schemas"]["MatchDepth"];
+        };
+        /**
+         * MatchDepth
+         * @description `POST /v1/matches` 的 depth 枚举(API_SPEC §6.5)。
+         *
+         *     M2 MVP(S14)统一走 STANDARD tier,depth 仅作为 SSE 输入字段保留并
+         *     校验,实际不区分;S14 归档卡注明,深度差分留 evals 阶段。
+         * @enum {string}
+         */
+        readonly MatchDepth: MatchDepth;
+        /**
+         * MatchDetail
+         * @description Full row for GET /v1/matches/{id}。`structured` 子段保持 LLM 原型,
+         *     前端拿来渲染 chunk-evidence hover。
+         */
+        readonly MatchDetail: {
+            /** Id */
+            readonly id: number;
+            readonly status: components["schemas"]["MatchStatus"];
+            /** Jd Id */
+            readonly jd_id: number;
+            /** Profile Id */
+            readonly profile_id: number;
+            readonly structured?: components["schemas"]["MatchResult"] | null;
+            /** Model */
+            readonly model?: string | null;
+            readonly tokens?: components["schemas"]["MatchTokens"] | null;
+            /** Cost Cny */
+            readonly cost_cny?: string | null;
+            /** Latency Ms */
+            readonly latency_ms?: number | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            readonly created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            readonly updated_at: string;
+        };
+        /**
+         * MatchListItem
+         * @description List 行 — 不带 chunk-level evidence,前端 list 页用。
+         */
+        readonly MatchListItem: {
+            /** Id */
+            readonly id: number;
+            readonly status: components["schemas"]["MatchStatus"];
+            /** Jd Id */
+            readonly jd_id: number;
+            /** Profile Id */
+            readonly profile_id: number;
+            /** Score */
+            readonly score: number | null;
+            /** Matched Skills Count */
+            readonly matched_skills_count: number;
+            /** Missing Skills Count */
+            readonly missing_skills_count: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            readonly created_at: string;
+        };
+        /** MatchListResponse */
+        readonly MatchListResponse: {
+            /** Data */
+            readonly data: readonly components["schemas"]["MatchListItem"][];
+            /** Next Cursor */
+            readonly next_cursor?: string | null;
+            /**
+             * Has More
+             * @default false
+             */
+            readonly has_more: boolean;
+        };
+        /**
+         * MatchResult
+         * @description LLM 在 analyze 节点产出的对象。落库时拆到 matches 表对应列。
+         */
+        readonly MatchResult: {
+            /**
+             * Score
+             * @description 0-100 总分,见评分规则
+             */
+            readonly score: number;
+            /** Matched Skills */
+            readonly matched_skills?: readonly components["schemas"]["MatchedSkill"][];
+            /** Missing Skills */
+            readonly missing_skills?: readonly components["schemas"]["MissingSkill"][];
+            /**
+             * Advantage Summary
+             * @description 优势分析(不超 400 字)
+             */
+            readonly advantage_summary: string;
+            /**
+             * Gap Summary
+             * @description 差距分析(不超 400 字)
+             */
+            readonly gap_summary: string;
+            /**
+             * Suggestions
+             * @description 3-5 条可执行建议
+             */
+            readonly suggestions?: readonly string[];
+        };
+        /**
+         * MatchStatus
+         * @description `match_status` PG ENUM (migration 0011).
+         * @enum {string}
+         */
+        readonly MatchStatus: MatchStatus;
+        /** MatchTokens */
+        readonly MatchTokens: {
+            /** Input */
+            readonly input: number;
+            /** Output */
+            readonly output: number;
+        };
+        /** MatchedSkill */
+        readonly MatchedSkill: {
+            /**
+             * Name
+             * @description 归一化技能名(小写,与 JDSkill.name 同口径)
+             */
+            readonly name: string;
+            /**
+             * Strength
+             * @description 候选人在该技能的强度自评
+             */
+            readonly strength: number;
+            /**
+             * Evidence Chunk Ids
+             * @description 支撑该技能的 profile_chunks.id 列表;必须来自 LLM 收到的 chunk 列表
+             */
+            readonly evidence_chunk_ids?: readonly number[];
+        };
+        /** MissingSkill */
+        readonly MissingSkill: {
+            /** Name */
+            readonly name: string;
+            /**
+             * Severity
+             * @enum {string}
+             */
+            readonly severity: MissingSkillSeverity;
+            /**
+             * Suggestion
+             * @description 一句改进建议(可执行,不要空话)
+             */
+            readonly suggestion: string;
+        };
         /**
          * ProfileChunkItem
          * @description One `profile_chunks` row. The 1024-dim `embedding` is intentionally
@@ -1405,11 +1606,160 @@ export interface operations {
             };
         };
     };
+    readonly list__v1_matches_get: {
+        readonly parameters: {
+            readonly query?: {
+                readonly jd_id?: number | null;
+                readonly profile_id?: number | null;
+                readonly status?: PathsV1MatchesGetParametersQueryStatus | null;
+                readonly created_after?: string | null;
+                readonly cursor?: string | null;
+                readonly limit?: number;
+            };
+            readonly header?: {
+                readonly "X-User-Id"?: number | null;
+            };
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MatchListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly create_v1_matches_post: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: {
+                readonly "X-User-Id"?: number | null;
+            };
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["MatchCreateInput"];
+            };
+        };
+        readonly responses: {
+            /** @description SSE stream */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly get_v1_matches__match_id__get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: {
+                readonly "X-User-Id"?: number | null;
+            };
+            readonly path: {
+                readonly match_id: number;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MatchDetail"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly delete_v1_matches__match_id__delete: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: {
+                readonly "X-User-Id"?: number | null;
+            };
+            readonly path: {
+                readonly match_id: number;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Soft-deleted */
+            readonly 204: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            readonly 404: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
 }
 export enum PathsV1JdsGetParametersQueryStatus {
     parsing = "parsing",
     parsed = "parsed",
     parse_failed = "parse_failed"
+}
+export enum PathsV1MatchesGetParametersQueryStatus {
+    pending = "pending",
+    scored = "scored",
+    failed = "failed"
 }
 export enum FilePurpose {
     jd_pdf = "jd_pdf",
@@ -1454,6 +1804,20 @@ export enum JdStatus {
     parsing = "parsing",
     parsed = "parsed",
     parse_failed = "parse_failed"
+}
+export enum MatchDepth {
+    quick = "quick",
+    deep = "deep"
+}
+export enum MatchStatus {
+    pending = "pending",
+    scored = "scored",
+    failed = "failed"
+}
+export enum MissingSkillSeverity {
+    critical = "critical",
+    major = "major",
+    minor = "minor"
 }
 export enum ProfileChunkItemGranularity {
     experience = "experience",

@@ -8,9 +8,7 @@ import { ProfilesClient } from './profiles-client';
 
 const PAGE_SIZE = 20;
 
-type LoadState =
-  | { kind: 'ok'; data: ProfileListResponse }
-  | { kind: 'error'; message: string };
+type LoadState = { kind: 'ok'; data: ProfileListResponse } | { kind: 'error'; message: string };
 
 async function loadFirstPage(): Promise<LoadState> {
   try {
@@ -38,7 +36,7 @@ export default async function ProfilesListPage() {
 
       {state.kind === 'ok' ? (
         <ProfilesClient
-          initialItems={state.data.data}
+          initialItems={[...state.data.data]}
           initialCursor={state.data.next_cursor ?? null}
         />
       ) : (

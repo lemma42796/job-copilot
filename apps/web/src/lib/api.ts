@@ -35,6 +35,15 @@ export type ProfilePatchInput = components['schemas']['ProfilePatchInput'];
 export type ProfileChunkItem = components['schemas']['ProfileChunkItem'];
 export type ProfileChunksResponse = components['schemas']['ProfileChunksResponse'];
 
+export type MatchCreateInput = components['schemas']['MatchCreateInput'];
+export type MatchDetail = components['schemas']['MatchDetail'];
+export type MatchListItem = components['schemas']['MatchListItem'];
+export type MatchListResponse = components['schemas']['MatchListResponse'];
+export type MatchResult = components['schemas']['MatchResult'];
+export type MatchedSkill = components['schemas']['MatchedSkill'];
+export type MissingSkill = components['schemas']['MissingSkill'];
+export type MatchStatus = components['schemas']['MatchStatus'];
+
 type Problem = {
   type?: string;
   title?: string;
@@ -213,6 +222,55 @@ export async function listProfileChunks(
   signal?: AbortSignal,
 ): Promise<ProfileChunksResponse> {
   return jsonFetch<ProfileChunksResponse>(`/v1/profiles/${id}/chunks`, { signal });
+}
+
+// ---------------------------------------------------------------------------
+// Matches
+// ---------------------------------------------------------------------------
+
+export type MatchSseFrame =
+  | SseFrame<'started', { job_id: string; resource_id: number }>
+  | SseFrame<'result', { resource_id: number; url: string; score: number | null }>
+  | SseFrame<'error', { code: string; detail: string }>
+  | SseFrame<'done', { ok: boolean }>;
+
+export function createMatch(input: MatchCreateInput): AsyncGenerator<MatchSseFrame> {
+  return streamSse<MatchSseFrame>(`${API_BASE_URL}/v1/matches`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-User-Id': USER_ID,
+    },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getMatch(id: number, signal?: AbortSignal): Promise<MatchDetail> {
+  return jsonFetch<MatchDetail>(`/v1/matches/${id}`, { signal });
+}
+
+export async function listMatches(
+  opts: {
+    cursor?: string | null;
+    limit?: number;
+    jdId?: number;
+    profileId?: number;
+    signal?: AbortSignal;
+  } = {},
+): Promise<MatchListResponse> {
+  const params = new URLSearchParams();
+  if (opts.cursor) params.set('cursor', opts.cursor);
+  if (opts.limit) params.set('limit', String(opts.limit));
+  if (opts.jdId) params.set('jd_id', String(opts.jdId));
+  if (opts.profileId) params.set('profile_id', String(opts.profileId));
+  const qs = params.toString();
+  return jsonFetch<MatchListResponse>(`/v1/matches${qs ? `?${qs}` : ''}`, {
+    signal: opts.signal,
+  });
+}
+
+export async function deleteMatch(id: number): Promise<void> {
+  await jsonFetch<void>(`/v1/matches/${id}`, { method: 'DELETE' });
 }
 
 export { API_BASE_URL };

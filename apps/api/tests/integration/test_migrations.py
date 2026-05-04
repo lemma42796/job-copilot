@@ -32,6 +32,7 @@ EXPECTED_TABLES = {
     "profile_chunks",
     "llm_calls",
     "prompt_versions",
+    "matches",
 }
 
 
@@ -110,7 +111,7 @@ def test_migration_round_trip(pg_async_url: str) -> None:
                     "WHERE tgname LIKE 'tg_%_set_updated_at' AND NOT tgisinternal"
                 )
             ).scalar_one()
-            assert trigger_count >= 7  # users, jds, profiles + 4 children
+            assert trigger_count >= 8  # users, jds, profiles + 4 children + matches
 
             # 0006: llm_calls FKs both fall back to NULL on delete (cost log
             # must survive user / prompt_version removal).

@@ -8,9 +8,7 @@ import { JdsClient } from './jds-client';
 
 const PAGE_SIZE = 20;
 
-type LoadState =
-  | { kind: 'ok'; data: JDListResponse }
-  | { kind: 'error'; message: string };
+type LoadState = { kind: 'ok'; data: JDListResponse } | { kind: 'error'; message: string };
 
 async function loadFirstPage(): Promise<LoadState> {
   try {
@@ -37,7 +35,10 @@ export default async function JdsListPage() {
       </header>
 
       {state.kind === 'ok' ? (
-        <JdsClient initialItems={state.data.data} initialCursor={state.data.next_cursor ?? null} />
+        <JdsClient
+          initialItems={[...state.data.data]}
+          initialCursor={state.data.next_cursor ?? null}
+        />
       ) : (
         <div className="rounded-md border border-[var(--color-danger)]/40 bg-[var(--color-danger)]/10 p-4 text-sm text-[var(--color-danger)]">
           加载失败:{state.message}

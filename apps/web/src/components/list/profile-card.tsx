@@ -17,7 +17,7 @@ export function ProfileCard({
   deleting: boolean;
 }) {
   const name = profile.full_name?.trim() || '(未识别姓名)';
-  const meta = [profile.location?.trim(), profile.parse_model].filter(Boolean).join(' · ');
+  const meta = profile.location?.trim() ?? '';
 
   return (
     <Card className="group relative px-5 py-4 transition-colors hover:bg-black/[0.02]">
