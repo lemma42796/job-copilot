@@ -18,6 +18,24 @@
   --color-success-border: #34c759;
   --color-success-fg: #137333;
 
+  /* Apple HIG systemGray 阶梯(浅色) */
+  --color-system-gray-1: #8e8e93;
+  --color-system-gray-2: #aeaeb2;
+  --color-system-gray-3: #c7c7cc;
+  --color-system-gray-4: #d1d1d6;
+  --color-system-gray-5: #e5e5ea;
+  --color-system-gray-6: #f2f2f7;
+
+  /* macOS 选中色(systemBlue 半透明) */
+  --color-selection: rgba(10, 132, 255, 0.12);
+  --color-selection-hover: rgba(10, 132, 255, 0.18);
+  --color-selection-fg: #0a84ff;
+
+  /* macOS 窗口装饰 */
+  --color-traffic-close: #ff5f57;
+  --color-traffic-min: #febc2e;
+  --color-traffic-max: #28c840;
+
   /* Apple-style soft elevation */
   --shadow-apple-sm: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.05);
   --shadow-apple: 0 1px 3px rgba(0, 0, 0, 0.05), 0 8px 24px rgba(0, 0, 0, 0.06);
@@ -26,6 +44,21 @@
   /* Apple-style rounded corners */
   --radius-apple: 12px;
   --radius-apple-lg: 18px;
+
+  /* Apple 缓动 */
+  --ease-apple: cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+@utility vibrancy-sidebar {
+  background: rgba(246, 246, 248, 0.72);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+
+@utility vibrancy-titlebar {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
 }
 
 @layer base {

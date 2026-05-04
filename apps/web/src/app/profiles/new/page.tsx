@@ -155,7 +155,7 @@ export default function NewProfilePage() {
   }
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-16">
+    <div className="mx-auto max-w-3xl px-6 py-16">
       <div className="mb-6">
         <Link href="/" className="text-sm text-muted hover:text-foreground">
           ← 返回首页
@@ -281,7 +281,7 @@ export default function NewProfilePage() {
           </form>
         </CardContent>
       </Card>
-    </main>
+    </div>
   );
 }
 

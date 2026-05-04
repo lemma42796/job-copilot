@@ -28,7 +28,7 @@ export default async function ProfileDetailPage({
   }
 
   return (
-    <main className="mx-auto max-w-4xl px-6 py-12">
+    <div className="mx-auto max-w-4xl px-6 py-12">
       <div className="mb-6 flex items-center justify-between">
         <Link href="/" className="text-sm text-muted hover:text-foreground">
           ← 返回首页
@@ -38,6 +38,6 @@ export default async function ProfileDetailPage({
       <div className="mt-8">
         <ChunksDebugSection profileId={profile.id} />
       </div>
-    </main>
+    </div>
   );
 }
