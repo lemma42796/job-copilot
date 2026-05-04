@@ -16,6 +16,7 @@ from typing import Any
 
 from jobcopilot_api.models.profile import (
     Profile,
+    ProfileEducation,
     ProfileExperience,
     ProfileProject,
     ProfileSkill,
@@ -131,17 +132,40 @@ def build_skill_chunk(skill: ProfileSkill) -> ChunkInput:
     )
 
 
+def build_education_chunk(edu: ProfileEducation) -> ChunkInput:
+    parts: list[str | None] = [f"学校:{edu.school}"]
+    if edu.degree:
+        parts.append(f"学历:{edu.degree}")
+    if edu.major:
+        parts.append(f"专业:{edu.major}")
+    rng = _date_range(edu.start_date, edu.end_date)
+    if rng:
+        parts.append(f"时间:{rng}")
+    if edu.gpa is not None:
+        parts.append(f"GPA:{edu.gpa}")
+    honors = _str_list(edu.honors)
+    if honors:
+        parts.append("荣誉:" + " | ".join(honors))
+    return ChunkInput(
+        granularity="education",
+        source_table="profile_educations",
+        source_id=edu.id,
+        content=_join_lines(parts),
+    )
+
+
 def build_chunks(
     *,
     profile: Profile,
     experiences: list[ProfileExperience],
     projects: list[ProfileProject],
     skills: list[ProfileSkill],
+    educations: list[ProfileEducation],
 ) -> list[ChunkInput]:
     """5 表 ORM → 全部 chunks。summary 为空时跳过该 chunk。
 
-    顺序:summary → experiences → projects → skills(便于 service 层
-    log/调试时按章节分组)。
+    顺序:summary → experiences → projects → skills → educations
+    (便于 service 层 log/调试时按章节分组)。
     """
     chunks: list[ChunkInput] = []
     if (s := build_summary_chunk(profile)) is not None:
@@ -149,4 +173,5 @@ def build_chunks(
     chunks.extend(build_experience_chunk(e) for e in experiences)
     chunks.extend(build_project_chunk(p) for p in projects)
     chunks.extend(build_skill_chunk(sk) for sk in skills)
+    chunks.extend(build_education_chunk(ed) for ed in educations)
     return chunks

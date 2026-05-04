@@ -76,9 +76,11 @@ async def rebuild_for_profile(
     """
     async with sessionmaker() as session:
         profile = await get_profile(session, user_id=user_id, profile_id=profile_id)
-        exps, projs, skills, _edus = await get_children(session, profile_id=profile.id)
+        exps, projs, skills, edus = await get_children(session, profile_id=profile.id)
 
-    chunk_inputs = build_chunks(profile=profile, experiences=exps, projects=projs, skills=skills)
+    chunk_inputs = build_chunks(
+        profile=profile, experiences=exps, projects=projs, skills=skills, educations=edus
+    )
 
     vectors: list[list[float]] = []
     tokens_in = 0

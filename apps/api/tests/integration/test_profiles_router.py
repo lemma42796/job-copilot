@@ -267,8 +267,9 @@ async def test_parse_sse_success_emits_started_chunking_result_done(
 
     chunk_evt = events[1][1]
     assert chunk_evt["ok"] is True
-    # GOLDEN_LLM_OUTPUT has summary + 1 exp + 0 proj + 1 skill + 1 edu(skipped).
-    assert chunk_evt["chunks_written"] == 3
+    # GOLDEN_LLM_OUTPUT: 1 summary + 1 exp + 0 proj + 1 skill + 1 edu = 4 chunks
+    # (education added to chunker in 0010 — see slices/S11).
+    assert chunk_evt["chunks_written"] == 4
     assert chunk_evt["embed_model"] == DummyEmbedder().model
 
     result = events[2][1]
@@ -523,12 +524,12 @@ async def test_rechunk_sse_emits_started_chunking_done(make_app: MakeApp, user_i
         assert names == ["started", "chunking_embedding", "done"]
         assert events[0][1]["resource_id"] == pid
         assert events[1][1]["ok"] is True
-        assert events[1][1]["chunks_written"] == 3
+        assert events[1][1]["chunks_written"] == 4
         assert events[2][1] == {"ok": True}
 
         detail = await client.get(f"/v1/profiles/{pid}", headers=_hdr(user_id))
     assert detail.status_code == 200
-    assert detail.json()["stats"]["chunks"] == 3
+    assert detail.json()["stats"]["chunks"] == 4
 
 
 @pytest.mark.integration
@@ -585,11 +586,12 @@ async def test_get_chunks_returns_rows_without_embedding_payload(
 
     assert resp.status_code == 200
     body = resp.json()
-    # GOLDEN_LLM_OUTPUT: 1 summary + 1 exp + 1 skill = 3 chunks (0 projects, 1 edu skipped).
-    assert body["total"] == 3
-    assert len(body["data"]) == 3
+    # GOLDEN_LLM_OUTPUT: 1 summary + 1 exp + 0 proj + 1 skill + 1 edu = 4 chunks
+    # (education added to chunker in 0010 — see slices/S11).
+    assert body["total"] == 4
+    assert len(body["data"]) == 4
     grans = {row["granularity"] for row in body["data"]}
-    assert grans == {"summary", "experience", "skill"}
+    assert grans == {"summary", "experience", "skill", "education"}
     sample = body["data"][0]
     assert "embedding" not in sample  # never expose 1024-dim payload over the wire
     assert sample["metadata"] == {"chunker_version": "v1"}

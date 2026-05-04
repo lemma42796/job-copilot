@@ -242,7 +242,7 @@ class ProfilePatchInput(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-ChunkGranularity = Literal["experience", "project", "skill", "summary"]
+ChunkGranularity = Literal["experience", "project", "skill", "summary", "education"]
 
 
 class ProfileChunkItem(BaseModel):

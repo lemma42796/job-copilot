@@ -1459,7 +1459,8 @@ export enum ProfileChunkItemGranularity {
     experience = "experience",
     project = "project",
     skill = "skill",
-    summary = "summary"
+    summary = "summary",
+    education = "education"
 }
 export enum ProfileParseInputSource {
     text_paste = "text_paste",

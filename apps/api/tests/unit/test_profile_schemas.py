@@ -154,14 +154,14 @@ def _chunk_payload(**overrides: object) -> dict[str, object]:
     return base
 
 
-def test_chunk_item_accepts_all_four_granularities() -> None:
-    for g in ("experience", "project", "skill", "summary"):
+def test_chunk_item_accepts_all_five_granularities() -> None:
+    for g in ("experience", "project", "skill", "summary", "education"):
         ProfileChunkItem.model_validate(_chunk_payload(granularity=g))
 
 
 def test_chunk_item_rejects_unknown_granularity() -> None:
     with pytest.raises(ValidationError):
-        ProfileChunkItem.model_validate(_chunk_payload(granularity="education"))
+        ProfileChunkItem.model_validate(_chunk_payload(granularity="totally_bogus"))
 
 
 def test_chunk_item_allows_null_embed_model_and_version() -> None:

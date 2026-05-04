@@ -66,6 +66,7 @@ CHUNK_GRANULARITY_ENUM = postgresql.ENUM(
     "project",
     "skill",
     "summary",
+    "education",
     name="chunk_granularity",
     create_type=False,
 )

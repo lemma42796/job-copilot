@@ -13,6 +13,7 @@ from jobcopilot_api.agents.chunker import (
     CHUNKER_VERSION,
     ChunkInput,
     build_chunks,
+    build_education_chunk,
     build_experience_chunk,
     build_project_chunk,
     build_skill_chunk,
@@ -20,6 +21,7 @@ from jobcopilot_api.agents.chunker import (
 )
 from jobcopilot_api.models.profile import (
     Profile,
+    ProfileEducation,
     ProfileExperience,
     ProfileProject,
     ProfileSkill,
@@ -91,6 +93,23 @@ def _skill(**overrides: object) -> ProfileSkill:
     }
     base.update(overrides)
     return ProfileSkill(**base)
+
+
+def _education(**overrides: object) -> ProfileEducation:
+    base: dict[str, object] = {
+        "id": 40,
+        "profile_id": 1,
+        "school": "上海交通大学",
+        "degree": "本科",
+        "major": "计算机科学与技术",
+        "start_date": date(2018, 9, 1),
+        "end_date": date(2022, 6, 30),
+        "gpa": Decimal("3.7"),
+        "honors": ["一等奖学金", "院级优秀毕业生"],
+        "sort_order": 0,
+    }
+    base.update(overrides)
+    return ProfileEducation(**base)
 
 
 # ----- summary -----
@@ -224,16 +243,50 @@ def test_skill_chunk_zero_years_is_kept() -> None:
     assert "年限:0.0 年" in chunk.content
 
 
+# ----- education -----
+
+
+def test_education_chunk_full() -> None:
+    chunk = build_education_chunk(_education())
+    assert chunk.granularity == "education"
+    assert chunk.source_table == "profile_educations"
+    assert chunk.source_id == 40
+    expected = "\n".join(
+        [
+            "学校:上海交通大学",
+            "学历:本科",
+            "专业:计算机科学与技术",
+            "时间:2018-09-01 - 2022-06-30",
+            "GPA:3.7",
+            "荣誉:一等奖学金 | 院级优秀毕业生",
+        ]
+    )
+    assert chunk.content == expected
+
+
+def test_education_chunk_skips_optional_fields() -> None:
+    chunk = build_education_chunk(
+        _education(degree=None, major=None, start_date=None, end_date=None, gpa=None, honors=[])
+    )
+    assert chunk.content == "学校:上海交通大学"
+
+
+def test_education_chunk_open_ended_date() -> None:
+    chunk = build_education_chunk(_education(end_date=None))
+    assert "时间:2018-09-01 - 至今" in chunk.content
+
+
 # ----- orchestrator -----
 
 
-def test_build_chunks_orders_summary_then_experiences_then_projects_then_skills() -> None:
+def test_build_chunks_orders_summary_exp_proj_skill_edu() -> None:
     profile = _profile(summary="资深后端")
     chunks = build_chunks(
         profile=profile,
         experiences=[_experience(id=11), _experience(id=12)],
         projects=[_project(id=21)],
         skills=[_skill(id=31), _skill(id=32, name="go")],
+        educations=[_education(id=41), _education(id=42, school="清华大学")],
     )
     assert [c.granularity for c in chunks] == [
         "summary",
@@ -242,8 +295,10 @@ def test_build_chunks_orders_summary_then_experiences_then_projects_then_skills(
         "project",
         "skill",
         "skill",
+        "education",
+        "education",
     ]
-    assert [c.source_id for c in chunks] == [1, 11, 12, 21, 31, 32]
+    assert [c.source_id for c in chunks] == [1, 11, 12, 21, 31, 32, 41, 42]
 
 
 def test_build_chunks_skips_summary_when_empty() -> None:
@@ -252,13 +307,21 @@ def test_build_chunks_skips_summary_when_empty() -> None:
         experiences=[_experience()],
         projects=[],
         skills=[],
+        educations=[],
     )
     assert [c.granularity for c in chunks] == ["experience"]
 
 
 def test_build_chunks_empty_profile_returns_empty_list() -> None:
     assert (
-        build_chunks(profile=_profile(summary=None), experiences=[], projects=[], skills=[]) == []
+        build_chunks(
+            profile=_profile(summary=None),
+            experiences=[],
+            projects=[],
+            skills=[],
+            educations=[],
+        )
+        == []
     )
 
 

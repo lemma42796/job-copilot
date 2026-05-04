@@ -185,7 +185,9 @@ async def test_chunk_fk_cascade_removes_chunks_when_profile_deleted(
 async def test_chunk_granularity_enum_rejects_unknown_values(
     sessionmaker_: async_sessionmaker[AsyncSession],
 ) -> None:
-    """`chunk_granularity` PG ENUM only accepts the 4 declared values."""
+    """`chunk_granularity` PG ENUM only accepts the 5 declared values
+    (summary / experience / project / skill / education;
+    'education' added in 0010 — see slices/S11)."""
     async with sessionmaker_() as session:
         async with session.begin():
             profile = await _make_profile(session)
@@ -194,7 +196,7 @@ async def test_chunk_granularity_enum_rejects_unknown_values(
                 session.add(
                     ProfileChunk(
                         profile_id=profile.id,
-                        granularity="education",  # not in the 4-value enum
+                        granularity="totally_bogus",  # not in the enum
                         source_table="profile_educations",
                         source_id=1,
                         content="x",
