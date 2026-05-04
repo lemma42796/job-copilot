@@ -11,17 +11,19 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { ApiError, parseJd, uploadFile } from '@/lib/api';
+import { useSessionDraft } from '@/lib/use-session-draft';
 
 type Mode = 'text' | 'pdf';
 type Stage = 'idle' | 'uploading' | 'parsing';
 
 const MIN_JD_LENGTH = 50;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const DRAFT_KEY = 'jobcopilot.draft.jd.text';
 
 export default function NewJdPage() {
   const router = useRouter();
   const [mode, setMode] = React.useState<Mode>('text');
-  const [text, setText] = React.useState('');
+  const [text, setText, clearDraft] = useSessionDraft(DRAFT_KEY);
   const [file, setFile] = React.useState<File | null>(null);
   const [stage, setStage] = React.useState<Stage>('idle');
   const [error, setError] = React.useState<string | null>(null);
@@ -41,6 +43,7 @@ export default function NewJdPage() {
         }
         setStage('parsing');
         const res = await parseJd({ source: JDParseInputSource.text_paste, text });
+        clearDraft();
         router.push(`/jds/${res.id}` as Route);
         return;
       }
@@ -78,8 +81,8 @@ export default function NewJdPage() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-16">
       <div className="mb-6">
-        <Link href="/" className="text-sm text-muted hover:text-foreground">
-          ← 返回首页
+        <Link href="/jds" className="text-sm text-muted hover:text-foreground">
+          ← 全部 JD
         </Link>
       </div>
 

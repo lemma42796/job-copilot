@@ -5,6 +5,7 @@ import {
   JDStructuredJob_level,
   JDStructuredSalary_period,
 } from '@jobcopilot/schemas';
+import { useRouter } from 'next/navigation';
 import * as React from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -12,7 +13,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { ApiError, type JDDetail, type JDSkill, type JDStructured, patchJd } from '@/lib/api';
+import {
+  ApiError,
+  type JDDetail,
+  type JDSkill,
+  type JDStructured,
+  deleteJd,
+  patchJd,
+} from '@/lib/api';
 
 type EditableState = {
   company: string;
@@ -130,11 +138,26 @@ function SkillList({ title, skills }: { title: string; skills: readonly JDSkill[
 }
 
 export function JdEditForm({ jd }: { jd: JDDetail }) {
+  const router = useRouter();
   const [form, setForm] = React.useState<EditableState>(() => detailToEditable(jd));
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [savedAt, setSavedAt] = React.useState<string | null>(null);
   const [currentJd, setCurrentJd] = React.useState<JDDetail>(jd);
+  const [deleting, setDeleting] = React.useState(false);
+
+  async function onDeleteAndRetry() {
+    if (!window.confirm(`删除 JD #${currentJd.id} 并返回新建页?原文不会保留。`)) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteJd(currentJd.id);
+      router.push('/jds/new');
+    } catch (err) {
+      setError(messageOf(err));
+      setDeleting(false);
+    }
+  }
 
   function update<K extends keyof EditableState>(key: K, value: EditableState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -156,11 +179,7 @@ export function JdEditForm({ jd }: { jd: JDDetail }) {
       setForm(detailToEditable(updated));
       setSavedAt(new Date().toLocaleTimeString());
     } catch (err) {
-      if (err instanceof ApiError) {
-        setError(err.problem.detail ?? err.problem.title ?? `HTTP ${err.status}`);
-      } else {
-        setError(err instanceof Error ? err.message : String(err));
-      }
+      setError(messageOf(err));
     } finally {
       setSaving(false);
     }
@@ -173,6 +192,22 @@ export function JdEditForm({ jd }: { jd: JDDetail }) {
 
   return (
     <div className="space-y-6">
+      {currentJd.status === 'parse_failed' ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--color-danger)]/40 bg-[var(--color-danger)]/10 px-5 py-4">
+          <p className="text-sm text-[var(--color-danger)]">
+            这条 JD 解析失败,字段可能为空。建议删除后重新粘贴或换 PDF。
+          </p>
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={onDeleteAndRetry}
+            disabled={deleting || saving}
+          >
+            {deleting ? '删除中…' : '删除并重传'}
+          </Button>
+        </div>
+      ) : null}
+
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -352,4 +387,11 @@ export function JdEditForm({ jd }: { jd: JDDetail }) {
       )}
     </div>
   );
+}
+
+function messageOf(err: unknown): string {
+  if (err instanceof ApiError) {
+    return err.problem.detail ?? err.problem.title ?? `HTTP ${err.status}`;
+  }
+  return err instanceof Error ? err.message : String(err);
 }

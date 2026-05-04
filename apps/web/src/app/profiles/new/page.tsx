@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { ApiError, type ProfileParseInput, parseProfile, uploadFile } from '@/lib/api';
+import { useSessionDraft } from '@/lib/use-session-draft';
 
 type Mode = 'text' | 'pdf';
 type Stage = 'idle' | 'uploading' | 'started' | 'chunking_embedding' | 'result' | 'done';
@@ -35,11 +36,12 @@ const STAGE_LABEL: Record<Stage, string> = {
 
 const MIN_TEXT_LEN = 50;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const DRAFT_KEY = 'jobcopilot.draft.profile.text';
 
 export default function NewProfilePage() {
   const router = useRouter();
   const [mode, setMode] = React.useState<Mode>('text');
-  const [text, setText] = React.useState('');
+  const [text, setText, clearDraft] = useSessionDraft(DRAFT_KEY);
   const [file, setFile] = React.useState<File | null>(null);
   const [stage, setStage] = React.useState<Stage>('idle');
   const [error, setError] = React.useState<{
@@ -79,6 +81,7 @@ export default function NewProfilePage() {
         } else if (frame.event === 'done') {
           if (frame.data.ok && profileId != null) {
             setStage('done');
+            clearDraft();
             router.push(`/profiles/${profileId}` as Route);
             return;
           }
@@ -157,8 +160,8 @@ export default function NewProfilePage() {
   return (
     <div className="mx-auto max-w-3xl px-6 py-16">
       <div className="mb-6">
-        <Link href="/" className="text-sm text-muted hover:text-foreground">
-          ← 返回首页
+        <Link href="/profiles" className="text-sm text-muted hover:text-foreground">
+          ← 全部简历
         </Link>
       </div>
 

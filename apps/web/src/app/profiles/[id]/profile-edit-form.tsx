@@ -108,11 +108,11 @@ export function ProfileEditForm({ profile }: { profile: ProfileDetail }) {
     }
   }
 
-  async function onDelete() {
+  async function onDelete(redirect: '/' | '/profiles/new' = '/') {
     setDeleting(true);
     try {
       await deleteProfile(current.id);
-      router.push('/');
+      router.push(redirect);
     } catch (err) {
       setError(messageOf(err));
       setDeleting(false);
@@ -120,8 +120,29 @@ export function ProfileEditForm({ profile }: { profile: ProfileDetail }) {
     }
   }
 
+  async function onDeleteAndRetry() {
+    if (!window.confirm(`删除简历 #${current.id} 并返回新建页?原文不会保留。`)) return;
+    await onDelete('/profiles/new');
+  }
+
   return (
     <div className="space-y-6">
+      {current.status === 'parse_failed' ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--color-danger)]/40 bg-[var(--color-danger)]/10 px-5 py-4">
+          <p className="text-sm text-[var(--color-danger)]">
+            这份简历解析失败,字段可能为空。建议删除后重新粘贴或换 PDF。
+          </p>
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={onDeleteAndRetry}
+            disabled={deleting || saving}
+          >
+            {deleting ? '删除中…' : '删除并重传'}
+          </Button>
+        </div>
+      ) : null}
+
       <Card>
         <CardHeader>
           <div className="flex items-start justify-between">
@@ -139,7 +160,12 @@ export function ProfileEditForm({ profile }: { profile: ProfileDetail }) {
               {showDeleteConfirm ? (
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-muted">确认删除?</span>
-                  <Button size="sm" variant="destructive" onClick={onDelete} disabled={deleting}>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => onDelete()}
+                    disabled={deleting}
+                  >
                     {deleting ? '删除中…' : '确认'}
                   </Button>
                   <Button
