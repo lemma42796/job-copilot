@@ -376,6 +376,26 @@ async def test_create_pending_text_too_short_inserts_nothing(
         assert rows == []
 
 
+async def test_create_pending_unknown_user_raises_not_found(
+    sessionmaker_: async_sessionmaker[AsyncSession],
+) -> None:
+    """S11 dogfood bad case #2: 给不存在的 user_id 应该抛 NotFoundError(SSE
+    路由层会转 error → done),而不是裸的 IntegrityError 让 SSE 静默断开。"""
+    from jobcopilot_api.errors import NotFoundError
+
+    with pytest.raises(NotFoundError):
+        await create_pending_profile(
+            sessionmaker_,
+            user_id=999_999,
+            source="text_paste",
+            text=_long_resume(),
+            file_id=None,
+        )
+    async with sessionmaker_() as session:
+        rows = (await session.execute(sa.select(Profile))).scalars().all()
+        assert rows == []
+
+
 # ---------------------------------------------------------------------------
 # LLM failures mark parse_failed (side-channel commit) and propagate
 # ---------------------------------------------------------------------------

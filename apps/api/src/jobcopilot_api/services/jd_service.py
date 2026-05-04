@@ -55,7 +55,7 @@ from jobcopilot_api.llm.errors import (
     LLMTimeoutError,
     LLMUpstreamError,
 )
-from jobcopilot_api.models import File, Jd
+from jobcopilot_api.models import File, Jd, User
 from jobcopilot_api.schemas.jds import JDPatchInput, JDStructured
 
 MIN_TEXT_LENGTH = 50
@@ -98,6 +98,11 @@ async def create_pending_jd(
     raw_file_id = file_id if source == "pdf_upload" else None
 
     async with sessionmaker() as session, session.begin():
+        # 校验 user 存在,与 profile_service 对称(S11 dogfood bad case #2)。
+        user_exists = await session.scalar(sa.select(sa.literal(1)).where(User.id == user_id))
+        if user_exists is None:
+            raise NotFoundError(f"用户 {user_id} 不存在")
+
         jd = Jd(
             user_id=user_id,
             source=source,
@@ -144,7 +149,13 @@ async def run_parse(
         raise LLMUpstreamError(str(exc) or "LLM 上游服务异常", status_code=502) from exc
     except LLMSchemaInvalidError as exc:
         await _mark_failed(sessionmaker, jd_id=jd_id)
-        raise JDParseFailedError("LLM 返回的 JSON 不符合 schema") from exc
+        snippet = str(exc)[:500] if str(exc) else ""
+        msg = (
+            f"LLM 返回的 JSON 不符合 schema: {snippet}"
+            if snippet
+            else "LLM 返回的 JSON 不符合 schema"
+        )
+        raise JDParseFailedError(msg) from exc
 
     parsed = result.parsed
     if not isinstance(parsed, JDStructured) or not (parsed.title and parsed.title.strip()):

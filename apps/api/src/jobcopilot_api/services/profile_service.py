@@ -58,6 +58,7 @@ from jobcopilot_api.models import (
     ProfileExperience,
     ProfileProject,
     ProfileSkill,
+    User,
 )
 from jobcopilot_api.schemas.profiles import (
     ProfilePatchInput,
@@ -111,6 +112,13 @@ async def create_pending_profile(
     raw_file_id = file_id if source == "pdf_upload" else None
 
     async with sessionmaker() as session, session.begin():
+        # 校验 user 存在,不然 INSERT 会撞 fk_profiles_user_id 抛 IntegrityError,
+        # SSE generator 起手未发 started 就死,前端拿到 0 字节静默(S11 dogfood
+        # bad case #2)。映射成 NotFoundError → SSE error/done 显式回报。
+        user_exists = await session.scalar(sa.select(sa.literal(1)).where(User.id == user_id))
+        if user_exists is None:
+            raise NotFoundError(f"用户 {user_id} 不存在")
+
         existing_id = (
             await session.execute(
                 sa.select(Profile.id).where(
@@ -165,7 +173,15 @@ async def run_parse(
         raise LLMUpstreamError(str(exc) or "LLM 上游服务异常", status_code=502) from exc
     except LLMSchemaInvalidError as exc:
         await _mark_failed(sessionmaker, profile_id=profile_id)
-        raise ProfileParseFailedError("LLM 返回的 JSON 不符合 schema") from exc
+        # 把 Pydantic 校验路径透到 SSE error.detail 上限 500 字符,dogfood 时
+        # 直接能看到哪个字段不符合 schema(S11 bad case #1 调试代价)。
+        snippet = str(exc)[:500] if str(exc) else ""
+        msg = (
+            f"LLM 返回的 JSON 不符合 schema: {snippet}"
+            if snippet
+            else "LLM 返回的 JSON 不符合 schema"
+        )
+        raise ProfileParseFailedError(msg) from exc
 
     parsed = result.parsed
     if not isinstance(parsed, ProfileStructured):
