@@ -71,6 +71,7 @@ class DashscopeProvider(Provider):
                 {"role": "user", "content": request.user},
             ],
             "timeout": request.timeout_s,
+            "max_tokens": request.max_tokens,
             "extra_body": {"enable_thinking": request.thinking_mode},
         }
         if request.response_format is not None:

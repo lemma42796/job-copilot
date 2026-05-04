@@ -333,6 +333,36 @@ async def test_default_timeout_uses_tier_config() -> None:
     assert dummy.calls[0].timeout_s == 60.0
 
 
+async def test_default_max_tokens_uses_tier_config() -> None:
+    """S11 dogfood bad case #1: profile 长简历输出曾被 DashScope 默认 4096
+    截断 → schema_invalid。Tier 默认 max_tokens 必须传到 ProviderRequest,
+    且 CHEAP/STANDARD = 8192,PREMIUM = 16384。"""
+    dummy = DummyProvider()
+    dummy.queue(content="ok", tokens_in=1, tokens_out=1)
+    dummy.queue(content="ok", tokens_in=1, tokens_out=1)
+    dummy.queue(content="ok", tokens_in=1, tokens_out=1)
+    client, _ = _client(dummy)
+
+    for tier, expected in [(Tier.CHEAP, 8192), (Tier.STANDARD, 8192), (Tier.PREMIUM, 16384)]:
+        await client.complete(feature="jd_parse", tier=tier, system="s", user="u")
+        assert dummy.calls[-1].max_tokens == expected, f"{tier} should use {expected}"
+
+
+async def test_explicit_max_tokens_overrides_tier_default() -> None:
+    dummy = DummyProvider()
+    dummy.queue(content="ok", tokens_in=1, tokens_out=1)
+    client, _ = _client(dummy)
+
+    await client.complete(
+        feature="jd_parse",
+        tier=Tier.CHEAP,
+        system="sys",
+        user="usr",
+        max_tokens=2048,
+    )
+    assert dummy.calls[0].max_tokens == 2048
+
+
 async def test_no_response_format_when_no_schema() -> None:
     dummy = DummyProvider()
     dummy.queue(content="ok", tokens_in=1, tokens_out=1)

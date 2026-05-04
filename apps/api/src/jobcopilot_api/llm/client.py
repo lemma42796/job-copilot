@@ -54,6 +54,7 @@ class ProviderRequest:
     response_format: dict[str, Any] | None  # {"type": "json_object"} or None
     thinking_mode: bool
     timeout_s: float
+    max_tokens: int = 4096
 
 
 @dataclass(frozen=True)
@@ -108,6 +109,7 @@ class LLMRequest:
     response_schema: type[BaseModel] | None = None
     cache_system: bool = True
     timeout_s: float | None = None
+    max_tokens: int | None = None
     user_id: int | None = None
     trace_id: str | None = None
     related_entity: str | None = None
@@ -128,6 +130,7 @@ class LLMClient(Protocol):
         response_schema: type[BaseModel] | None = None,
         cache_system: bool = True,
         timeout_s: float | None = None,
+        max_tokens: int | None = None,
         user_id: int | None = None,
         trace_id: str | None = None,
         related_entity: str | None = None,
@@ -266,6 +269,7 @@ class BaseLLMClient:
         response_schema: type[BaseModel] | None = None,
         cache_system: bool = True,
         timeout_s: float | None = None,
+        max_tokens: int | None = None,
         user_id: int | None = None,
         trace_id: str | None = None,
         related_entity: str | None = None,
@@ -275,6 +279,7 @@ class BaseLLMClient:
         del cache_system  # ADR-0004 D2: semantic placeholder, no SDK toggle today
         cfg = tier_to_model(tier)
         effective_timeout = timeout_s if timeout_s is not None else cfg.default_timeout_s
+        effective_max_tokens = max_tokens if max_tokens is not None else cfg.default_max_tokens
         started = monotonic()
         acc = _CallAccumulator()
         response_format: dict[str, Any] | None = (
@@ -295,6 +300,7 @@ class BaseLLMClient:
                     response_format=response_format,
                     thinking_mode=cfg.thinking_mode,
                     timeout_s=effective_timeout,
+                    max_tokens=effective_max_tokens,
                 )
             )
             self._absorb(acc, resp)
@@ -312,6 +318,7 @@ class BaseLLMClient:
                             response_format=response_format,
                             thinking_mode=cfg.thinking_mode,
                             timeout_s=effective_timeout,
+                            max_tokens=effective_max_tokens,
                         )
                     )
                     self._absorb(acc, retry_resp)
