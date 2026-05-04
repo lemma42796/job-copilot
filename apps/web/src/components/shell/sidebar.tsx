@@ -7,22 +7,38 @@ import type { ReactNode } from 'react';
 
 import { cn } from '@/lib/utils';
 
-type NavItem = { href: Route; label: string; icon: ReactNode };
+type NavItem = { href: Route; label: string; icon: ReactNode; match?: 'exact' | 'prefix' };
 type NavGroup = { key: string; title?: string; items: NavItem[] };
 
 const NAV: NavGroup[] = [
-  { key: 'home', items: [{ href: '/', label: '首页', icon: <HomeIcon /> }] },
+  { key: 'home', items: [{ href: '/', label: '首页', icon: <HomeIcon />, match: 'exact' }] },
   {
     key: 'jobs',
     title: '工作',
-    items: [{ href: '/jds/new', label: '新建 JD', icon: <DocIcon /> }],
+    items: [
+      { href: '/jds', label: '全部 JD', icon: <ListIcon />, match: 'prefix' },
+      { href: '/jds/new', label: '新建 JD', icon: <DocIcon />, match: 'exact' },
+    ],
   },
   {
     key: 'profiles',
     title: '简历',
-    items: [{ href: '/profiles/new', label: '新建简历', icon: <UserIcon /> }],
+    items: [
+      { href: '/profiles', label: '全部简历', icon: <ListIcon />, match: 'prefix' },
+      { href: '/profiles/new', label: '新建简历', icon: <UserIcon />, match: 'exact' },
+    ],
   },
 ];
+
+function isActive(item: NavItem, pathname: string, siblings: readonly NavItem[]): boolean {
+  if (item.match === 'exact') return pathname === item.href;
+  if (pathname === item.href) return true;
+  if (!pathname.startsWith(`${item.href}/`)) return false;
+  // prefix match — yield to sibling whose exact href is a longer prefix (e.g. /jds/new under /jds)
+  return !siblings.some(
+    (s) => s !== item && (pathname === s.href || pathname.startsWith(`${s.href}/`)),
+  );
+}
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -45,10 +61,7 @@ export function Sidebar() {
             ) : null}
             <ul className="space-y-0.5">
               {group.items.map((item) => {
-                const active =
-                  item.href === '/'
-                    ? pathname === '/'
-                    : pathname === item.href || pathname.startsWith(`${item.href}/`);
+                const active = isActive(item, pathname, group.items);
                 return (
                   <li key={item.href}>
                     <Link
@@ -98,6 +111,17 @@ function UserIcon() {
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
       <circle cx="8" cy="6" r="2.5" />
       <path d="M3 13.5c.8-2.4 2.8-3.5 5-3.5s4.2 1.1 5 3.5" />
+    </svg>
+  );
+}
+
+function ListIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+      <path d="M5 4h8M5 8h8M5 12h8" strokeLinecap="round" />
+      <circle cx="2.75" cy="4" r="0.6" fill="currentColor" stroke="none" />
+      <circle cx="2.75" cy="8" r="0.6" fill="currentColor" stroke="none" />
+      <circle cx="2.75" cy="12" r="0.6" fill="currentColor" stroke="none" />
     </svg>
   );
 }

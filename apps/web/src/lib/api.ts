@@ -13,6 +13,8 @@ export type HealthResponse = components['schemas']['HealthResponse'];
 export type JDStructured = components['schemas']['JDStructured'];
 export type JDSkill = components['schemas']['JDSkill'];
 export type JDDetail = components['schemas']['JDDetail'];
+export type JDListItem = components['schemas']['JDListItem'];
+export type JDListResponse = components['schemas']['JDListResponse'];
 export type JDParseInput = components['schemas']['JDParseInput'];
 export type JDParseResponse = components['schemas']['JDParseResponse'];
 export type JDPatchInput = components['schemas']['JDPatchInput'];
@@ -20,6 +22,8 @@ export type JdStatus = components['schemas']['JdStatus'];
 
 export type FileUploadResponse = components['schemas']['FileUploadResponse'];
 export type ProfileDetail = components['schemas']['ProfileDetail'];
+export type ProfileListItem = components['schemas']['ProfileListItem'];
+export type ProfileListResponse = components['schemas']['ProfileListResponse'];
 export type ProfileStructured = components['schemas']['ProfileStructured'];
 export type ProfileExperienceItem = components['schemas']['ProfileExperienceItem'];
 export type ProfileProjectItem = components['schemas']['ProfileProjectItem'];
@@ -85,11 +89,25 @@ export async function getJd(id: number, signal?: AbortSignal): Promise<JDDetail>
   return jsonFetch<JDDetail>(`/v1/jds/${id}`, { signal });
 }
 
+export async function listJds(
+  opts: { cursor?: string | null; limit?: number; signal?: AbortSignal } = {},
+): Promise<JDListResponse> {
+  const params = new URLSearchParams();
+  if (opts.cursor) params.set('cursor', opts.cursor);
+  if (opts.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return jsonFetch<JDListResponse>(`/v1/jds${qs ? `?${qs}` : ''}`, { signal: opts.signal });
+}
+
 export async function patchJd(id: number, patch: JDPatchInput): Promise<JDDetail> {
   return jsonFetch<JDDetail>(`/v1/jds/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   });
+}
+
+export async function deleteJd(id: number): Promise<void> {
+  await jsonFetch<void>(`/v1/jds/${id}`, { method: 'DELETE' });
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +183,18 @@ export function rechunkProfile(profileId: number): AsyncGenerator<ProfileParseSs
 
 export async function getProfile(id: number, signal?: AbortSignal): Promise<ProfileDetail> {
   return jsonFetch<ProfileDetail>(`/v1/profiles/${id}`, { signal });
+}
+
+export async function listProfiles(
+  opts: { cursor?: string | null; limit?: number; signal?: AbortSignal } = {},
+): Promise<ProfileListResponse> {
+  const params = new URLSearchParams();
+  if (opts.cursor) params.set('cursor', opts.cursor);
+  if (opts.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return jsonFetch<ProfileListResponse>(`/v1/profiles${qs ? `?${qs}` : ''}`, {
+    signal: opts.signal,
+  });
 }
 
 export async function patchProfile(id: number, patch: ProfilePatchInput): Promise<ProfileDetail> {

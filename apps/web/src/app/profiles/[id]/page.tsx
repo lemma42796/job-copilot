@@ -30,8 +30,8 @@ export default async function ProfileDetailPage({
   return (
     <div className="mx-auto max-w-4xl px-6 py-12">
       <div className="mb-6 flex items-center justify-between">
-        <Link href="/" className="text-sm text-muted hover:text-foreground">
-          ← 返回首页
+        <Link href="/profiles" className="text-sm text-muted hover:text-foreground">
+          ← 全部简历
         </Link>
       </div>
       <ProfileEditForm profile={profile} />

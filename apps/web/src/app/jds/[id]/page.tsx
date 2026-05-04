@@ -29,8 +29,8 @@ export default async function JdDetailPage({
   return (
     <div className="mx-auto max-w-3xl px-6 py-16">
       <div className="mb-6">
-        <Link href="/" className="text-sm text-muted hover:text-foreground">
-          ← 返回首页
+        <Link href="/jds" className="text-sm text-muted hover:text-foreground">
+          ← 全部 JD
         </Link>
       </div>
       <JdEditForm jd={jd} />
