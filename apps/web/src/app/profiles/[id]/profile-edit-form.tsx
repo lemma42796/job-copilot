@@ -230,13 +230,7 @@ export function ProfileEditForm({ profile }: { profile: ProfileDetail }) {
         renderKey={(p, i) => `${i}-${p.name}`}
         render={renderProject}
       />
-      <ListSection
-        title="技能"
-        empty="暂无技能"
-        items={current.structured.skills ?? []}
-        renderKey={(s) => s.name}
-        render={renderSkill}
-      />
+      <SkillsSection skills={current.structured.skills ?? []} />
       <ListSection
         title="教育"
         empty="暂无教育经历"
@@ -249,10 +243,14 @@ export function ProfileEditForm({ profile }: { profile: ProfileDetail }) {
 }
 
 function StatsRow({ detail }: { detail: ProfileDetail }) {
+  // 技能数与 SkillsSection 展示一致:LLM 把组合工具拆成多 skill 但 name_raw
+  // 填整段原文,前端按 (name_raw, category) 去重展示;stats 也用同口径,
+  // 不用 detail.stats.skills(DB 真实行数,会与 UI 对不上)。
+  const skillsShown = dedupSkillsByDisplay(detail.structured.skills ?? []).length;
   const items: Array<[string, number]> = [
     ['工作', detail.stats.experiences],
     ['项目', detail.stats.projects],
-    ['技能', detail.stats.skills],
+    ['技能', skillsShown],
     ['教育', detail.stats.educations],
     ['chunks', detail.stats.chunks],
   ];
@@ -390,16 +388,96 @@ function renderProject(p: ProfileProjectItem): React.ReactNode {
   );
 }
 
-function renderSkill(s: ProfileSkillItem): React.ReactNode {
+// LLM 把组合工具(`Prometheus + Grafana` / `OpenAI / Anthropic API`)拆成
+// 多个 skill 但 name_raw 都填整段原文,按 name 去重不够,展示会重复。
+// 按 (name_raw, category) 去重,只展示一次。stats.skills 保留 DB 真实数。
+function dedupSkillsByDisplay(skills: readonly ProfileSkillItem[]): ProfileSkillItem[] {
+  const seen = new Map<string, ProfileSkillItem>();
+  for (const s of skills) {
+    const key = `${(s.name_raw ?? s.name).toLowerCase()}|${s.category ?? ''}`;
+    if (!seen.has(key)) seen.set(key, s);
+  }
+  return Array.from(seen.values());
+}
+
+const SKILL_CATEGORY_ORDER: readonly string[] = [
+  'language',
+  'framework',
+  'database',
+  'tool',
+  'cloud',
+  'other',
+];
+
+const SKILL_CATEGORY_LABEL: Record<string, string> = {
+  language: '编程语言',
+  framework: '框架',
+  database: '数据库',
+  tool: '工具',
+  cloud: '云原生',
+  other: '其他',
+};
+
+function groupSkillsByCategory(
+  skills: readonly ProfileSkillItem[],
+): Array<[string, ProfileSkillItem[]]> {
+  const groups = new Map<string, ProfileSkillItem[]>();
+  for (const s of skills) {
+    const cat = s.category ?? 'other';
+    const list = groups.get(cat) ?? [];
+    list.push(s);
+    groups.set(cat, list);
+  }
+  return [...groups.entries()].sort(([a], [b]) => {
+    const ai = SKILL_CATEGORY_ORDER.indexOf(a);
+    const bi = SKILL_CATEGORY_ORDER.indexOf(b);
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+  });
+}
+
+function SkillsSection({ skills }: { skills: readonly ProfileSkillItem[] }) {
+  const deduped = dedupSkillsByDisplay(skills);
+  const groups = groupSkillsByCategory(deduped);
   return (
-    <div className="flex items-baseline justify-between gap-2">
-      <span className="font-medium">{s.name_raw}</span>
-      <span className="text-xs text-muted">
-        {s.category}
-        {s.level ? ` · ${s.level}` : ''}
-        {s.years != null ? ` · ${s.years}y` : ''}
-      </span>
-    </div>
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">
+          技能 <span className="text-xs text-muted">({deduped.length})</span>
+        </CardTitle>
+        <CardDescription>当前只读,编辑能力后续切片再开</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {deduped.length === 0 ? (
+          <p className="text-sm text-muted">暂无技能</p>
+        ) : (
+          <div className="grid grid-cols-[5rem_1fr] gap-x-3 gap-y-3">
+            {groups.map(([cat, list]) => (
+              <React.Fragment key={cat}>
+                <div className="pt-1 text-xs tracking-wide text-muted">
+                  {SKILL_CATEGORY_LABEL[cat] ?? cat}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {list.map((s) => {
+                    const meta = [s.level, s.years != null ? `${s.years}y` : null]
+                      .filter(Boolean)
+                      .join(' · ');
+                    return (
+                      <span
+                        key={s.name}
+                        className="rounded border border-border bg-input/40 px-2 py-0.5 text-xs whitespace-nowrap"
+                      >
+                        <span className="font-medium">{s.name_raw}</span>
+                        {meta ? <span className="ml-1 text-muted">{meta}</span> : null}
+                      </span>
+                    );
+                  })}
+                </div>
+              </React.Fragment>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
