@@ -46,7 +46,9 @@ class Resume(Base, IDMixin, TimestampMixin):
     title: Mapped[str | None] = mapped_column(String(200))
     markdown: Mapped[str | None] = mapped_column(Text)
     pdf_file_id: Mapped[int | None] = mapped_column(BigInteger)
-    template: Mapped[str] = mapped_column(String(50), nullable=False, server_default="awesome-cv-zh")
+    template: Mapped[str] = mapped_column(
+        String(50), nullable=False, server_default="awesome-cv-zh"
+    )
 
     generation_model: Mapped[str | None] = mapped_column(String(50))
     review_model: Mapped[str | None] = mapped_column(String(50))

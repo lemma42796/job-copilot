@@ -180,9 +180,7 @@ async def run_generate(
         )
     except (LLMUpstreamError, LLMTimeoutError) as exc:
         await _mark_failed(sessionmaker, resume_id=resume_id)
-        raise LLMUpstreamError(
-            str(exc) or "drafter 上游异常", status_code=502
-        ) from exc
+        raise LLMUpstreamError(str(exc) or "drafter 上游异常", status_code=502) from exc
 
     draft_markdown = (drafter_result.content or "").strip()
     if not draft_markdown:
@@ -201,9 +199,7 @@ async def run_generate(
         )
     except (LLMUpstreamError, LLMTimeoutError) as exc:
         await _mark_failed(sessionmaker, resume_id=resume_id)
-        raise LLMUpstreamError(
-            str(exc) or "reviewer 上游异常", status_code=502
-        ) from exc
+        raise LLMUpstreamError(str(exc) or "reviewer 上游异常", status_code=502) from exc
     except LLMSchemaInvalidError as exc:
         await _mark_failed(sessionmaker, resume_id=resume_id)
         snippet = str(exc)[:500] if str(exc) else ""
@@ -222,9 +218,7 @@ async def run_generate(
     title = _make_title(jd)
 
     async with sessionmaker() as session, session.begin():
-        resume_row = await _get_resume_locked(
-            session, resume_id=resume_id, user_id=user_id
-        )
+        resume_row = await _get_resume_locked(session, resume_id=resume_id, user_id=user_id)
         _apply_generate_result(
             resume_row,
             draft_markdown=draft_markdown,
@@ -320,9 +314,7 @@ async def get_resume(session: AsyncSession, *, user_id: int, resume_id: int) -> 
     return resume
 
 
-async def soft_delete_resume(
-    session: AsyncSession, *, user_id: int, resume_id: int
-) -> None:
+async def soft_delete_resume(session: AsyncSession, *, user_id: int, resume_id: int) -> None:
     cur = await session.execute(
         sa.update(Resume)
         .where(
@@ -348,9 +340,7 @@ async def _validate_user(session: AsyncSession, *, user_id: int) -> None:
         raise NotFoundError(f"用户 {user_id} 不存在")
 
 
-async def _validate_jd_parsed(
-    session: AsyncSession, *, user_id: int, jd_id: int
-) -> None:
+async def _validate_jd_parsed(session: AsyncSession, *, user_id: int, jd_id: int) -> None:
     """JD 必须存在 + 属于 user + 已 parsed。"""
     status = await session.scalar(
         sa.select(Jd.status).where(
@@ -362,14 +352,10 @@ async def _validate_jd_parsed(
     if status is None:
         raise NotFoundError(f"jd {jd_id} not found")
     if status != "parsed":
-        raise ResumePreconditionError(
-            f"JD 当前状态为 {status},需先解析为 parsed 状态才能生成简历"
-        )
+        raise ResumePreconditionError(f"JD 当前状态为 {status},需先解析为 parsed 状态才能生成简历")
 
 
-async def _validate_profile_owned(
-    session: AsyncSession, *, user_id: int, profile_id: int
-) -> None:
+async def _validate_profile_owned(session: AsyncSession, *, user_id: int, profile_id: int) -> None:
     exists = await session.scalar(
         sa.select(sa.literal(1)).where(
             Profile.id == profile_id,
@@ -381,9 +367,7 @@ async def _validate_profile_owned(
         raise NotFoundError(f"profile {profile_id} not found")
 
 
-async def _validate_profile_has_chunks(
-    session: AsyncSession, *, profile_id: int
-) -> None:
+async def _validate_profile_has_chunks(session: AsyncSession, *, profile_id: int) -> None:
     """RAG 前提:profile 至少有一条带 embedding 的 chunk(同 match_service)。"""
     count = await session.scalar(
         sa.select(sa.func.count())
@@ -484,9 +468,7 @@ def _compose_hint(match: Match) -> str | None:
     return "\n".join(parts) if parts else None
 
 
-async def _get_resume_locked(
-    session: AsyncSession, *, resume_id: int, user_id: int
-) -> Resume:
+async def _get_resume_locked(session: AsyncSession, *, resume_id: int, user_id: int) -> Resume:
     """Re-read resume row inside the write transaction(同 match_service 模式)。"""
     resume = await session.scalar(
         sa.select(Resume).where(
@@ -534,9 +516,7 @@ def _apply_generate_result(
     resume.latency_ms = drafter_result.latency_ms + reviewer_result.latency_ms
 
 
-async def _mark_failed(
-    sessionmaker: async_sessionmaker[AsyncSession], *, resume_id: int
-) -> None:
+async def _mark_failed(sessionmaker: async_sessionmaker[AsyncSession], *, resume_id: int) -> None:
     """Side-channel commit: status='failed' regardless of in-flight tx
     state(套 jd_service / match_service._mark_failed 模板)。"""
     async with sessionmaker() as session, session.begin():

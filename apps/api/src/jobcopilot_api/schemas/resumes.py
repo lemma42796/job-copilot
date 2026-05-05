@@ -73,7 +73,10 @@ class ResumeCreateInput(BaseModel):
 
     jd_id: int = Field(gt=0)
     profile_id: int = Field(gt=0)
-    match_id: int | None = Field(default=None, description="可选:从 match 详情页触发时带上,用于把 gap_summary 作为 drafter hint")
+    match_id: int | None = Field(
+        default=None,
+        description="可选:从 match 详情页触发时带上,用于把 gap_summary 作为 drafter hint",
+    )
 
 
 # ---------------------------------------------------------------------------
