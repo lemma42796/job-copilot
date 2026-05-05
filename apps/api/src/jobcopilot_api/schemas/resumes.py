@@ -60,6 +60,50 @@ class ResumeReview(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Planner LLM 输出 schema(M3 W7 — 5 节点 graph 的 plan 节点)
+# ---------------------------------------------------------------------------
+
+
+class ResumeSectionPlan(BaseModel):
+    """Planner 对单个简历章节的取舍计划。"""
+
+    section: Literal[
+        "## 基本信息",
+        "## 求职意向",
+        "## 专业概要",
+        "## 工作经历",
+        "## 项目经历",
+        "## 技能",
+        "## 教育背景",
+    ]
+    rationale: str = Field(description="为什么这样写这个章节(简短一句话,指向 JD 命中点)")
+    must_include_chunk_ids: list[int] = Field(
+        default_factory=list,
+        description="必须出现在该章节的 chunk_id 列表(planner 从 retrieve top-K 中挑出最对口的)",
+    )
+    skip: bool = Field(
+        default=False, description="是否整章节跳过(基本信息 / 教育在 candidate 字段全空时设 true)"
+    )
+
+
+class ResumePlan(BaseModel):
+    """Planner 输出的章节计划。drafter 据此组织行文。"""
+
+    overall_strategy: str = Field(
+        description="3-5 句话:候选人最契合 JD 的 2-3 条核心优势 + 整体行文策略"
+    )
+    emphasis_skills: list[str] = Field(
+        default_factory=list,
+        description="必须在简历中显式出现的关键技能(JD hard_skills ∩ chunks 实际命中)",
+    )
+    de_emphasize: list[str] = Field(
+        default_factory=list,
+        description="淡化但不删除的内容(与 JD 关联弱的经历 / 早期项目 / 副项目可标记此处)",
+    )
+    sections: list[ResumeSectionPlan]
+
+
+# ---------------------------------------------------------------------------
 # POST /v1/resumes/generate input
 # ---------------------------------------------------------------------------
 

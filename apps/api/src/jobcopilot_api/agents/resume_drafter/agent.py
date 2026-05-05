@@ -1,5 +1,5 @@
-"""ResumeDrafterAgent — JD + chunks (+ optional gap hint) → markdown 简历。
-AGENT_DESIGN §7.3.3。
+"""ResumeDrafterAgent — JD + chunks (+ optional plan / hint / prev_findings)
+→ markdown 简历。AGENT_DESIGN §7.3.3。
 
 Pure function: 不读 / 不写 DB。Service 层负责 retrieve(检索 chunks)
 + persist(写 resumes / resume_versions)。
@@ -22,6 +22,13 @@ M3 GA 阶段评估升 STANDARD/PREMIUM 换质量,届时同步放宽 timeout。
 
 Default timeout 90s: 比 CHEAP 默认 30s 的 3 倍,留余量给 ~3000 token markdown
 输出。
+
+M3 W7 新增两参(plan / prev_findings):
+- `plan` 来自 ResumePlannerAgent — 章节级取舍计划;drafter 据此组织行文,
+  不再独自做选材决策。空时 prompt 内分支降级(等价旧 v1.0.3 行为)。
+- `prev_findings` 由 graph 的 revise 节点透传 — reviewer 上一轮的 findings
+  列表;drafter 必须针对每条具体修订(删除 / 换措辞 / 改数字),不能整
+  篇重写否则白费上一轮信号。空时表示首次 draft(非 revise)。
 """
 
 from __future__ import annotations
@@ -32,6 +39,7 @@ from jobcopilot_api.infra.prompts import LoadedPrompt, render_user
 from jobcopilot_api.llm.client import LLMClient, LLMResult
 from jobcopilot_api.llm.tiers import Tier
 from jobcopilot_api.models import Jd, ProfileChunk
+from jobcopilot_api.schemas.resumes import ResumePlan, ReviewFinding
 
 FEATURE = "resume_draft"
 RELATED_ENTITY = "resume"
@@ -66,6 +74,22 @@ def _chunk_inputs(chunks: list[ProfileChunk]) -> list[dict[str, Any]]:
     ]
 
 
+def _plan_input(plan: ResumePlan | None) -> dict[str, Any] | None:
+    """Serialize ResumePlan to the dict shape the prompt iterates over.
+    None 时模板 `{% if plan %}` 分支跳过整段。"""
+    if plan is None:
+        return None
+    return plan.model_dump(mode="json")
+
+
+def _findings_input(findings: list[ReviewFinding] | None) -> list[dict[str, Any]] | None:
+    """Serialize previous-round reviewer findings for the revise path.
+    None 或空 list 时模板 `{% if prev_findings %}` 分支跳过整段(首次 draft)。"""
+    if not findings:
+        return None
+    return [f.model_dump(mode="json") for f in findings]
+
+
 async def draft_resume(
     *,
     jd: Jd,
@@ -74,6 +98,8 @@ async def draft_resume(
     prompt: LoadedPrompt,
     llm: LLMClient,
     candidate: dict[str, Any] | None = None,
+    plan: ResumePlan | None = None,
+    prev_findings: list[ReviewFinding] | None = None,
     user_id: int | None = None,
     trace_id: str | None = None,
     related_id: int | None = None,
@@ -94,13 +120,19 @@ async def draft_resume(
     - `educations`(list[dict]):教育背景章节直接渲染,绕开 retrieve K=20
       的相似度召回(教育 chunks 可能被 LLM Agent 方向语义挤掉)
 
-    None 或缺字段时,prompt 模板分支降级(章节跳过 / 写"未提供")。"""
+    `plan` 是 ResumePlannerAgent 的章节计划(M3 W7+);空时退化为 v1.0.3
+    行为。
+
+    `prev_findings` 是 graph 的 revise 节点透传的上一轮 reviewer findings;
+    非空时模板渲染"修订指引"段,要求 drafter 针对性改、不要整篇重写。"""
     user_text = render_user(
         prompt.user_template,
         jd=_jd_input(jd),
         chunks=_chunk_inputs(chunks),
         hint=hint,
         candidate=candidate or {},
+        plan=_plan_input(plan),
+        prev_findings=_findings_input(prev_findings),
     )
     return await llm.complete(
         feature=FEATURE,

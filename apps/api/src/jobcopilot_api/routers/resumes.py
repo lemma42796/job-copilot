@@ -2,21 +2,25 @@
 
 Endpoints:
 
-- POST   /v1/resumes/generate         SSE: started → result → done
+- POST   /v1/resumes/generate         SSE: started → node_completed* → result → done
                                          (pre-insert / generate failure: started?
                                           → error → done — see _sse_resume docstring)
 - GET    /v1/resumes                  ResumeListResponse (cursor)
 - GET    /v1/resumes/{id}             ResumeDetail
 - DELETE /v1/resumes/{id}             204
 
-POST 强制 SSE(API_SPEC §6.6):简历定制是 retrieve + drafter + reviewer
-两 LLM 串调,P95 ~30-90s,sync 等不起。MVP 不发 node-level 进度事件,
-保持与 matches 同 shape(started → result → done);node_started /
-node_completed / token streaming 留 v1.1。
+POST 强制 SSE(API_SPEC §6.6):简历定制是 retrieve + planner + drafter
++ reviewer (+ optional revise) 4-5 次 LLM 调用,P95 ~60-120s,sync 等不起。
 
-SSE shape 与 matches.py 对称:`started` 在 phase-1 INSERT 之后 emit 带
-`resource_id`(永久约束 #4)。永久约束 #21 前端走 `lib/sse.ts`,不用
-EventSource。
+SSE shape(M3 W7 升级):`started` 在 phase-1 INSERT 之后 emit 带
+`resource_id`(永久约束 #4);`node_completed` 在 5 节点 graph 每步完成
+后 emit 给前端进度条用;`result` 在 graph END 后 emit 最终态。
+
+`node_completed` data:`{"node": "retrieve|plan|draft|review|revise",
+"revision_count": int}`。前端可按节点完成数量驱动进度条;revision_count
+反映 reviewer 失败后 revise 节点重跑次数(0 = 首次,1+ = revise)。
+
+永久约束 #21 前端走 `lib/sse.ts`,不用 EventSource。
 """
 
 from __future__ import annotations
@@ -53,14 +57,15 @@ from jobcopilot_api.services.resume_service import (
     create_pending_resume,
     get_resume,
     list_resumes,
-    run_generate,
+    run_generate_stream,
     soft_delete_resume,
 )
 
 router = APIRouter(tags=["resumes"])
 
-DRAFTER_PROMPT_KEY: tuple[str, str] = ("resume_drafter", "v1.0.3")
+DRAFTER_PROMPT_KEY: tuple[str, str] = ("resume_drafter", "v1.0.4")
 REVIEWER_PROMPT_KEY: tuple[str, str] = ("resume_reviewer", "v1.0.2")
+PLANNER_PROMPT_KEY: tuple[str, str] = ("resume_planner", "v1.0.0")
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +162,7 @@ async def generate(
 ) -> EventSourceResponse:
     drafter_prompt = _resolve_prompt(request, DRAFTER_PROMPT_KEY)
     reviewer_prompt = _resolve_prompt(request, REVIEWER_PROMPT_KEY)
+    planner_prompt = _resolve_prompt(request, PLANNER_PROMPT_KEY)
     return EventSourceResponse(
         _sse_resume(
             sessionmaker=sessionmaker_,
@@ -166,6 +172,7 @@ async def generate(
             embedder=embedder,
             drafter_prompt=drafter_prompt,
             reviewer_prompt=reviewer_prompt,
+            planner_prompt=planner_prompt,
         )
     )
 
@@ -179,16 +186,19 @@ async def _sse_resume(
     embedder: Embedder,
     drafter_prompt: LoadedPrompt,
     reviewer_prompt: LoadedPrompt,
+    planner_prompt: LoadedPrompt,
 ) -> AsyncIterator[dict[str, str]]:
-    """SSE event sequence for /v1/resumes/generate。
+    """SSE event sequence for /v1/resumes/generate(M3 W7 graph 升级)。
 
     Pre-insert 失败(JD 不存在 / 未 parsed / profile 无 chunks / match 不
     一致)→ 没有 `started`(没 resource_id 可发),直接 `error → done(ok=false)`。
 
-    Phase-1 成功后 emit `started`,接 phase-2 run_generate。run_generate
-    自己处理 mark_failed,raise 出来后 SSE emit `error → done(ok=false)`。
-    成功(包括 review_failed)emit `result {resource_id, url, status, review_passed}`
-    + `done(ok=true)`。review_failed 也算 ok=true(markdown 仍展示)。"""
+    Phase-1 成功后 emit `started`,接 phase-2 run_generate_stream。每个 graph
+    节点完成 emit 一条 `node_completed`(retrieve / plan / draft / review /
+    revise);最后 emit `result + done(ok=true)`。
+
+    run_generate_stream 内部已 mark_failed + raise,捕获后 emit
+    `error → done(ok=false)`。review_failed 也算 ok=true(markdown 仍展示)。"""
     job_id = generate_uuid7()
     try:
         resume_id = await create_pending_resume(
@@ -206,7 +216,7 @@ async def _sse_resume(
     yield _sse("started", {"job_id": job_id, "resource_id": resume_id})
 
     try:
-        resume_row, _drafter, _reviewer, _retrieve = await run_generate(
+        async for event in run_generate_stream(
             sessionmaker,
             resume_id=resume_id,
             user_id=user_id,
@@ -214,22 +224,34 @@ async def _sse_resume(
             llm=llm,
             drafter_prompt=drafter_prompt,
             reviewer_prompt=reviewer_prompt,
+            planner_prompt=planner_prompt,
             trace_id=job_id,
-        )
+        ):
+            kind = event.get("event")
+            if kind == "node_completed":
+                yield _sse(
+                    "node_completed",
+                    {
+                        "node": event["node"],
+                        "revision_count": event["revision_count"],
+                    },
+                )
+            elif kind == "final":
+                yield _sse(
+                    "result",
+                    {
+                        "resource_id": resume_id,
+                        "url": f"/v1/resumes/{resume_id}",
+                        "status": event["status"],
+                        "review_passed": event["review_passed"],
+                        "revisions": event.get("revisions", 0),
+                    },
+                )
     except JobCopilotError as exc:
         yield _sse("error", {"code": exc.code, "detail": exc.detail})
         yield _sse("done", {"ok": False})
         return
 
-    yield _sse(
-        "result",
-        {
-            "resource_id": resume_id,
-            "url": f"/v1/resumes/{resume_id}",
-            "status": resume_row.status,
-            "review_passed": resume_row.review_passed,
-        },
-    )
     yield _sse("done", {"ok": True})
 
 

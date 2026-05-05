@@ -1,32 +1,45 @@
-"""Resume service — pending row creation + run_generate + CRUD (S16).
+"""Resume service — pending row creation + streaming graph runner + CRUD。
 
-Two-phase pipeline 套 match_service 模板:
+Two-phase pipeline 套 match_service 模板,M3 W7 升级:
 
 - **create_pending_resume** (Phase 1): validate inputs + INSERT
   `status='generating'` row。永久约束 #4: SSE `started` event 在 phase 1
   之后 emit,带这里返回的 resume_id 做 resource_id。
-- **run_generate** (Phase 2): retrieve top-K=20 chunks + LLM draft + LLM
-  review + 写 resumes 行 + INSERT resume_versions v1。
+- **run_generate_stream** (Phase 2, M3 W7 改造): 用 5 节点 LangGraph
+  (retrieve → plan → draft → review → revise) 替代 S16 的"3 函数串调"。
+  返回 `AsyncIterator[dict]` —— router 把每条事件转成 SSE。事件 shape:
+  - `{"event": "node_completed", "node": "retrieve|plan|draft|review|revise",
+     "revision_count": int}`
+  - `{"event": "final", "resume_id": int, "status": "ready|review_failed",
+     "review_passed": bool|None}`
 
-D8 = A:函数串调,不上 LangGraph。MVP 不做 plan / 不做 revise:reviewer
-不通过(任意 high severity)→ status='review_failed' + 仍写 markdown 让前
-端展示警告条;LLM upstream / schema invalid 走 _mark_failed 旁路 commit
-(永久约束 ADR-0004 side-channel pattern)。
+Failure path 与 S16 一致:LLM upstream / timeout / schema invalid / 业务级
+失败 → service 在 `except` 里调 `_mark_failed`(side-channel commit)+ raise。
+review_failed(任意 high severity)**不**当失败,markdown 仍存供前端展示。
 
 list / get / soft_delete 走 caller-managed session(同 match_service 模式)。
 """
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 import sqlalchemy as sa
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from jobcopilot_api.agents.resume_drafter import draft_resume
-from jobcopilot_api.agents.resume_reviewer import review_resume
+from jobcopilot_api.agents.resume_graph import (
+    DEFAULT_MAX_REVISIONS,
+    DEFAULT_RESUME_K,
+    PreLoadedResumeContext,
+    ResumeGraphDeps,
+    ResumeGraphState,
+    build_resume_graph,
+    stream_resume_graph,
+)
 from jobcopilot_api.errors import JobCopilotError, NotFoundError
 from jobcopilot_api.infra.prompts import LoadedPrompt
 from jobcopilot_api.llm.client import LLMClient, LLMResult
@@ -47,15 +60,9 @@ from jobcopilot_api.models import (
     User,
 )
 from jobcopilot_api.schemas.resumes import ResumeReview
-from jobcopilot_api.services.retrieval_service import (
-    RetrieveResult,
-    build_match_query,
-    retrieve_for_match,
-)
 
 log = structlog.get_logger(__name__)
 
-DEFAULT_RESUME_K = 20
 RESUME_TITLE_MAX = 200
 
 
@@ -93,7 +100,7 @@ async def create_pending_resume(
 ) -> int:
     """Phase 1: 校验入参 + INSERT 一条 status='generating' 行,返回 resume_id。
 
-    `run_generate(resume_id, ...)` 接力 phase 2。"""
+    `run_generate_stream(resume_id, ...)` 接力 phase 2。"""
     async with sessionmaker() as session, session.begin():
         await _validate_user(session, user_id=user_id)
         await _validate_jd_parsed(session, user_id=user_id, jd_id=jd_id)
@@ -117,11 +124,11 @@ async def create_pending_resume(
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: run generate
+# Phase 2: run generate (M3 W7 — graph streaming)
 # ---------------------------------------------------------------------------
 
 
-async def run_generate(
+async def run_generate_stream(
     sessionmaker: async_sessionmaker[AsyncSession],
     *,
     resume_id: int,
@@ -130,142 +137,157 @@ async def run_generate(
     llm: LLMClient,
     drafter_prompt: LoadedPrompt,
     reviewer_prompt: LoadedPrompt,
+    planner_prompt: LoadedPrompt,
     trace_id: str | None = None,
     k: int = DEFAULT_RESUME_K,
-) -> tuple[Resume, LLMResult, LLMResult, RetrieveResult]:
-    """Phase 2: retrieve → draft → review → 写 resume + resume_versions v1。
+    max_revisions: int = DEFAULT_MAX_REVISIONS,
+) -> AsyncIterator[dict[str, Any]]:
+    """Phase 2: build graph → stream node events → 写 resume + resume_versions v1。
 
-    分层(永久约束 #7):
-    1. 短 tx: 读 resume 行 + 关联 jd + (optional) match → 拿查询 + hint
-    2. 纯函数: build_match_query(jd) (复用 retrieval_service)
-    3. 慢 IO(无事务): retrieve_for_match (embed + select own session, K=20)
-    4. 慢 IO(无事务): draft_resume (LLM, 无 DB)
-    5. 慢 IO(无事务): review_resume (LLM, 无 DB)
-    6. 单事务: UPDATE resume + INSERT resume_versions v1
+    分层(永久约束 #7 + M3 W7):
+    1. 短 tx: 读 resume 行 + jd + (optional) match → 拿 hint + candidate
+    2. build graph(MemorySaver,5 节点)+ pre_loaded context
+    3. graph.astream(updates) → 转发 node_completed 事件给 caller
+    4. 单事务: UPDATE resume + INSERT resume_versions v1
 
     Failure path:
-    - retrieve 召回空 → mark_failed + raise ResumeGenerationFailedError(422)
-    - drafter / reviewer LLM upstream / timeout → mark_failed + raise
-      LLMUpstreamError(502)
-    - reviewer LLM schema invalid → mark_failed + raise
-      ResumeGenerationFailedError(422)
-    - reviewer.passed=False(任意 high severity)→ **不 mark_failed**,
+    - retrieve 召回空 → mark_failed + ResumeGenerationFailedError(422)
+    - 任意节点 LLM upstream / timeout → mark_failed + LLMUpstreamError(502)
+    - planner / reviewer schema invalid → mark_failed + ResumeGenerationFailedError(422)
+    - reviewer.passed=False **且** revision 用尽 → **不 mark_failed**,
       status='review_failed',markdown / findings 仍存供前端展示
     """
+    # Phase 2.1 — short tx 加载 pre_loaded 上下文
     async with sessionmaker() as session:
         resume, jd, hint, candidate = await _load_resume_for_generate(
             session, resume_id=resume_id, user_id=user_id
         )
 
-    query_text = build_match_query(jd)
+    # Phase 2.2 — build graph + run
+    deps = ResumeGraphDeps(
+        sessionmaker=sessionmaker,
+        llm=llm,
+        embedder=embedder,
+        drafter_prompt=drafter_prompt,
+        reviewer_prompt=reviewer_prompt,
+        planner_prompt=planner_prompt,
+        k=k,
+    )
+    pre_loaded = PreLoadedResumeContext(
+        profile_id=resume.profile_id,
+        jd=jd,
+        hint=hint,
+        candidate=candidate,
+    )
+    graph = build_resume_graph(deps, pre_loaded=pre_loaded)
 
+    initial_state: ResumeGraphState = {
+        "resume_id": resume_id,
+        "user_id": user_id,
+        "trace_id": trace_id,
+        "max_revisions": max_revisions,
+        "revision_count": 0,
+        "drafter_results": [],
+        "reviewer_results": [],
+    }
+
+    final_state: dict[str, Any] = {}
     try:
-        retrieve = await retrieve_for_match(
-            sessionmaker,
-            profile_id=resume.profile_id,
-            query_text=query_text,
-            embedder=embedder,
-            k=k,
-        )
+        async for kind, payload in stream_resume_graph(
+            graph, initial_state, thread_id=str(resume_id)
+        ):
+            if kind == "node_completed":
+                yield {
+                    "event": "node_completed",
+                    "node": payload.node,
+                    "revision_count": payload.revision_count,
+                }
+            elif kind == "final":
+                final_state = payload
     except (LLMUpstreamError, LLMTimeoutError) as exc:
         await _mark_failed(sessionmaker, resume_id=resume_id)
-        raise LLMUpstreamError(str(exc) or "embedding 上游异常", status_code=502) from exc
-
-    if not retrieve.chunks:
-        await _mark_failed(sessionmaker, resume_id=resume_id)
-        raise ResumeGenerationFailedError(
-            "Profile chunks 召回为空,无法生成简历(profile 是否已 chunk?embedding 是否完整?)"
-        )
-
-    try:
-        drafter_result = await draft_resume(
-            jd=jd,
-            chunks=retrieve.chunks,
-            hint=hint,
-            prompt=drafter_prompt,
-            llm=llm,
-            candidate=candidate,
-            user_id=user_id,
-            trace_id=trace_id,
-            related_id=resume_id,
-        )
-    except (LLMUpstreamError, LLMTimeoutError) as exc:
-        await _mark_failed(sessionmaker, resume_id=resume_id)
-        raise LLMUpstreamError(str(exc) or "drafter 上游异常", status_code=502) from exc
-
-    draft_markdown = (drafter_result.content or "").strip()
-    if not draft_markdown:
-        await _mark_failed(sessionmaker, resume_id=resume_id)
-        raise ResumeGenerationFailedError("Drafter 返回空 markdown")
-
-    try:
-        reviewer_result = await review_resume(
-            draft_markdown=draft_markdown,
-            chunks=retrieve.chunks,
-            prompt=reviewer_prompt,
-            llm=llm,
-            user_id=user_id,
-            trace_id=trace_id,
-            related_id=resume_id,
-        )
-    except (LLMUpstreamError, LLMTimeoutError) as exc:
-        await _mark_failed(sessionmaker, resume_id=resume_id)
-        raise LLMUpstreamError(str(exc) or "reviewer 上游异常", status_code=502) from exc
+        raise LLMUpstreamError(str(exc) or "LLM 上游异常", status_code=502) from exc
     except LLMSchemaInvalidError as exc:
         await _mark_failed(sessionmaker, resume_id=resume_id)
         snippet = str(exc)[:500] if str(exc) else ""
         raise ResumeGenerationFailedError(
-            f"Reviewer 返回的 JSON 不符合 schema:{snippet}"
+            f"LLM 返回的 JSON 不符合 schema:{snippet}"
             if snippet
-            else "Reviewer 返回的 JSON 不符合 schema"
+            else "LLM 返回的 JSON 不符合 schema"
         ) from exc
+    except ResumeGenerationFailedError:
+        await _mark_failed(sessionmaker, resume_id=resume_id)
+        raise
+    except Exception:
+        await _mark_failed(sessionmaker, resume_id=resume_id)
+        raise
 
-    review = reviewer_result.parsed
+    if not final_state or "draft_markdown" not in final_state:
+        await _mark_failed(sessionmaker, resume_id=resume_id)
+        raise ResumeGenerationFailedError("Graph 未返回 final state(draft_markdown 缺失)")
+
+    review = final_state.get("review")
     if not isinstance(review, ResumeReview):
         await _mark_failed(sessionmaker, resume_id=resume_id)
-        raise ResumeGenerationFailedError("Reviewer 未返回有效的 ResumeReview")
+        raise ResumeGenerationFailedError("Graph 未产出有效 ResumeReview")
 
     final_status = "ready" if review.passed else "review_failed"
     title = _make_title(jd)
 
+    drafter_results: list[LLMResult] = final_state.get("drafter_results") or []
+    reviewer_results: list[LLMResult] = final_state.get("reviewer_results") or []
+    planner_result: LLMResult | None = final_state.get("planner_result")
+    revision_count: int = final_state.get("revision_count", 0)
+
+    # Phase 2.3 — 单事务写 resume + version v1
     async with sessionmaker() as session, session.begin():
         resume_row = await _get_resume_locked(session, resume_id=resume_id, user_id=user_id)
         _apply_generate_result(
             resume_row,
-            draft_markdown=draft_markdown,
+            draft_markdown=final_state["draft_markdown"],
             title=title,
             review=review,
-            drafter_result=drafter_result,
-            reviewer_result=reviewer_result,
+            drafter_results=drafter_results,
+            reviewer_results=reviewer_results,
+            planner_result=planner_result,
+            revision_count=revision_count,
         )
         resume_row.status = final_status
 
         version = ResumeVersion(
             resume_id=resume_id,
             version_number=1,
-            markdown=draft_markdown,
+            markdown=final_state["draft_markdown"],
             edit_type="generated",
         )
         session.add(version)
 
     log.info(
-        "resume_service.run_generate",
+        "resume_service.run_generate_stream",
         resume_id=resume_id,
         user_id=user_id,
         status=final_status,
         review_passed=review.passed,
         review_findings=len(review.findings),
-        chunks_retrieved=len(retrieve.chunks),
-        drafter_tokens_in=drafter_result.tokens_in,
-        drafter_tokens_out=drafter_result.tokens_out,
-        drafter_cost=str(drafter_result.cost_cny),
-        reviewer_tokens_in=reviewer_result.tokens_in,
-        reviewer_tokens_out=reviewer_result.tokens_out,
-        reviewer_cost=str(reviewer_result.cost_cny),
+        revisions=revision_count,
+        chunks_retrieved=len(final_state.get("chunks") or []),
+        drafter_calls=len(drafter_results),
+        reviewer_calls=len(reviewer_results),
+        planner_called=planner_result is not None,
+        tokens_in=resume_row.tokens_in,
+        tokens_out=resume_row.tokens_out,
+        cost_cny=str(resume_row.cost_cny) if resume_row.cost_cny is not None else None,
         latency_ms=resume_row.latency_ms,
         trace_id=trace_id,
     )
-    return resume_row, drafter_result, reviewer_result, retrieve
+
+    yield {
+        "event": "final",
+        "resume_id": resume_id,
+        "status": final_status,
+        "review_passed": review.passed,
+        "revisions": revision_count,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -432,9 +454,8 @@ async def _load_resume_for_generate(
     返回 (Resume, Jd, hint_text_or_None, candidate);均 detached(后续 IO
     在 session 外)。
 
-    `candidate` 透传给 drafter v1.0.3+ 写章节 1(基本信息) / 2(求职意向) /
-    7(教育背景),不依赖 retrieve 召回结果(教育 chunks 易被 K=20 相似度挤掉,
-    基本信息字段从来不在 chunker 输出里):
+    `candidate` 是 profile 表上**不在 chunks 里**的 deterministic 字段透传
+    (drafter v1.0.3+):
     - `full_name` / `phone` / `email` / `location`:profile 顶层字段
     - `target_titles`(list[str]):profile 顶层字段
     - `educations`(list[dict]):ProfileEducation 关联表全量
@@ -554,24 +575,37 @@ def _apply_generate_result(
     draft_markdown: str,
     title: str,
     review: ResumeReview,
-    drafter_result: LLMResult,
-    reviewer_result: LLMResult,
+    drafter_results: list[LLMResult],
+    reviewer_results: list[LLMResult],
+    planner_result: LLMResult | None,
+    revision_count: int,
 ) -> None:
-    """Map drafter + reviewer 输出 → resumes 表列。Status 由 caller 决定。
+    """Aggregate planner + drafter(可能多次)+ reviewer(可能多次)的 LLM 结果
+    → resumes 表列。Status 由 caller 决定。
 
-    `tokens_in / tokens_out / cached_tokens / cost_cny / latency_ms` 是
-    drafter+reviewer 之和;`generation_model` / `review_model` 分两列。"""
+    `tokens_in / tokens_out / cached_tokens / cost_cny / latency_ms` 是所有
+    LLM 调用之和(planner + 全部 draft + 全部 review)。`generation_model` 取
+    最新一次 drafter 的 model,`review_model` 取最新一次 reviewer 的 model。"""
+    all_calls: list[LLMResult] = []
+    if planner_result is not None:
+        all_calls.append(planner_result)
+    all_calls.extend(drafter_results)
+    all_calls.extend(reviewer_results)
+
     resume.title = title
     resume.markdown = draft_markdown
     resume.review_passed = review.passed
     resume.review_findings = [f.model_dump(mode="json") for f in review.findings]
-    resume.generation_model = drafter_result.model
-    resume.review_model = reviewer_result.model
-    resume.tokens_in = drafter_result.tokens_in + reviewer_result.tokens_in
-    resume.tokens_out = drafter_result.tokens_out + reviewer_result.tokens_out
-    resume.cached_tokens = drafter_result.cached_tokens + reviewer_result.cached_tokens
-    resume.cost_cny = drafter_result.cost_cny + reviewer_result.cost_cny
-    resume.latency_ms = drafter_result.latency_ms + reviewer_result.latency_ms
+    resume.generation_model = drafter_results[-1].model if drafter_results else None
+    resume.review_model = reviewer_results[-1].model if reviewer_results else None
+    resume.tokens_in = sum(r.tokens_in for r in all_calls)
+    resume.tokens_out = sum(r.tokens_out for r in all_calls)
+    resume.cached_tokens = sum(r.cached_tokens for r in all_calls)
+    resume.cost_cny = (
+        sum((r.cost_cny for r in all_calls), Decimal("0")) if all_calls else None
+    )
+    resume.latency_ms = sum(r.latency_ms for r in all_calls)
+    resume.revisions = revision_count
 
 
 async def _mark_failed(sessionmaker: async_sessionmaker[AsyncSession], *, resume_id: int) -> None:
@@ -584,12 +618,13 @@ async def _mark_failed(sessionmaker: async_sessionmaker[AsyncSession], *, resume
 
 
 __all__ = [
+    "DEFAULT_MAX_REVISIONS",
     "DEFAULT_RESUME_K",
     "ResumeGenerationFailedError",
     "ResumePreconditionError",
     "create_pending_resume",
     "get_resume",
     "list_resumes",
-    "run_generate",
+    "run_generate_stream",
     "soft_delete_resume",
 ]
