@@ -1,8 +1,8 @@
 ---
-title: S18 简历定制 dogfood 第一轮 — match prompt 三轮迭代 + reviewer 修复 + 重大方法论 audit
-status: 进行中(drafter v1.0.1 真 bug 5 类待修;reviewer v1.0.2 落地;match v1.1.2 落地)
+title: S18 简历定制 dogfood — match 三轮迭代 + reviewer 修 + 方法论 audit + drafter v1.0.2/v1.0.3 + JDParser v1.0.6
+status: 进行中(drafter v1.0.3 + JDParser v1.0.6 已落;待第二轮多条 dogfood)
 date: 2026-05-05
-purpose: S18 主线 dogfood 第一轮的完整调研产物。包含 match_analyst / resume_drafter / resume_reviewer 三 prompt 的迭代历史、6 条 dogfood 样本聚合、以及一次重大 audit 暴露的方法论错误(没读 profile 凭反推下判断,导致 30-40% bug 诊断误判)
+purpose: S18 主线 dogfood 完整调研产物。包含三 prompt 迭代史、第一轮 6 条样本聚合、一次重大 audit 教训(没读 profile 凭反推下判断,30-40% 误判)、drafter v1.0.2 修第一轮 5 类真 bug、第二轮第一条样本(JD #24+profile #15)audit 暴露 4 类新问题 → drafter v1.0.3 + JDParser v1.0.6 双线落地
 ---
 
 # 切片范围
@@ -134,6 +134,181 @@ reviewer v1.0.2 重刷 match #10 / JD #24 后,5 条 finding 全是 drafter 真�
 3. **副词跨 skill 错位**("精通"是 Python skill.level=expert 字段,被错位到 Go(advanced));应当依 chunks skill.level 一致映射
 4. **侧项目泛化为通用能力**(Next.js 仅在 JobCopilot 侧项目 tech_stack 里出现,简历技能段写"前端全栈能力 / 复杂交互界面 / Next.js 构建")
 5. **chunks 弱措辞强化**(chunks "关注 AI Coding" 被改写成"擅长 AI Coding 落地")
+
+# drafter v1.0.2 落地(2026-05-05 当天接续)
+
+## 改动摘要
+
+| 文件 | 改动 |
+|---|---|
+| `prompts/resume_drafter/v1.0.2.j2` | 新建。改回原 4 条 → 5 条强约束 A/B/C/D/E,详见下方"强约束变更"|
+| `agents/resume_drafter/agent.py` | `draft_resume` 加 `target_titles: list[str] \| None = None` 参数;`_chunk_inputs` 不动;render_user 多传 `target_titles` |
+| `services/resume_service.py` | `_load_resume_for_generate` 返回元组多一个 `target_titles: list[str]`(从 `profile.target_titles` 字段读);`run_generate` 接住后透传给 `draft_resume` |
+| `routers/resumes.py` | `DRAFTER_PROMPT_KEY` v1.0.1 → v1.0.2 |
+| `STATUS.md` | last_updated / 切片表 / 当前生效 prompt / 下一刀 / drafter 段全部刷新 |
+
+无 migration、无 schema 变化、无前端改动。
+
+## 强约束变更(v1.0.1 → v1.0.2)
+
+- **A**(单 chunk 引用)— 不变
+- **B**(副词)— 重写
+  - 撤回 chunks 自用副词的禁令(audit 教训:「精通」是 skill.level=expert 字段值;「全栈作者」是 project.role 字段值;「较深积累」是 summary 原文 — 都是 chunks 字段值,不是 drafter 编造)
+  - 新增 **skill.level → 副词标准映射表**:expert=精通 / advanced=熟练 / intermediate-basic=掌握 / beginner=了解-入门
+  - 新增**铁律**:某 skill 的 level 副词只能用在该 skill 自己,不要错位(修真 bug 3:Python expert 的「精通」错位到 Go advanced)
+  - 永久禁用:卓越 / 优秀 / 顶尖 / 极致 / 完美 / 业界领先 / 资深(级别义)
+  - 新增**弱措辞不强化**(修真 bug 5):chunks「关注 / 了解 / 一般」原强度保留,不升级为「擅长 / 落地」
+- **C**(业余项目)— 加固
+  - 原版只要求「项目段落标签 + 不与正职项目同语调」
+  - 新增 C.2:**侧项目 tech_stack 不允许出现在 `## 技能` 章节作为通用能力**(修真 bug 4:Next.js 仅在侧项目 JobCopilot tech_stack,被泛化为「前端全栈能力」)
+- **D**(技能段)— 重写
+  - 原版只列举什么不算 skill 证据(栈背景 / 公司技术栈 / 教育背景工具)
+  - 新版改为**三级来源优先级**:① `granularity=skill` chunks(权威清单,默认全列)② experience/project 的 `技术栈:` 字段 ③ 描述/亮点中的"动作型"陈述
+  - 新增禁令:**"X/Y: 描述" 形式中 X 或 Y 在 chunks 无证据则不拼凑**(修真 bug 2:Flask 没 chunks 证据被硬塞)
+  - 格式建议:分组 + level 副词 + 年限,`Python(精通 / 5 年)`
+- **E**(求职意向)— 全新
+  - 优先 `candidate.target_titles`(profile 表独立字段),为空时才用 JD title
+  - JD title 必须**剥离**括号内限定词(Junior / P6 / 校招 / 内推 等内部级别)
+  - 修真 bug 1:JD title「LLM Agent 工程师 (Junior)」→ 简历硬抄含 (Junior)
+
+## 关键设计决策
+
+1. **target_titles 走参数透传不走 chunks**:`profile.target_titles` 是独立字段(JSONB list[str]),不在 `profile_summary` 里,chunker 也没有把它进 chunks。三选一:① chunker 升 v2 把 target_titles 进 summary chunk(影响 embedding,需要 reindex)② 在 chunks 列表里塞一条假 chunk(granularity 不规整)③ **agent.py 多接一个参数 + prompt 模板渲染**。选 ③,最干净,不动 chunker / embedding / 检索路径,只 drafter 自己用。
+2. **不动 chunker / 不重建 chunks**:本切片不需要。skill / project.role / summary 字段值都已在 chunks `content` 里(`水平:expert` / `角色:全栈作者` / `个人简介:...` 直接渲染),audit 教训是 prompt 没"读懂" granularity 字段语义,新版 prompt 在"输入数据语义"段显式声明各 granularity 字段。
+3. **保留反注入约束**:同 v1.0.1。
+4. **章节顺序与字数限制不变**:7 章节 / 每章 ≤ 6 bullet / ≤ 30 字 / 整篇 800-1200 字。
+5. **没改 reviewer**:reviewer v1.0.2 已经在 audit 后落地(M2/M4/M5 判定收窄 + granularity 字段说明),drafter v1.0.2 的修复方向跟它互补 — drafter 更精准生成,reviewer 更精准评审,期望第二轮 review 通过率拉高。
+
+## 第二轮 dogfood 计划(下次会话执行)
+
+跑同样 6 条样本(JD #9-#13 + #24 × profile #15),drafter 用 v1.0.2、reviewer 仍用 v1.0.2,逐条对比 v1.0.1 的 high finding:
+
+| 对比维度 | v1.0.1 第一轮 | v1.0.2 第二轮目标 |
+|---|---|---|
+| 通过率 | 17%(1/6)| ≥ 50%(3/6)|
+| high finding 平均 | 3.0 | ≤ 1 |
+| 求职意向硬抄 JD title | 出现 | 0 |
+| 技能段编造(无 chunks 证据) | Flask 等出现 | 0 |
+| skill level 副词错位 | 出现 | 0 |
+| 侧项目技术栈泛化 | 出现 | 0 |
+| 弱措辞强化 | 出现 | 0 |
+
+不达阈值 → v1.0.3 / 升 STANDARD tier。
+
+# 第二轮第一条样本 audit(JD #24 + profile #15 / drafter v1.0.2 输出)
+
+跑出第一条 v1.0.2 输出后,按永久约束 #6 先 curl 出 JD #24 + profile #15 的 raw_text + structured 数据,**人工对照** drafter 输出。
+
+## v1.0.2 修住的(真改进)
+
+| Bug | 修住情况 |
+|---|---|
+| Bug 1 求职意向硬抄 JD title | ✅ 输出"大模型应用工程师 / LLM Application Engineer / AI 全栈工程师"(三项 join),不再含 (Junior) 限定词 |
+| Bug 2 Flask 编造 | ✅ JD 强要 Flask 但 candidate 无证据,drafter 正确不列 |
+| Bug 3 skill level 错位 | ✅ Python(精通)/ Go(熟练 / 4 年),严格映射 expert→精通 / advanced→熟练 |
+| Bug 4 侧项目技术栈泛化 | ✅ JobCopilot 标 (侧项目);Next.js 没出现在技能段(因 C.2)|
+
+## v1.0.2 暴露的 4 类新问题(P1)
+
+### 问题 1:基本信息 [待补充] 占位
+
+简历输出:`姓名:[待补充] / 联系方式:[待补充]`,但 candidate 实际有 full_name="张明远 / Zhang Mingyuan" / email / phone。
+
+**根因**:`profile.full_name / email / phone / location` 是 profile 表顶层字段,**chunker 没渲染进 chunks**(同 v1.0.2 修过的 target_titles 同款问题),drafter 看不到 → 写占位符。
+
+### 问题 2:教育背景 [学校名称] 占位
+
+简历输出:`[学校名称] | [专业名称] | [学位] | [时间]`,但 candidate.educations 实际有上交硕 + 武大学士 + GPA + honors。
+
+**根因**:教育在 `granularity=education` chunks 里,但 retrieve K=20 走相似度召回,JD 是 LLM Agent 工程岗,语义召回偏向工作 / 项目 / 技能,**教育 chunks 排序靠后被挤出 Top-20**。
+
+### 问题 3:TypeScript 漏列(D 规则被自主删减)
+
+candidate skills 清单明确写 `TypeScript advanced/3 年`,JD hard_skills 强要,**简历技能段完全没列**。drafter 自主认为"工作经历里展示了 TypeScript 就不在技能段重复"——错误删减。
+
+### 问题 4:弱→强升级未修透(B.4 没拦住 2 处)
+
+| 简历输出 | chunks 原文 | 性质 |
+|---|---|---|
+| "**精通** LangChain/LlamaIndex" | summary「**熟悉** LangChain」+ skill `水平=null` | 升级 熟悉→精通,且 level=null 不该配级别词 |
+| "AI Coding 与多模态 Agent 方向**落地**" | summary「**关注** AI Coding 与多模态 Agent 方向」 | 加了"落地",升级 |
+
+reviewer v1.0.2 对这两处都给了 pass(没抓到)— M2 副词判定收窄后只要 chunks 任意字段有该词就放过,但**这两类是"chunks 弱 + 简历强"**,reviewer 当前规则识别不出。
+
+# JDParser 解析层 audit(JD #24)
+
+按永久约束 #6 同步 audit JD 解析,发现 1 个真 bug。
+
+## JDParser v1.0.5 真 bug:Python 错挂 OR-group
+
+raw_text:**「精通 Python,熟悉 FastAPI / Flask 任一后端框架」**
+
+| 字段 | 当前输出 | 应该是 |
+|---|---|---|
+| python | `or_group_id=1, weight=0.33` | `or_group_id=null, weight=1.0` |
+| fastapi | `or_group_id=2, weight=0.33` | `or_group_id=2, weight=0.5` |
+| flask | `or_group_id=2, weight=0.33` | `or_group_id=2, weight=0.5` |
+
+**根因**:LLM 把整句读成"3 项 mutex group",权重三项均分 0.33;但 or_group_id 又给了不同的 1/2/2 — 自相矛盾(group 不同但权重像在同一 group 内)。
+
+**正确语义**:Python 是单点必须项,FastAPI/Flask 才是 OR-group 共组。
+
+**对 match / drafter 影响**:match v1.1.2 消费 or_group_id 做 OR-group 命中,Python 被错挂独立 group + weight 0.33 → 候选人 Python expert 仍命中但权重计算偏低,影响 score 数字不影响 missing 判定。drafter 不直接用 or_group_id,影响很小。
+
+# drafter v1.0.3 + JDParser v1.0.6 双线落地(2026-05-05 当天接续)
+
+## drafter v1.0.3 改动摘要
+
+| 文件 | 改动 |
+|---|---|
+| `prompts/resume_drafter/v1.0.3.j2` | 新建。v1.0.2 的 5 条强约束扩为 6 条,新增 F(基本信息 + 教育从 candidate 取);D 段加 D.0 铁律(skill chunks 全列);B.4 加 2 处显式反例;B.2 补"水平=null 不配级别副词";写作铁律 7 加"绝不写占位符" |
+| `agents/resume_drafter/agent.py` | `draft_resume` 参数 `target_titles: list[str]` 升级为 `candidate: dict`(向后 None 默认,prompt 模板降级渲染) |
+| `services/resume_service.py` | `_load_resume_for_generate` 多 load Profile 顶层字段 + ProfileEducation 关联,组装 `candidate = {full_name/phone/email/location/target_titles/educations}` 透传;返回元组第 4 位从 `target_titles` 改为 `candidate` dict |
+| `routers/resumes.py` | `DRAFTER_PROMPT_KEY` v1.0.2 → v1.0.3 |
+| `STATUS.md` | last_updated / 切片表 / 当前生效 prompt / 下一刀 / drafter 段全部刷新 |
+
+## drafter v1.0.3 强约束变更(v1.0.2 → v1.0.3)
+
+- **A**(单 chunk 引用)— 不变
+- **B**(副词)— 增量
+  - B.2 新增子条款:某 skill chunk `水平:null`(LLM 没给 level)→ 简历**不配**任何级别副词,只列名字(修问题 4 LangChain 配"精通")
+  - B.4 加 2 处显式反例:① 「关注 AI Coding 方向」 → 「关注 AI Coding 方向**落地**」(禁) ② 「**熟悉** LangChain」 + skill 水平=null → 「**精通** LangChain」(禁)
+  - B.4 加机械检查:简历输出每个动词/副词必须在 chunks 里能找到原词或更强的同义词
+- **C**(侧项目)— 不变;C.4 新增"无显式标记时 3 条启发判断"
+- **D**(技能段)— 重写
+  - 新增 **D.0 铁律**:`granularity=skill` chunks 默认**全部**出现在简历技能段,不允许 drafter 自主删减(修 TypeScript 漏列);仅 a) 仅在侧项目 tech_stack 出现 b) 陪衬词 两类排除
+  - D.1 来源优先级保留(三级)
+- **E**(求职意向)— 不变
+- **F**(新增)— 章节 1 基本信息 / 章节 7 教育背景从 `candidate` 字段取,不依赖 chunks
+  - 基本信息 4 字段全空才整章节跳过;**绝不写占位符**
+  - 教育从 `candidate.educations` 列表渲染;**绝不**从 chunks granularity=education 找数据(retrieve K=20 召回不全)
+
+## drafter v1.0.3 关键设计决策
+
+1. **candidate dict 一次性扩张到 6 字段**(full_name/phone/email/location/target_titles/educations),不再单字段加参数。后续若有"职业概要" / "求职偏好"等同类问题(profile 顶层字段不在 chunks 里)走同一通道。
+2. **教育数据 100% 走 candidate 不走 chunks**:retrieve K=20 召回不全的根因是设计层 — chunks 是相似度召回,deterministic 字段(教育 / 基本信息)不该走相似度。短期 prompt 层硬塞 candidate.educations,长期可考虑 retrieval 设计修(M2 v1.1 提质刀)。
+3. **不动 chunker / 不重建 chunks**:同 v1.0.2 决策,本轮 audit 暴露的字段都已在 ORM 里,不需要 reindex。
+4. **未动 reviewer**:reviewer v1.0.2 漏抓的"弱→强升级" 应该由 drafter 不犯错来解决,不是 reviewer 兜底;若 v1.0.3 仍有漏,再考虑 reviewer v1.0.3 加 M7。
+5. **TypeScript 漏列修法选择**:不在 D.1 三级来源里改(三级来源没问题),而是新加 D.0 顶层铁律。原因:三级来源解决"哪些可以列",D.0 解决"哪些必须列",两个不同的问题。
+
+## JDParser v1.0.6 改动
+
+见下面单独段落。
+
+## 第二轮 dogfood 计划(下次会话执行)
+
+跑同样 6 条样本,但 JD #24 **需重新 parse**(用 v1.0.6 让 Python or_group=null)。逐条对比:
+
+| 对比维度 | v1.0.2 第二轮 #1(本次)| v1.0.3 + JDParser v1.0.6 目标 |
+|---|---|---|
+| 通过率 | 1/1 ready(reviewer 漏抓)| 真通过 ≥ 50%(3/6)|
+| 基本信息占位符 | 出现 | 0 |
+| 教育占位符 | 出现 | 0 |
+| TypeScript 漏列 | 出现 | 0 |
+| 弱→强升级 | 2 处 | 0 |
+| Python OR-group 错挂 | 出现(JDParser) | 0 |
+
+不达阈值 → v1.0.4 / 升 STANDARD tier;reviewer 加 M7 弱→强升级判定。
 
 # 期间踩到的坑
 

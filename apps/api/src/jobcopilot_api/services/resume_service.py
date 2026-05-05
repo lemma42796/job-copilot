@@ -19,6 +19,7 @@ list / get / soft_delete 走 caller-managed session(同 match_service 模式)。
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 import sqlalchemy as sa
 import structlog
@@ -35,7 +36,16 @@ from jobcopilot_api.llm.errors import (
     LLMTimeoutError,
     LLMUpstreamError,
 )
-from jobcopilot_api.models import Jd, Match, Profile, ProfileChunk, Resume, ResumeVersion, User
+from jobcopilot_api.models import (
+    Jd,
+    Match,
+    Profile,
+    ProfileChunk,
+    ProfileEducation,
+    Resume,
+    ResumeVersion,
+    User,
+)
 from jobcopilot_api.schemas.resumes import ResumeReview
 from jobcopilot_api.services.retrieval_service import (
     RetrieveResult,
@@ -143,7 +153,7 @@ async def run_generate(
       status='review_failed',markdown / findings 仍存供前端展示
     """
     async with sessionmaker() as session:
-        resume, jd, hint = await _load_resume_for_generate(
+        resume, jd, hint, candidate = await _load_resume_for_generate(
             session, resume_id=resume_id, user_id=user_id
         )
 
@@ -174,6 +184,7 @@ async def run_generate(
             hint=hint,
             prompt=drafter_prompt,
             llm=llm,
+            candidate=candidate,
             user_id=user_id,
             trace_id=trace_id,
             related_id=resume_id,
@@ -414,11 +425,20 @@ async def _validate_match_for_hint(
 
 async def _load_resume_for_generate(
     session: AsyncSession, *, resume_id: int, user_id: int
-) -> tuple[Resume, Jd, str | None]:
-    """读取 pending resume 行 + JD + (可选)match 拼出的 hint。
+) -> tuple[Resume, Jd, str | None, dict[str, Any]]:
+    """读取 pending resume 行 + JD + (可选)match 拼出的 hint + candidate
+    deterministic 字段(profile 顶层字段 + educations,**不在 chunks 里**的)。
 
-    返回 (Resume, Jd, hint_text_or_None);均 detached(后续 IO 在 session
-    外)。"""
+    返回 (Resume, Jd, hint_text_or_None, candidate);均 detached(后续 IO
+    在 session 外)。
+
+    `candidate` 透传给 drafter v1.0.3+ 写章节 1(基本信息) / 2(求职意向) /
+    7(教育背景),不依赖 retrieve 召回结果(教育 chunks 易被 K=20 相似度挤掉,
+    基本信息字段从来不在 chunker 输出里):
+    - `full_name` / `phone` / `email` / `location`:profile 顶层字段
+    - `target_titles`(list[str]):profile 顶层字段
+    - `educations`(list[dict]):ProfileEducation 关联表全量
+    """
     resume = await get_resume(session, user_id=user_id, resume_id=resume_id)
     if resume.status != "generating":
         raise ResumePreconditionError(
@@ -435,6 +455,44 @@ async def _load_resume_for_generate(
     if jd is None:
         raise NotFoundError(f"jd {resume.jd_id} not found")
 
+    profile = await session.scalar(
+        sa.select(Profile).where(
+            Profile.id == resume.profile_id,
+            Profile.user_id == user_id,
+            Profile.deleted_at.is_(None),
+        )
+    )
+    candidate: dict[str, Any] = {}
+    if profile is not None:
+        candidate = {
+            "full_name": profile.full_name,
+            "phone": profile.phone,
+            "email": profile.email,
+            "location": profile.location,
+            "target_titles": [
+                str(t) for t in (profile.target_titles or []) if str(t).strip()
+            ],
+        }
+        edu_rows = (
+            await session.scalars(
+                sa.select(ProfileEducation)
+                .where(ProfileEducation.profile_id == profile.id)
+                .order_by(ProfileEducation.sort_order, ProfileEducation.id)
+            )
+        ).all()
+        candidate["educations"] = [
+            {
+                "school": e.school,
+                "degree": e.degree,
+                "major": e.major,
+                "start_date": e.start_date.isoformat() if e.start_date else None,
+                "end_date": e.end_date.isoformat() if e.end_date else None,
+                "gpa": float(e.gpa) if e.gpa is not None else None,
+                "honors": list(e.honors) if e.honors else [],
+            }
+            for e in edu_rows
+        ]
+
     hint: str | None = None
     if resume.match_id is not None:
         match = await session.scalar(
@@ -448,7 +506,7 @@ async def _load_resume_for_generate(
         if match is not None and match.status == "scored":
             hint = _compose_hint(match)
 
-    return resume, jd, hint
+    return resume, jd, hint, candidate
 
 
 def _compose_hint(match: Match) -> str | None:

@@ -73,6 +73,7 @@ async def draft_resume(
     hint: str | None,
     prompt: LoadedPrompt,
     llm: LLMClient,
+    candidate: dict[str, Any] | None = None,
     user_id: int | None = None,
     trace_id: str | None = None,
     related_id: int | None = None,
@@ -83,12 +84,23 @@ async def draft_resume(
 
     `hint` 是可选的"历史匹配差距"段(由 service 层从 match.gap_summary +
     missing_skills 拼出,MVP 仅 match 触发链路有值)。空 hint 时 prompt
-    不会渲染 hint 段。"""
+    不会渲染 hint 段。
+
+    `candidate` 是 profile 表上**不在 chunks 里**的 deterministic 字段透传
+    (drafter v1.0.3+):
+    - `full_name` / `email` / `phone` / `location`:基本信息章节直接渲染,
+      避免 LLM 写 "[待补充]" 占位符
+    - `target_titles`(list[str]):求职意向章节第一来源,避免硬抄 JD title
+    - `educations`(list[dict]):教育背景章节直接渲染,绕开 retrieve K=20
+      的相似度召回(教育 chunks 可能被 LLM Agent 方向语义挤掉)
+
+    None 或缺字段时,prompt 模板分支降级(章节跳过 / 写"未提供")。"""
     user_text = render_user(
         prompt.user_template,
         jd=_jd_input(jd),
         chunks=_chunk_inputs(chunks),
         hint=hint,
+        candidate=candidate or {},
     )
     return await llm.complete(
         feature=FEATURE,

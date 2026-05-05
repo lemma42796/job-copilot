@@ -60,7 +60,7 @@ from jobcopilot_api.services.jd_service import (
 
 router = APIRouter(tags=["jds"])
 
-PROMPT_KEY: tuple[str, str] = ("jd_parser", "v1.0.5")
+PROMPT_KEY: tuple[str, str] = ("jd_parser", "v1.0.6")
 
 
 # ---------------------------------------------------------------------------
