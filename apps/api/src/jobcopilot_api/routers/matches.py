@@ -59,7 +59,7 @@ from jobcopilot_api.services.match_service import (
 
 router = APIRouter(tags=["matches"])
 
-PROMPT_KEY: tuple[str, str] = ("match_analyst", "v1.0.0")
+PROMPT_KEY: tuple[str, str] = ("match_analyst", "v1.1.2")
 
 
 # ---------------------------------------------------------------------------

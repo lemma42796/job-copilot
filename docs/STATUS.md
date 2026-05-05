@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-05 — ProfileParser dogfood 一轮:自造 12 边界测试 PDF → 6 类 bug(B1 description 幻觉 / B2 单年 end_date / B3 中文等级映射 / F1-F3 三处 UI 漏渲染)全修,prompt 升 v1.0.1([slices/profile-parser-bugs-2026-05.md](slices/profile-parser-bugs-2026-05.md));同时 JDParser v1.0.5 + schema 改造已落地。S18 主线仍未动。
+last_updated: 2026-05-05 — S18 简历定制 dogfood 第一轮跑完:6+1 条样本(JD #9-#13 + #24 × profile #15)→ review 通过率 17%(1/6)未达 ≥ 50% 目标;match_analyst v1.1.2 + reviewer v1.0.2 落地(三处判定标准收窄);**重大 audit 发现 30-40% bug 诊断是"没读 profile 反推 chunks"的方法论错觉**;drafter v1.0.1 真 bug 5 类暴露但留下次修([slices/S18-prompt-iterations-2026-05.md](slices/S18-prompt-iterations-2026-05.md))。S18 主线**进行中**(未完成)。
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -15,11 +15,17 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | S13-S15    | 匹配 MVP 端到端(检索骨架 + LLM 评分 + SSE 路由 + 前端结果页/列表页/触发按钮)→ [slices/S13-S15-match-mvp.md](slices/S13-S15-match-mvp.md) | ✅ |
 | S16        | 简历定制 MVP 后端骨架(0012 migration + drafter/reviewer agent + retrieve→draft→review 串调 + SSE 路由 4 endpoint)→ [slices/S16-resume-mvp-backend.md](slices/S16-resume-mvp-backend.md) | ✅ |
 | S17        | 简历定制前端(match 详情页触发按钮 + /resumes 列表 + /resumes/[id] 详情 + mini-markdown 渲染 + Blob 下载)→ [slices/S17-resume-mvp-frontend.md](slices/S17-resume-mvp-frontend.md) | ✅ |
-| S18        | 简历定制 dogfood + prompt v1.0.1(基于 S17 dogfood 4 条 drafter 强约束 + reviewer 阈值同调,5+ 样本 / review 通过率)| pending |
+| S18        | 简历定制 dogfood — 第一轮 6+1 样本(JD #9-#13 + #24 × profile #15)+ match_analyst v1.1.2 + reviewer v1.0.2 + audit 教训 → [slices/S18-prompt-iterations-2026-05.md](slices/S18-prompt-iterations-2026-05.md) | 进行中(drafter 真 bug 5 类待修) |
 
-**当前 working tree**:已 push 到 origin/main(S13-S15 + S16 + S17 一并)。续作前检查:`git status --short && git log origin/main..main --oneline | wc -l`。
+**当前 working tree**:S18 第一轮产出待 commit & push。续作前检查:`git status --short && git log origin/main..main --oneline | wc -l`。
 
-**当前闸门**:后端 `pytest -q` **321 passed** + ruff / mypy 全过 + `alembic upgrade head` → **0012**;前端 **typecheck / biome / next build 全过**(45 files / **11 routes**,新增 `/resumes`(2.66 kB)+ `/resumes/[id]`(5 kB));`pnpm gen` 同步 22 处 Resume 引用;evals 数字未动(`pnpm eval:jd` 2/13 / `pnpm eval:profile` 11/11);**端到端 dogfood**:① JD#3 + 简历#13 → match#2(score=72 / 8810ms / ¥0.0095)② match#2 → resume#1(status='review_failed' / 7 findings / 3 high / 6567+1670 tokens / **¥0.016 / 12.4s** — 双指标 60% 优于估算)。M2 退出 budget(P95 ≤ 90s & cost ≤ ¥0.20)在简历定制场景下也达标但仅 1 条样本,需 S18 累积。
+**当前生效 prompt**:
+- `match_analyst` = **v1.1.2**(4 条规则简化版,消费 `or_group_id`)
+- `resume_drafter` = **v1.0.1**(4 条强约束 — 真 bug 5 类待修,见 S18 归档)
+- `resume_reviewer` = **v1.0.2**(M2/M4/M5 判定收窄 + granularity 字段说明)
+- `jd_parser` = v1.0.5 / `profile_parser` = v1.0.1(M2 待办 #11 部分修)
+
+**当前闸门**:后端 `pytest -q` **321 passed**(未跑,无新测试) + ruff / mypy 全过 + `alembic upgrade head` → **0012**;前端 **typecheck / biome / next build 全过**(无前端改动);evals 数字未动;**S18 dogfood 第一轮**:6+1 样本(JD #9-#13 + #24 × profile #15)→ **review 通过率 17%(1/6)**(目标 ≥ 50%)❌ / **高 finding 平均 3.0**(目标 ≤ 1)❌ / cost ¥0.013 中位 ✅ / latency 8.7s 中位 ✅。详见 [slices/S18-prompt-iterations-2026-05.md](slices/S18-prompt-iterations-2026-05.md)。
 
 **M1 完成**:[slices/M1-summary.md](slices/M1-summary.md) — 整体经验 + 25 条永久约束 + 业务/工程 DoD 检查 + 给 M2 的数据底座。各切片归档卡:`slices/{S0.5,S1..S11}-*.md`。
 
@@ -30,21 +36,14 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 **M2 主线**(见 `7-ROADMAP.md`):JD ↔ profile 匹配 + 简历定制 + 投递追踪占位。
 
 **剩余切片候选**(从下面挑下一刀):
-1. **S18 简历定制 dogfood + prompt v1.0.1**(M2 主线下一刀)— 5+ 真实 (JD, profile),drafter prompt 升 v1.0.1(下面 4 条强约束),reviewer prompt 同步调阈值。评估:① review 通过率(目标 ≥ 50%,目前 0/1)② 高严重度 finding 平均数(目前 3,目标 ≤ 1)③ cost / latency 抖动(目前 ¥0.016 / 12.4s,需累积)④ 章节齐全度 / chunks 引用准确度。
-2. **匹配 v1.1 提质**(MVP 后置债)— Hybrid Search(pgvector + tsvector RRF)+ Reranker(`gte-rerank-v2`)+ QueryRewriterAgent + tier 升 STANDARD(thinking)再调 timeout;chunk content evidence hover 联动;详情页 footer 调试 metadata 收折叠。
-3. **prompt v1.0.2 + dataset 扩 + 评测达阈兜底**(原 M2 #1-9)— 把 jd_extract baseline 2/13 推到 ≥80%;同时建 `match_analysis` + `resume_review` evals suite(用 dogfood 真实三元组,LLM-as-Judge)。S17 dogfood 拿到的 7 条 ReviewFinding(quoted_text + explanation)是 `resume_review` evals 的天然标注样本。
+1. **S18 续 — drafter v1.0.2 修真 bug 5 类**(M2 主线下一刀)— 见 [slices/S18-prompt-iterations-2026-05.md](slices/S18-prompt-iterations-2026-05.md) 末"drafter v1.0.1 真 bug 5 类":① 求职意向硬抄 JD title(应读 candidate `target_titles` 字段)② 强约束 D 在"X/Y: 描述"形式下失守(Flask 凭空)③ 副词跨 skill 错位("精通"是 Python skill.level=expert,被错位到 Go advanced)④ 侧项目泛化为通用能力 ⑤ chunks 弱措辞被强化("关注" → "擅长落地")。修完跑 6 条样本对比 review 通过率。
+2. **匹配 v1.1 提质**(MVP 后置债)— Hybrid Search(pgvector + tsvector RRF)+ Reranker(`gte-rerank-v2`)+ QueryRewriterAgent + tier 升 STANDARD(thinking)再调 timeout;chunk content evidence hover 联动;详情页 footer 调试 metadata 收折叠。**附 match_analyst 已废规则待清理**(详见 S18 归档 audit 段):规则 3.1 撤回 chunks 自用副词的禁令(精通 / 全栈作者 / 较深积累);规则 4.2 拔高角色判定精修(chunks 已有的角色不禁);规则 1.2 strength 校准表精修(skill.level 字段映射优先)。
+3. **prompt v1.0.2 + dataset 扩 + 评测达阈兜底**(原 M2 #1-9)— 把 jd_extract baseline 2/13 推到 ≥80%;同时建 `match_analysis` + `resume_review` evals suite(用 dogfood 真实三元组,LLM-as-Judge)。S18 dogfood 拿到的 6 条 review 输出是 `resume_review` evals 的天然标注样本。
 4. **多刷 dogfood 累积 P95 / cost 样本**— 至少 20 条匹配 + 5 条简历跑出来才能算 P95;测试不同 JD × 同简历的 score 区分度 + reviewer 通过率分布。
 
-## S17 dogfood 暴露的 drafter prompt 优化项(留 S18 落 v1.0.1)
+## drafter v1.0.1 已落 + 真 bug 5 类待修(留 S18 续刀 v1.0.2)
 
-基于首条端到端 dogfood(JD#3 + 简历#13 + match#2 → resume#1,7 findings / 3 high)沉淀:
-
-1. **每条 bullet 仅引用单一 chunk 事实** — 禁止跨公司 / 跨项目数据合并(对应"曾处理 80w+ 订单及 12w QPS"把携程 + 字节合并的 high finding)
-2. **副词白名单** — 仅"掌握 / 熟悉 / 参与 / 负责 / 主导";禁用"精通 / 优秀 / 卓越 / 资深"(对应"精通 FastAPI"的 medium finding)
-3. **业余项目独立成段并标注"侧项目 / 独立开发者"** — 不可与职业经历同语调(对应"主导 RAG + LangGraph PoC"把业余项目当主导职业的 high finding)
-4. **技能列表硬规则** — 只列 chunks 中明确"会 X / 用 X 做了 Y"的语言/框架;栈背景(JDK 版本号 / Docker 镜像 / 数据库版本)不算 skill 证据(对应"Java (JDK 17/21)"凭空抽出的 high finding)
-
-加约束的同时 reviewer prompt 要相应放宽 medium/low 阈值,避免好不容易压住的 high 全转 medium 充数。两个 prompt 一起调,跑 5+ 样本对比 v1.0.1 vs v1.0.0。
+drafter v1.0.1 4 条强约束已落,但 S18 dogfood 第一轮(6 条样本)+ audit 后发现:**A 单 chunk 80% 修住 / B 副词白名单部分基于反推错觉应回退 / C 业余项目标签 80% 修住 / D skill 硬规则错位最严重**。详见 [slices/S18-prompt-iterations-2026-05.md](slices/S18-prompt-iterations-2026-05.md) 的 audit 段 + 真 bug 5 类清单。下一刀 v1.0.2 修这 5 类。
 
 ---
 
@@ -90,6 +89,8 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 5. **新增 enum 值与既有值保持语言一致** `[来自 jd-parser-prompt-v1.0.5]` — Pydantic Literal enum 加新值时,新值必须与既有值同语言(全中文 or 全英文),不要中英混搭。原因:LLM 选 enum 时 **字面 token 重叠权重压过语义匹配权重**;中英混搭时,中文原文(如「本科及以上」)会优先选中文 enum 值(如 `本科`)而非语义更准的英文值(如 `bachelor_or_higher`),哪怕 prompt 明确指引也救不回。本次 education 枚举从混搭 `unspecified/bachelor_or_higher/flexible` 改成中文 `不限/本科及以上/任一档`(prompt 也精简一条规则),问题消失。后续 schema 加新 enum(职级 / 公司类型 / 任何 LLM 抽的 enum 字段)沿用此约束。
 
+6. **prompt 调整前必须先读真实数据** `[来自 S18 第一轮 audit]` — 调任何 prompt(JDParser / ProfileParser / match_analyst / drafter / reviewer)前,**必须**先 curl 出 profile chunks + JD raw 数据 + LLM 输出,**人工对照**确认 LLM 哪里真错、哪里只是输出形式与你预期不同。**不可凭"reviewer / evaluator 抓了 X finding" 反推 chunks 内容**。S18 第一轮整个对话前半段(诊断 7 类 match bug + 制定 v1.1.0/v1.1.1/v1.1.2 三轮调整 + drafter v1.0.1 设计)都建立在反推错觉上,30-40% 误判:把 chunks summary 原文措辞("较深积累")当 evaluator 自加;把 chunks `granularity=skill` 字段(候选人自报权威清单)当"栈背景";把 chunks role 字段值("全栈作者")当 drafter 编造拔高;把 chunks 数字原文("P99 < 1.2s" / "Token 43%")当 LLM 凭空捏造。**根因**:profile_chunks 有 4 类 granularity(`summary / experience / project / skill`),prompt 不告诉 LLM "skill 字段是权威自报清单",LLM 凭"动作证据"标准判读,大量误判;chunks 有的措辞 / 数字 / 角色字段被错认为 LLM 自加。**预防**:① 每次 dogfood 前先 `curl /v1/profiles/{id}` 看完整 raw_text + structured + chunks 列表 ② 每次诊断 LLM 输出"是错"前,先在 chunks 里 grep 该字眼 / 数字 / 措辞 ③ prompt 中显式告诉 LLM "chunks 的 granularity 字段类型语义"。
+
 ---
 
 # 已锁定的关键决策(不要再讨论)
@@ -118,6 +119,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | `slices/{S12-jd-list-and-nav,S13-S15-match-mvp,S16-resume-mvp-backend,S17-resume-mvp-frontend}.md` | M2 各切片归档(产出 / 设计决策 / 踩坑) |
 | `slices/{jd-parser-bugs-2026-05,jd-parser-prompt-v1.0.5}.md` | M2 待办 #1 的调研 + 修复(26 类 JDParser bug → prompt v1.0.5 + schema 改造) |
 | `slices/profile-parser-bugs-2026-05.md` | M2 待办 #11 的部分修复(ProfileParser 6 类 bug → prompt v1.0.1 + 前端 UI 三处补渲染) |
+| `slices/S18-prompt-iterations-2026-05.md` | S18 第一轮 dogfood + match v1.1.0/v1.1.1/v1.1.2 三轮迭代 + reviewer v1.0.2 + audit 教训 |
 | `adr/0001-only-deepseek` (Superseded by 0003) / `0002-postgres-as-vector-db` / `0003-switch-to-qwen` / `0004-llm-client-contract` / `0005-files-upload-contract` / `0006-jd-parse-contract` | 架构决策;下一个编号 0007 |
 | `runbook/` | 部署期再写,目前空 |
 

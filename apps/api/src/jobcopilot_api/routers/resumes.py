@@ -59,8 +59,8 @@ from jobcopilot_api.services.resume_service import (
 
 router = APIRouter(tags=["resumes"])
 
-DRAFTER_PROMPT_KEY: tuple[str, str] = ("resume_drafter", "v1.0.0")
-REVIEWER_PROMPT_KEY: tuple[str, str] = ("resume_reviewer", "v1.0.0")
+DRAFTER_PROMPT_KEY: tuple[str, str] = ("resume_drafter", "v1.0.1")
+REVIEWER_PROMPT_KEY: tuple[str, str] = ("resume_reviewer", "v1.0.2")
 
 
 # ---------------------------------------------------------------------------
