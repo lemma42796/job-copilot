@@ -1,32 +1,22 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-05 — **M3 W7 后端骨架落地**:5 节点 LangGraph(retrieve / plan / draft / review / revise)+ MemorySaver checkpointer + SSE 节点事件 + Planner agent v1.0.0 + Drafter prompt v1.0.4(plan/prev_findings 透传 + G/H 两条新约束)。**未跑测试**(用户手动验)。前端进度条 + 流式 markdown 留下一刀。M2 dogfood 未达阈的指标(留作"未验证已发布")等 W7 第二轮 dogfood 一并复测。
+last_updated: 2026-05-05 — **M3 W7 完成**(S19 + S20 + checkpointer serde 修):5 节点 LangGraph(retrieve / plan / draft / review / revise)无 checkpointer + SSE 节点事件 + Planner v1.0.0 + Drafter v1.0.4 + 前端 4 节点 stepper + revise 提示;首次 dogfood(match #7,revise 路径)端到端通,顺手暴露并修了 MemorySaver ormsgpack 序列化挂。归档 [slices/S19-S20-w7-resume-graph.md]。第二轮 13-JD dogfood + W7 末 DoD 复测推 W8 / W9 一并跑。
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
 # 当前阶段
 
-**M3 简历定制 GA — W7 进行中**
+**M3 简历定制 GA — W7 完成,W8 进行中**
 
 | 切片 | 内容 | 状态 |
 |------|------|------|
-| S19  | W7 状态机搭建 — LangGraph + 5 节点 + Planner + Revise + SSE 节点事件(后端骨架)| 🟡 后端落地,前端进度条/流式 + 测试 + 第二轮 dogfood 待做 |
-| S20  | W7 收尾 — 前端进度条 + 流式 markdown 预览 + 第二轮 dogfood 验证 | ⏳ |
-| S21  | W8 反幻觉 + 可编辑(对抗集 + monaco + version diff + LLM-as-Judge)| ⏳ |
+| S19+S20 | W7 简历定制状态机 + 前端联动 + checkpointer serde 修 | ✅ [slices/S19-S20-w7-resume-graph.md] |
+| S21  | W8 反幻觉 + 可编辑(对抗集 + monaco + version diff + LLM-as-Judge + drafter token 流式)| ⏳ |
 | S22  | W9 渲染与导出(LaTeX awesome-cv + PDF 导出)| ⏳ |
 | S23  | W10 内测 v0.5(招募 + 飞书反馈 + 性能收尾 + Release)| ⏳ |
 
-**当前 working tree**:S19 后端骨架待 commit & push。改动文件:
-- `apps/api/pyproject.toml`(加 `langgraph>=0.2.50`)
-- `apps/api/src/jobcopilot_api/agents/resume_graph.py`(新文件,5 节点 StateGraph)
-- `apps/api/src/jobcopilot_api/agents/resume_planner/{__init__,agent}.py`(新)
-- `apps/api/src/jobcopilot_api/prompts/resume_planner/v1.0.0.j2`(新)
-- `apps/api/src/jobcopilot_api/prompts/resume_drafter/v1.0.4.j2`(新)
-- `apps/api/src/jobcopilot_api/agents/resume_drafter/agent.py`(加 plan / prev_findings 入参)
-- `apps/api/src/jobcopilot_api/schemas/resumes.py`(加 ResumePlan / ResumeSectionPlan)
-- `apps/api/src/jobcopilot_api/services/resume_service.py`(`run_generate` → `run_generate_stream` async iterator)
-- `apps/api/src/jobcopilot_api/routers/resumes.py`(SSE 加 node_completed + result 加 revisions 字段)
+**当前 working tree**:即将 commit & push S19+S20 + serde 修后清空。
 
 **当前生效 prompt**(W7 后端骨架后):
 - `match_analyst` = v1.1.2(4 条规则简化版,消费 `or_group_id`)
@@ -36,7 +26,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 - `jd_parser` = v1.0.6(B.1 复合句式新规)
 - `profile_parser` = v1.0.1
 
-**当前闸门**(M2 末,W7 后端骨架未跑闸):后端 `pytest -q` 321 passed + ruff / mypy 全过 + alembic 0012;前端 typecheck / biome / next build 全过。S19 改动**未跑测试**(用户手动验)。
+**当前闸门**(M2 末,W7 改动未跑闸):后端 `pytest -q` 321 passed + ruff / mypy 全过 + alembic 0012;前端 typecheck / biome / next build 全过。S19 + S20 + checkpointer serde 修**未跑测试**(用户手动验);单样本端到端 dogfood 通过(match #7,revise 路径)。所有数字推 W8 / W9 闸门一起跑。
 
 **M1 完成**:[slices/M1-summary.md](slices/M1-summary.md) — 整体经验 + 25 条永久约束 + DoD 检查 + 给 M2 的数据底座。各切片归档:`slices/{S0.5,S1..S11}-*.md`。
 
@@ -44,29 +34,16 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 > 2026-05-01 LLM Provider 由 DeepSeek V4 切换到阿里云百炼 Qwen3.6,见 ADR-0003。ADR-0001 复审条件 1(余额 < ¥1)触发时回切。
 
-## 下一刀:S20 — W7 前端进度条 + 流式 markdown + 第二轮 dogfood
+## 下一刀:S21 — W8 反幻觉 + 可编辑
 
-S19 后端骨架已落,缺前端联动 + 验证。W7 进度对照表:
+W7(S19 + S20)完成 → [slices/S19-S20-w7-resume-graph.md]。W8 主线:
 
-| ROADMAP §6.2 W7 任务 | 当前状态 |
-|---|---|
-| `resumes` / `resume_versions` 表 | ✅ `0012_resumes.py` 完整建好 |
-| LangGraph + checkpointer | ✅ **S19 落**:`langgraph>=0.2.50` + MemorySaver(进程内);PG checkpointer 留待"中断恢复"业务诉求出现时再升,见 `agents/resume_graph.py` docstring |
-| 5 节点状态机(retrieve / plan / draft / review / revise)| ✅ **S19 落**:`agents/resume_graph.py` build_resume_graph,review 条件分支(passed 或 revision_count ≥ max_revisions=1 → END,否则 revise → 回 review) |
-| Planner / Drafter / Reviewer prompt v1 | ✅ **S19 落**:Planner v1.0.0(新)+ Drafter v1.0.4(加 G/H 约束)+ Reviewer v1.0.2(沿用) |
-| `/v1/resumes/generate` SSE | ✅ **S19 落**:加 `node_completed` 事件(retrieve / plan / draft / review / revise 各发一次,带 revision_count);`result` 加 `revisions` 字段 |
-| 前端生成页(进度条 + 流式 markdown 预览)| ❌ **S20 待做**:消费 `node_completed` 驱动进度条 + drafter token 流式预览(后者要 LLMClient 支持 stream,LLMClient 当前 `complete` 只返完整结果,流式预览本身要再升一层 — 可能 W8 才上) |
-| W7 末 DoD(review 通过率 ≥ 50%、无 high severity 幻觉)| ❌ **S20 待做**:用 W7 5 节点 + Planner 跑第二轮 dogfood,与 M2 末未达阈基线对比 |
-
-### S20 任务清单
-1. 前端 `lib/sse.ts` 接 `node_completed` 事件类型
-2. 简历生成页加进度条 UI(5 节点 + revision_count 标识)
-3. 跑第二轮 dogfood(前提:跑闸门确认后端不破)— 13 张 BOSS JD × Planner+Drafter v1.0.4
-4. 把 dogfood 真 bug 记到 `slices/jd-parser-bugs-2026-05.md` 同款形态(prompt 调整 → v1.0.5)
-5. W7 收官归档卡 `slices/S19-S20-w7-resume-graph.md`
-
-### W8 反幻觉 + 可编辑
-`resume_review` 对抗集 20 条(fabrication recall ≥ 0.95)+ markdown 编辑器(monaco + live preview)+ 版本 diff / 切换 + Reviewer 高亮 + 一键采纳 + `resume_generate` 端到端 25 条 + LLM-as-Judge。
+- **drafter token 流式预览**:LLMClient `complete` 升 stream;前端 ResumeTrigger phase 状态机已埋好 hook,接新事件类型(`drafter_token` / 类似)即可
+- **`resume_review` 对抗集 20 条 + LLM-as-Judge**(目标 fabrication recall ≥ 0.95)
+- **markdown 编辑器**:monaco + live preview + 版本 diff / 切换
+- **Reviewer 标记可点高亮 + 一键采纳 / 忽略**
+- **`resume_generate` 端到端 25 条 dataset**(与 W7 推后的 13-JD 第二轮 dogfood 共用真实样本)
+- **W7 末 DoD 复测**:review 通过率 ≥ 50% / 无 high severity 幻觉(W7 单样本不算数)
 
 ### W9 渲染与导出
 LaTeX `awesome-cv` 中文化 + md → LaTeX 转换器 + `/v1/resumes/{id}/export?format=pdf|docx|md` + PDF 预览 + 字体 license 合规。
@@ -89,7 +66,7 @@ LaTeX `awesome-cv` 中文化 + md → LaTeX 转换器 + `/v1/resumes/{id}/export
 > M3 起新约束在此区累积:
 
 - **[来自 S19] LangGraph 节点不吞业务 / LLM 异常,由调度层(service)集中 mark_failed**:graph 节点 raise 后冒泡到 `service.run_generate_stream`(及后续类似调度函数),by class 分发错误码 + 调 `_mark_failed`(side-channel commit)+ raise。Graph 是状态推进器,不是错误处理器。
-- **[来自 S19] LangGraph state 字段不放运行时依赖**:LLMClient / Embedder / sessionmaker / LoadedPrompt 通过 `ResumeGraphDeps` 闭包到 node,不放 state。State 只放可序列化业务数据(SQLAlchemy detached ORM 行 + LLMResult dataclass)。这让"换 PG checkpointer"是个非破坏性升级。
+- **[来自 S19 / S20 修订] LangGraph state 字段不放运行时依赖**:LLMClient / Embedder / sessionmaker / LoadedPrompt 通过 `ResumeGraphDeps` 闭包到 node,不放 state。**state 允许放 SQLAlchemy detached ORM 行 + dataclass(LLMResult / RetrieveResult / ResumePlan / ResumeReview)**,因为 graph 编译**不带 checkpointer**(`workflow.compile()` 默认值)。S19 原方案 `MemorySaver` 在 W7 第一次 dogfood 触发 revise 路径时报 `Type is not msgpack serializable: Jd` —— langgraph 0.2.x 所有 checkpointer(含 MemorySaver)都走 `JsonPlusSerializer` + ormsgpack,ORM 行 / dataclass 不可序列化。日后真要加 checkpointer(中断恢复 / 长时任务),需配套自定义 serde 或把 state 降级为 plain dict / id 引用。
 - **[来自 S19] Drafter prompt 接收 plan / prev_findings 两个可选透传段**:`plan=None` 时退化无 planner 形态(等价 v1.0.3),`prev_findings=None` 时是首次 draft(非 revise);任一非空都触发 prompt USER 段额外渲染段。后续 W8 monaco patch 流可复用 prev_findings 协议。
 
 ---
@@ -119,6 +96,7 @@ LaTeX `awesome-cv` 中文化 + md → LaTeX 转换器 + `/v1/resumes/{id}/export
 | `slices/M2-summary.md` | M2 收官总结(整体经验 + 6 条永久约束 + DoD 检查 + 未验证已发布清单) |
 | `slices/{S0.5,S1..S11}-*.md` | M1 各切片归档 |
 | `slices/{S12-jd-list-and-nav,S13-S15-match-mvp,S16-resume-mvp-backend,S17-resume-mvp-frontend,S18-prompt-iterations-2026-05}.md` | M2 各切片归档 |
+| `slices/S19-S20-w7-resume-graph.md` | M3 W7 切片归档(简历定制状态机 + 前端联动 + checkpointer serde 修) |
 | `slices/{jd-parser-bugs-2026-05,jd-parser-prompt-v1.0.5,profile-parser-bugs-2026-05}.md` | M2 期间 prompt 沉淀(JDParser 26 类 bug → v1.0.5 / ProfileParser 6 类 bug → v1.0.1) |
 | `adr/0001-only-deepseek` (Superseded by 0003) / `0002-postgres-as-vector-db` / `0003-switch-to-qwen` / `0004-llm-client-contract` / `0005-files-upload-contract` / `0006-jd-parse-contract` | 架构决策;下一个编号 0007 |
 | `runbook/` | 部署期再写,目前空 |

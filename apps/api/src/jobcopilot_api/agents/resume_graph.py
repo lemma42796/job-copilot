@@ -22,18 +22,21 @@
 
 ## Checkpointer
 
-W7 用 `MemorySaver`(进程内)。ROADMAP §6.2 W7 标的"Postgres checkpointer"
-留作后续切片:
-- 单 SSE 请求生命周期内不需要跨进程恢复
-- `langgraph-checkpoint-postgres` 拉 psycopg sync 链,与本项目 asyncpg 路径
-  正交,引入会增加运行时复杂度
-- 真正需要"中断恢复 / 长时任务"时(W8 monaco 编辑器配合 patch 流?)再升
+W7 **不带** checkpointer(`workflow.compile()` 默认即无)。原本想用
+`MemorySaver`,实测 langgraph 0.2.x 所有 checkpointer(含 MemorySaver)都走
+`JsonPlusSerializer` + ormsgpack 持久化 state — SQLAlchemy ORM 行 / LLMResult /
+RetrieveResult / ResumePlan / ResumeReview 不在 ormsgpack 内置类型表里,
+graph 第一次 `aput_writes` 就 raise `Type is not msgpack serializable`。
+业务上也不需要:单 SSE 请求生命周期内不会跨进程恢复,W7 不开 interrupt /
+不长时驻留。真正需要"中断恢复 / 长时任务"时再升,届时要么:
+- 给 langgraph 注册自定义 serde(ORM 行 / dataclass pickle)
+- 或重设计 state:只放 id 引用 + plain dict,nodes 内部按需重建
 
-## State 序列化
+## State 字段说明
 
-MemorySaver 不序列化,SQLAlchemy detached ORM 行(Jd / ProfileChunk)+
-LLMResult / RetrieveResult dataclass 直接放 state 没问题。换 PG checkpointer
-时这些字段需要 pickle 或重设计 state 只放 id 引用。
+无 checkpointer = state 全程在内存里直接传引用,允许放 SQLAlchemy detached
+ORM 行 + dataclass。这与 S16 MVP "phase-1 短 tx 拿 detached row,phase-2
+复用" 模板保持一致。
 
 ## 失败语义(由 service 层处理 mark_failed)
 
@@ -49,7 +52,6 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -129,11 +131,11 @@ def build_resume_graph(
     *,
     pre_loaded: PreLoadedResumeContext | None = None,
 ) -> Any:
-    """Compile a 5-node LangGraph + MemorySaver checkpointer.
+    """Compile a 5-node LangGraph(无 checkpointer,见模块 docstring "## Checkpointer")。
 
-    Returns a `CompiledGraph` that supports `astream(initial_state, config)`.
-    Caller passes `thread_id` in `config["configurable"]` so MemorySaver keeps
-    per-resume state buckets(避免 cross-resume cross-talk 即使同进程并发)。
+    Returns a `CompiledGraph` that supports `astream(initial_state, config)`。
+    Caller 仍在 config 里传 `thread_id`,但没 checkpointer 时 langgraph 不
+    分桶,只是兼容透传 — 未来加 checkpointer 时现有 call site 不用改。
 
     `pre_loaded`:Service 层在 phase-1 INSERT 后已经把 jd / hint / candidate
     从 DB 拿好(保留与 MVP 同款的预加载语义,避免 graph 内开短 tx)。retrieve
@@ -288,7 +290,7 @@ def build_resume_graph(
     )
     workflow.add_edge("revise", "review")
 
-    return workflow.compile(checkpointer=MemorySaver())
+    return workflow.compile()
 
 
 @dataclass(frozen=True)

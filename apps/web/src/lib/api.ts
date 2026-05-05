@@ -284,8 +284,11 @@ export async function deleteMatch(id: number): Promise<void> {
 // Resumes(简历定制)
 // ---------------------------------------------------------------------------
 
+export type ResumeNodeName = 'retrieve' | 'plan' | 'draft' | 'review' | 'revise';
+
 export type ResumeSseFrame =
   | SseFrame<'started', { job_id: string; resource_id: number }>
+  | SseFrame<'node_completed', { node: ResumeNodeName; revision_count: number }>
   | SseFrame<
       'result',
       {
@@ -293,6 +296,7 @@ export type ResumeSseFrame =
         url: string;
         status: ResumeStatus;
         review_passed: boolean | null;
+        revisions: number;
       }
     >
   | SseFrame<'error', { code: string; detail: string }>

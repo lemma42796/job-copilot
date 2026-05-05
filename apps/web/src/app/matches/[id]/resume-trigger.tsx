@@ -6,7 +6,13 @@ import * as React from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { ApiError, type MatchDetail, type ResumeSseFrame, createResume } from '@/lib/api';
+import {
+  ApiError,
+  type MatchDetail,
+  type ResumeNodeName,
+  type ResumeSseFrame,
+  createResume,
+} from '@/lib/api';
 
 type Props = {
   match: MatchDetail;
@@ -14,10 +20,27 @@ type Props = {
 
 type Phase = 'idle' | 'starting' | 'generating' | 'redirecting';
 
+// W7 graph 5 节点;revise 是条件分支(review 失败才触发),所以进度条
+// 主轴只显示 4 个常驻节点,revise 通过 revisionCount badge 单独反映。
+const MAIN_NODES = ['retrieve', 'plan', 'draft', 'review'] as const;
+type MainNode = (typeof MAIN_NODES)[number];
+
+const NODE_LABELS: Record<ResumeNodeName, string> = {
+  retrieve: '检索',
+  plan: '规划',
+  draft: '起草',
+  review: '核查',
+  revise: '修订',
+};
+
 export function ResumeTrigger({ match }: Props) {
   const router = useRouter();
   const [phase, setPhase] = React.useState<Phase>('idle');
   const [error, setError] = React.useState<string | null>(null);
+  const [completedNodes, setCompletedNodes] = React.useState<ReadonlySet<ResumeNodeName>>(
+    () => new Set(),
+  );
+  const [revisionCount, setRevisionCount] = React.useState(0);
 
   const blocker =
     match.status !== 'scored'
@@ -29,6 +52,8 @@ export function ResumeTrigger({ match }: Props) {
   async function start() {
     setPhase('starting');
     setError(null);
+    setCompletedNodes(new Set());
+    setRevisionCount(0);
     try {
       const stream = createResume({
         jd_id: match.jd_id,
@@ -42,6 +67,14 @@ export function ResumeTrigger({ match }: Props) {
           case 'started':
             resourceId = f.data.resource_id;
             setPhase('generating');
+            break;
+          case 'node_completed':
+            setCompletedNodes((prev) => {
+              const next = new Set(prev);
+              next.add(f.data.node);
+              return next;
+            });
+            setRevisionCount(f.data.revision_count);
             break;
           case 'result':
             resourceId = f.data.resource_id;
@@ -67,6 +100,8 @@ export function ResumeTrigger({ match }: Props) {
       setPhase('idle');
     }
   }
+
+  const isWorking = phase === 'generating' || phase === 'redirecting';
 
   return (
     <Card>
@@ -104,8 +139,73 @@ export function ResumeTrigger({ match }: Props) {
             <span className="text-xs text-muted">drafter + reviewer 串行,大致 30-90 秒。</span>
           ) : null}
         </div>
+
+        {isWorking ? (
+          <NodeProgress completed={completedNodes} revisionCount={revisionCount} />
+        ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+function NodeProgress({
+  completed,
+  revisionCount,
+}: {
+  completed: ReadonlySet<ResumeNodeName>;
+  revisionCount: number;
+}) {
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-black/[0.02] px-3 py-2.5">
+      <ol className="flex items-center gap-1.5">
+        {MAIN_NODES.map((node, i) => {
+          const isDone = completed.has(node);
+          const isNext =
+            !isDone &&
+            (i === 0 || completed.has(MAIN_NODES[i - 1] as MainNode));
+          return (
+            <React.Fragment key={node}>
+              <li className="flex items-center gap-1.5">
+                <span
+                  className={`flex h-5 w-5 items-center justify-center rounded-full border text-[10px] font-semibold transition-colors ${
+                    isDone
+                      ? 'border-[var(--color-success-border)] bg-[var(--color-success-border)] text-white'
+                      : isNext
+                        ? 'border-[var(--color-accent)] bg-background text-[var(--color-accent)]'
+                        : 'border-border bg-background text-muted'
+                  }`}
+                  aria-current={isNext ? 'step' : undefined}
+                >
+                  {isDone ? '✓' : i + 1}
+                </span>
+                <span
+                  className={`text-xs ${
+                    isDone || isNext ? 'text-foreground' : 'text-muted'
+                  }`}
+                >
+                  {NODE_LABELS[node]}
+                </span>
+              </li>
+              {i < MAIN_NODES.length - 1 ? (
+                <span
+                  className={`h-px flex-1 ${
+                    completed.has(MAIN_NODES[i + 1] as MainNode) || isDone
+                      ? 'bg-[var(--color-success-border)]/60'
+                      : 'bg-border'
+                  }`}
+                  aria-hidden
+                />
+              ) : null}
+            </React.Fragment>
+          );
+        })}
+      </ol>
+      {revisionCount > 0 ? (
+        <p className="text-xs text-[var(--color-warning-fg)]">
+          核查未通过 — 已修订 {revisionCount} 次,正在重新核查…
+        </p>
+      ) : null}
+    </div>
   );
 }
 
