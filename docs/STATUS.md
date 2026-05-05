@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-04 — M2 主线:S16 + S17 ✅(简历定制 MVP 端到端,首条 dogfood 通过,reviewer 精准识别 7 条 drafter 幻觉)
+last_updated: 2026-05-05 — S18 准备期 dogfood:13 张 BOSS JD 全跑 + JDParser 26 类 bug 归档([slices/jd-parser-bugs-2026-05.md](slices/jd-parser-bugs-2026-05.md))。S18 主线未动。
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -52,7 +52,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 ## 评测 / Prompt(M1 ≥ 80 条评测达阈 DoD 推后)
 
-1. **JDParser prompt v1.0.2** 修 baseline 不达阈:① "hard_skills 不抽厂商名/概念名"(修 hardSkillF1=0.67);② "title 抽到第一行末"(修 titleExact=0.769)。
+1. **JDParser prompt v1.0.2** 修 baseline 不达阈:① "hard_skills 不抽厂商名/概念名"(修 hardSkillF1=0.67);② "title 抽到第一行末"(修 titleExact=0.769)。**S18 准备期 13 张 BOSS JD dogfood 暴露 26 类 bug**(OR→AND / 段落归属错乱 / 应届年限 / 标题不一致 / 黑名单等),详见 [slices/jd-parser-bugs-2026-05.md](slices/jd-parser-bugs-2026-05.md)。
 2. **JDParser dataset 扩 50 条**(剩 37:OCR 7 / 邮件 8 / 极短 3 / 薪资模糊 2 / 标准中文 17)。
 3. **4 新 metric**:`level_acc` / `confidence_calibration` / `latency_p95` / `cost_per_call_cny`。
 4. **bad case 表 + promote 脚本 + 月度 triage**(EVAL_PLAN §12)。
