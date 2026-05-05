@@ -80,7 +80,7 @@ log = structlog.get_logger(__name__)
 
 router = APIRouter(tags=["profiles"])
 
-PROMPT_KEY: tuple[str, str] = ("profile_parser", "v1.0.0")
+PROMPT_KEY: tuple[str, str] = ("profile_parser", "v1.0.1")
 
 
 # ---------------------------------------------------------------------------

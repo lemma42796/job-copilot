@@ -235,6 +235,22 @@ export function ProfileEditForm({ profile }: { profile: ProfileDetail }) {
             />
           </div>
 
+          {current.structured.target_titles && current.structured.target_titles.length > 0 ? (
+            <div className="space-y-2">
+              <Label>目标岗位</Label>
+              <div className="flex flex-wrap gap-2">
+                {current.structured.target_titles.map((t) => (
+                  <span
+                    key={t}
+                    className="rounded border border-border bg-input/40 px-2 py-0.5 text-xs"
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           {error ? <p className="text-sm text-[var(--color-danger)]">{error}</p> : null}
 
           <div className="flex items-center justify-end gap-3">
@@ -413,8 +429,17 @@ function renderProject(p: ProfileProjectItem): React.ReactNode {
       ) : null}
       {p.repo_url ? (
         <p className="text-xs text-muted">
+          代码:
           <a href={p.repo_url} target="_blank" rel="noreferrer" className="underline">
             {p.repo_url}
+          </a>
+        </p>
+      ) : null}
+      {p.demo_url ? (
+        <p className="text-xs text-muted">
+          Demo:
+          <a href={p.demo_url} target="_blank" rel="noreferrer" className="underline">
+            {p.demo_url}
           </a>
         </p>
       ) : null}
@@ -529,6 +554,9 @@ function renderEducation(e: ProfileEducationItem): React.ReactNode {
       </div>
       {e.degree ? <p className="text-xs text-muted">{e.degree}</p> : null}
       {e.gpa != null ? <p className="text-xs text-muted">GPA {e.gpa}</p> : null}
+      {e.honors && e.honors.length > 0 ? (
+        <p className="text-xs text-muted">荣誉:{e.honors.join(' · ')}</p>
+      ) : null}
     </div>
   );
 }

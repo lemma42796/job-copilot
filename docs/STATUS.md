@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-05 — JDParser prompt v1.0.5 + schema 改造落地,P0+P1+P2+P3 全 26 类 bug 修完([slices/jd-parser-prompt-v1.0.5.md](slices/jd-parser-prompt-v1.0.5.md));M2 #1 剩 dataset 扩 + evals 达阈未做。S18 主线仍未动。
+last_updated: 2026-05-05 — ProfileParser dogfood 一轮:自造 12 边界测试 PDF → 6 类 bug(B1 description 幻觉 / B2 单年 end_date / B3 中文等级映射 / F1-F3 三处 UI 漏渲染)全修,prompt 升 v1.0.1([slices/profile-parser-bugs-2026-05.md](slices/profile-parser-bugs-2026-05.md));同时 JDParser v1.0.5 + schema 改造已落地。S18 主线仍未动。
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -62,7 +62,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 8. **`salaryMonthsAcc` 改自定义聚合**(去掉 want=null 拉高分母的水分)。
 9. **`.github/workflows/eval.yml` 启用 push/PR trigger**(取消注释 + 配 GitHub Secret `DASHSCOPE_API_KEY_EVAL`,见 EVAL_PLAN §10.5)。
 10. **profile_extract dataset 扩 30+**(从 S11 dogfood 真实简历沉淀)。
-11. **profile_parser prompt v1.0.2**(S11 dogfood 暴露):① 技能切分一致性(`/`、`+` 拆得不规律);② partial-year project end_date 兜底("2022" 现兜底成 `2022-01-01` 让 start=end 显示成持续 1 月);③ tech_stack 抽取剔除空泛词(jdk / 后端 等);④ 证书章节(AWS Solutions Architect / 阿里云 ACA)— schema 加 `certifications` 字段否则 LLM 直接扔。
+11. **profile_parser prompt 升级链** — **v1.0.1 已落**(2026-05-05 一轮 dogfood,12 边界测试 PDF):① description 反幻觉(禁止从 bullets 改写/复述,包括半角→全角逗号);② 日期 end_date=null 仅限明示"至今",单年 YYYY 默认 end=YYYY-12;③ 中文等级映射表(熟练=advanced 等);详见 [slices/profile-parser-bugs-2026-05.md](slices/profile-parser-bugs-2026-05.md)。**v1.0.2 待修**(S11 dogfood 旧账):① 技能切分一致性(`/`、`+` 拆得不规律);② partial-year project end_date 兜底("2022" 现兜底成 `2022-01-01` 让 start=end 显示成持续 1 月);③ tech_stack 抽取剔除空泛词(jdk / 后端 等);④ 证书章节(AWS Solutions Architect / 阿里云 ACA)— schema 加 `certifications` 字段否则 LLM 直接扔。
 
 ## 数据 / 后端
 
@@ -117,6 +117,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | `slices/{S0.5,S1..S11}-*.md` | M1 各切片归档(产出 / 设计决策 / 踩坑) |
 | `slices/{S12-jd-list-and-nav,S13-S15-match-mvp,S16-resume-mvp-backend,S17-resume-mvp-frontend}.md` | M2 各切片归档(产出 / 设计决策 / 踩坑) |
 | `slices/{jd-parser-bugs-2026-05,jd-parser-prompt-v1.0.5}.md` | M2 待办 #1 的调研 + 修复(26 类 JDParser bug → prompt v1.0.5 + schema 改造) |
+| `slices/profile-parser-bugs-2026-05.md` | M2 待办 #11 的部分修复(ProfileParser 6 类 bug → prompt v1.0.1 + 前端 UI 三处补渲染) |
 | `adr/0001-only-deepseek` (Superseded by 0003) / `0002-postgres-as-vector-db` / `0003-switch-to-qwen` / `0004-llm-client-contract` / `0005-files-upload-contract` / `0006-jd-parse-contract` | 架构决策;下一个编号 0007 |
 | `runbook/` | 部署期再写,目前空 |
 
