@@ -60,7 +60,7 @@ from jobcopilot_api.services.jd_service import (
 
 router = APIRouter(tags=["jds"])
 
-PROMPT_KEY: tuple[str, str] = ("jd_parser", "v1.0.1")
+PROMPT_KEY: tuple[str, str] = ("jd_parser", "v1.0.5")
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +131,8 @@ def _detail(jd: Jd) -> JDDetail:
         status=JdStatus(jd.status),
         raw_text=jd.raw_text,
         raw_file_id=jd.raw_file_id,
+        source_url=jd.source_url,
+        source_publisher=jd.source_publisher,
         company=jd.company,
         title=jd.title,
         location=jd.location,
@@ -220,6 +222,8 @@ async def parse(
         file_id=body.file_id,
         llm=llm,
         prompt=prompt,
+        source_url=body.source_url,
+        source_publisher=body.source_publisher,
     )
     return _parse_response(jd, result)
 
@@ -246,6 +250,8 @@ async def _sse_parse(
             source=body.source,
             text=body.text,
             file_id=body.file_id,
+            source_url=body.source_url,
+            source_publisher=body.source_publisher,
         )
     except JobCopilotError as exc:
         # Pre-insert failure: no row exists, no `started` to emit.

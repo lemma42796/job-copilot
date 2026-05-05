@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-05 — S18 准备期 dogfood:13 张 BOSS JD 全跑 + JDParser 26 类 bug 归档([slices/jd-parser-bugs-2026-05.md](slices/jd-parser-bugs-2026-05.md))。S18 主线未动。
+last_updated: 2026-05-05 — JDParser prompt v1.0.5 + schema 改造落地,P0+P1+P2+P3 全 26 类 bug 修完([slices/jd-parser-prompt-v1.0.5.md](slices/jd-parser-prompt-v1.0.5.md));M2 #1 剩 dataset 扩 + evals 达阈未做。S18 主线仍未动。
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -52,7 +52,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 ## 评测 / Prompt(M1 ≥ 80 条评测达阈 DoD 推后)
 
-1. **JDParser prompt v1.0.2** 修 baseline 不达阈:① "hard_skills 不抽厂商名/概念名"(修 hardSkillF1=0.67);② "title 抽到第一行末"(修 titleExact=0.769)。**S18 准备期 13 张 BOSS JD dogfood 暴露 26 类 bug**(OR→AND / 段落归属错乱 / 应届年限 / 标题不一致 / 黑名单等),详见 [slices/jd-parser-bugs-2026-05.md](slices/jd-parser-bugs-2026-05.md)。
+1. ~~**JDParser prompt v1.0.2** 修 baseline + 26 类 bug~~ — **prompt + schema 部分已完成**,落到 v1.0.5 + schema 改造(`or_group_id` / 中文学历枚举扩 / source_url+publisher 字段 / confidence 公式)+ 前端 BOSS 标签剥离;详见 [slices/jd-parser-prompt-v1.0.5.md](slices/jd-parser-prompt-v1.0.5.md)。**剩余**:dataset 扩 50 条(下面 #2)+ evals 重跑达阈(`hardSkillF1` ≥ 0.80 / `titleExact` ≥ 0.85)。
 2. **JDParser dataset 扩 50 条**(剩 37:OCR 7 / 邮件 8 / 极短 3 / 薪资模糊 2 / 标准中文 17)。
 3. **4 新 metric**:`level_acc` / `confidence_calibration` / `latency_p95` / `cost_per_call_cny`。
 4. **bad case 表 + promote 脚本 + 月度 triage**(EVAL_PLAN §12)。
@@ -86,6 +86,10 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 3. **前端 dev / build 不混用同一 `.next` 目录** `[来自 S15+S17 第二次撞]` — `next build` 写 production 资源到 `.next/`,与 `next dev` 共用同目录会导致 SSR 渲染的 `<link href=...?v=N>` 命中失效 css,layout.css 不加载,sidebar `w-[220px]` 失效,SVG 图标铺满屏幕。**修法**:build 后必须 `rm -rf apps/web/.next` 再起 dev;反之同理。**触发频率**:每次"跑 build 验证 → 切回 dev 继续开发"的节点都会撞;S15 撞过一次未升约束,S17 第二次撞了。**预防**:build 仅在 commit 前作为闸门一次性跑,跑完不再回 dev(直接 commit/push);若 dev 还要继续,先 `rm -rf .next`。
 
+4. **改 prompt 文件前必须先停 uvicorn** `[来自 jd-parser-prompt-v1.0.5]` — `prompt_versions` 表强制版本不可变(同 `name+version` 的内容 hash 必须与 DB 一致,否则启动 `PromptVersionMismatchError`)。但 uvicorn `--reload` 监听文件变化,改 prompt 文件 → reload → lifespan 把新内容入库;后续若继续编辑同版本号,hash 又对不上,启动失败,且 DB 留下 ghost 行。**修法**:迭代 prompt 时,先 `TaskStop` 当前 uvicorn,改完文件,起新 uvicorn;或者改完直接 bump 版本号(rename 到下一版,改 router `PROMPT_KEY` 常量)。本次落定 v1.0.5,中间 v1.0.2/v1.0.3/v1.0.4 都成了 DB ghost 行。
+
+5. **新增 enum 值与既有值保持语言一致** `[来自 jd-parser-prompt-v1.0.5]` — Pydantic Literal enum 加新值时,新值必须与既有值同语言(全中文 or 全英文),不要中英混搭。原因:LLM 选 enum 时 **字面 token 重叠权重压过语义匹配权重**;中英混搭时,中文原文(如「本科及以上」)会优先选中文 enum 值(如 `本科`)而非语义更准的英文值(如 `bachelor_or_higher`),哪怕 prompt 明确指引也救不回。本次 education 枚举从混搭 `unspecified/bachelor_or_higher/flexible` 改成中文 `不限/本科及以上/任一档`(prompt 也精简一条规则),问题消失。后续 schema 加新 enum(职级 / 公司类型 / 任何 LLM 抽的 enum 字段)沿用此约束。
+
 ---
 
 # 已锁定的关键决策(不要再讨论)
@@ -112,6 +116,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | `slices/M1-summary.md` | M1 收官总结(整体经验 + 25 条永久约束 + DoD 检查) |
 | `slices/{S0.5,S1..S11}-*.md` | M1 各切片归档(产出 / 设计决策 / 踩坑) |
 | `slices/{S12-jd-list-and-nav,S13-S15-match-mvp,S16-resume-mvp-backend,S17-resume-mvp-frontend}.md` | M2 各切片归档(产出 / 设计决策 / 踩坑) |
+| `slices/{jd-parser-bugs-2026-05,jd-parser-prompt-v1.0.5}.md` | M2 待办 #1 的调研 + 修复(26 类 JDParser bug → prompt v1.0.5 + schema 改造) |
 | `adr/0001-only-deepseek` (Superseded by 0003) / `0002-postgres-as-vector-db` / `0003-switch-to-qwen` / `0004-llm-client-contract` / `0005-files-upload-contract` / `0006-jd-parse-contract` | 架构决策;下一个编号 0007 |
 | `runbook/` | 部署期再写,目前空 |
 

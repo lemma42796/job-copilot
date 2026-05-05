@@ -84,6 +84,8 @@ async def create_pending_jd(
     source: str,
     text: str | None,
     file_id: int | None,
+    source_url: str | None = None,
+    source_publisher: str | None = None,
 ) -> tuple[int, str]:
     """Phase 1: resolve raw_text and INSERT a `status='parsing'` row.
 
@@ -109,6 +111,8 @@ async def create_pending_jd(
             status="parsing",
             raw_text=raw_text,
             raw_file_id=raw_file_id,
+            source_url=source_url,
+            source_publisher=source_publisher,
         )
         session.add(jd)
         await session.flush()
@@ -185,12 +189,20 @@ async def create_and_parse(
     llm: LLMClient,
     prompt: LoadedPrompt,
     trace_id: str | None = None,
+    source_url: str | None = None,
+    source_publisher: str | None = None,
 ) -> tuple[Jd, LLMResult]:
     """Sync-path wrapper: Phase 1 → Phase 2/3 in one call. SSE-path uses
     `create_pending_jd` + `run_parse` directly so it can emit `started`
     between the two."""
     jd_id, raw_text = await create_pending_jd(
-        sessionmaker, user_id=user_id, source=source, text=text, file_id=file_id
+        sessionmaker,
+        user_id=user_id,
+        source=source,
+        text=text,
+        file_id=file_id,
+        source_url=source_url,
+        source_publisher=source_publisher,
     )
     return await run_parse(
         sessionmaker,

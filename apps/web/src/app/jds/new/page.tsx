@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { ApiError, parseJd, uploadFile } from '@/lib/api';
+import { stripBossTagsBlock } from '@/lib/jd-paste-clean';
 import { useSessionDraft } from '@/lib/use-session-draft';
 
 type Mode = 'text' | 'pdf';
@@ -28,6 +29,7 @@ export default function NewJdPage() {
   const [stage, setStage] = React.useState<Stage>('idle');
   const [error, setError] = React.useState<string | null>(null);
   const [dragOver, setDragOver] = React.useState(false);
+  const [stripHint, setStripHint] = React.useState<string | null>(null);
 
   const pending = stage !== 'idle';
 
@@ -37,12 +39,18 @@ export default function NewJdPage() {
 
     try {
       if (mode === 'text') {
-        if (text.trim().length < MIN_JD_LENGTH) {
+        const { cleaned, strippedLines, strippedTokens } = stripBossTagsBlock(text);
+        if (strippedLines > 0) {
+          setStripHint(`已剥离顶部 ${strippedLines} 行平台标签:${strippedTokens.join(' / ')}`);
+        } else {
+          setStripHint(null);
+        }
+        if (cleaned.trim().length < MIN_JD_LENGTH) {
           setError(`JD 正文太短(至少 ${MIN_JD_LENGTH} 字)`);
           return;
         }
         setStage('parsing');
-        const res = await parseJd({ source: JDParseInputSource.text_paste, text });
+        const res = await parseJd({ source: JDParseInputSource.text_paste, text: cleaned });
         clearDraft();
         router.push(`/jds/${res.id}` as Route);
         return;
@@ -177,6 +185,8 @@ export default function NewJdPage() {
                 {stage === 'uploading' ? '上传 PDF…' : 'LLM 解析中…'}
               </p>
             ) : null}
+
+            {stripHint ? <p className="text-xs text-muted">{stripHint}</p> : null}
 
             {error ? <p className="text-sm text-[var(--color-danger)]">{error}</p> : null}
 

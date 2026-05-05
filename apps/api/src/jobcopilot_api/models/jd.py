@@ -49,6 +49,10 @@ class Jd(Base, IDMixin, TimestampMixin):
     raw_text: Mapped[str | None] = mapped_column(Text)
     raw_file_id: Mapped[int | None] = mapped_column(BigInteger)
 
+    # B25:粘贴侧填的源链接 + 平台标识(LLM 不抽取,前端粘贴时 / URL 识别填入)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    source_publisher: Mapped[str | None] = mapped_column(String(50))
+
     company: Mapped[str | None] = mapped_column(String(200))
     title: Mapped[str | None] = mapped_column(String(200))
     location: Mapped[str | None] = mapped_column(String(100))

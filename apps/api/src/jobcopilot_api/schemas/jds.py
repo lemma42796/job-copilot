@@ -50,6 +50,14 @@ class JDSkill(BaseModel):
     name_raw: str
     required: bool
     weight: float = Field(ge=0.0, le=1.0)
+    or_group_id: int | None = Field(
+        default=None,
+        description=(
+            "B26:同 OR 组的多个 skill 共享同一个 group id(从 1 开始)。"
+            "纯并列(无量词)→ null;'X / Y / Z 中至少一门' → 三个 skill 共享 or_group_id=1。"
+            "多个独立 OR 组(如同时存在语言 OR + 数据库 OR)用不同的 id。"
+        ),
+    )
 
 
 class JDStructured(BaseModel):
@@ -65,7 +73,18 @@ class JDStructured(BaseModel):
     )
     job_level: Literal["intern", "junior", "middle", "senior", "lead"] | None = None
     years_required: int | None = None
-    education: Literal["专科", "本科", "硕士", "博士"] | None = None
+    education: (
+        Literal[
+            "专科",
+            "本科",
+            "硕士",
+            "博士",
+            "不限",  # B23:JD 写"学历不限"/未提
+            "本科及以上",  # B23:保留 OR-higher 语义,不再降维成"本科"
+            "任一档",  # B23:JD 写"本硕博均可"/"本科/硕士均可" 等并列档位
+        ]
+        | None
+    ) = None
     hard_skills: list[JDSkill] = Field(default_factory=list)
     soft_skills: list[JDSkill] = Field(default_factory=list)
     bonus_skills: list[JDSkill] = Field(default_factory=list)
@@ -91,6 +110,9 @@ class JDParseInput(BaseModel):
     text: str | None = None
     file_id: int | None = None
     source: Literal["text_paste", "pdf_upload"]
+    # B25:LLM 不抽取的源链接 + 平台标识。前端粘贴时填(可选);留空则后端 NULL。
+    source_url: str | None = None
+    source_publisher: str | None = None
 
     @model_validator(mode="after")
     def _check_exactly_one(self) -> Self:
@@ -161,6 +183,8 @@ class JDDetail(BaseModel):
     status: JdStatus
     raw_text: str | None
     raw_file_id: int | None
+    source_url: str | None = None
+    source_publisher: str | None = None
     company: str | None
     title: str | None
     location: str | None
