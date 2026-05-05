@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   ApiError,
+  type DrafterPhase,
   type MatchDetail,
   type ResumeNodeName,
   type ResumeSseFrame,
@@ -41,6 +42,11 @@ export function ResumeTrigger({ match }: Props) {
     () => new Set(),
   );
   const [revisionCount, setRevisionCount] = React.useState(0);
+  // Streamed drafter preview(W8):每个 drafter_token append 到 streamedDraft;
+  // phase 切换(draft → revise)时整段重置 — revise 重写,不追加。
+  const [streamedDraft, setStreamedDraft] = React.useState('');
+  const [streamedPhase, setStreamedPhase] = React.useState<DrafterPhase | null>(null);
+  const streamedPhaseRef = React.useRef<DrafterPhase | null>(null);
 
   const blocker =
     match.status !== 'scored'
@@ -54,6 +60,9 @@ export function ResumeTrigger({ match }: Props) {
     setError(null);
     setCompletedNodes(new Set());
     setRevisionCount(0);
+    setStreamedDraft('');
+    setStreamedPhase(null);
+    streamedPhaseRef.current = null;
     try {
       const stream = createResume({
         jd_id: match.jd_id,
@@ -68,6 +77,17 @@ export function ResumeTrigger({ match }: Props) {
             resourceId = f.data.resource_id;
             setPhase('generating');
             break;
+          case 'drafter_token': {
+            const incomingPhase = f.data.phase;
+            if (streamedPhaseRef.current !== incomingPhase) {
+              streamedPhaseRef.current = incomingPhase;
+              setStreamedPhase(incomingPhase);
+              setStreamedDraft(f.data.delta);
+            } else {
+              setStreamedDraft((prev) => prev + f.data.delta);
+            }
+            break;
+          }
           case 'node_completed':
             setCompletedNodes((prev) => {
               const next = new Set(prev);
@@ -143,8 +163,31 @@ export function ResumeTrigger({ match }: Props) {
         {isWorking ? (
           <NodeProgress completed={completedNodes} revisionCount={revisionCount} />
         ) : null}
+
+        {isWorking && streamedDraft && streamedPhase ? (
+          <DrafterPreview phase={streamedPhase} text={streamedDraft} />
+        ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+function DrafterPreview({ phase, text }: { phase: DrafterPhase; text: string }) {
+  const label = phase === 'draft' ? '起草中' : '修订中';
+  // 只显示尾部最近 ~1.5KB,长简历末尾内容才是 LLM 当前正在写的部分,
+  // 同时 viewport 不会被一整篇 markdown 撑爆。final 完整版从 /resumes/{id} 取。
+  const TAIL = 1500;
+  const tail = text.length > TAIL ? `…${text.slice(-TAIL)}` : text;
+  return (
+    <div className="rounded-md border border-border bg-black/[0.02]">
+      <div className="flex items-center justify-between border-b border-border px-3 py-1.5">
+        <span className="text-[11px] font-medium text-muted">{label}(实时预览)</span>
+        <span className="text-[10px] text-muted">{text.length} 字</span>
+      </div>
+      <pre className="max-h-44 overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground/80">
+        {tail}
+      </pre>
+    </div>
   );
 }
 

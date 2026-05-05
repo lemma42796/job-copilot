@@ -173,3 +173,41 @@ class ResumeDetail(BaseModel):
     latency_ms: int | None
     created_at: datetime
     updated_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/resumes/{id}/versions + POST /v1/resumes/{id}/versions(W8)
+# ---------------------------------------------------------------------------
+
+
+RESUME_VERSION_NOTE_MAX = 200
+
+
+class ResumeVersionItem(BaseModel):
+    """单条版本快照。`edit_type` 区分来源:
+    - `generated`:graph 跑出的初版(W7 起;revise 不另起 version,直接覆盖 v1 的 markdown)
+    - `edited`:用户在 monaco 编辑器手改后保存
+    - `regenerated`:M3 后续 `/regenerate` 整篇重跑(留 placeholder)"""
+
+    id: int
+    version_number: int
+    markdown: str
+    edit_type: Literal["generated", "edited", "regenerated"] | None
+    edit_note: str | None
+    created_at: datetime
+
+
+class ResumeVersionListResponse(BaseModel):
+    data: list[ResumeVersionItem]
+
+
+class ResumeVersionCreateInput(BaseModel):
+    """POST /v1/resumes/{id}/versions body。
+
+    `markdown` 必填非空(空版本无意义);`note` 可选(用户描述这次编辑做了
+    什么),200 字符上限避免被滥用为长篇 changelog。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    markdown: str = Field(min_length=1)
+    note: str | None = Field(default=None, max_length=RESUME_VERSION_NOTE_MAX)

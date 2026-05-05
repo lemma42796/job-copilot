@@ -18,6 +18,7 @@ without touching the network.
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
 from time import monotonic
@@ -43,6 +44,16 @@ from jobcopilot_api.llm.errors import (
 from jobcopilot_api.llm.pricing import cost_for
 from jobcopilot_api.llm.tiers import Tier, tier_to_model
 
+# ---------- Streaming ----------
+
+OnTokenCallback = Callable[[str], Awaitable[None]]
+"""Per-delta async callback for streaming generation. Provider implementations
+that support streaming will invoke this for every token chunk; the final
+`ProviderResponse` returned from `Provider.complete` still contains the full
+content + usage so existing aggregation (cost / logger) is unaffected.
+
+Used by `resume_drafter` for live preview SSE; other agents pass `None`."""
+
 # ---------- Provider layer (thin SDK wrapper) ----------
 
 
@@ -66,9 +77,19 @@ class ProviderResponse:
 
 
 class Provider(Protocol):
-    """SDK-level wrapper. Maps provider errors to LLM* exceptions."""
+    """SDK-level wrapper. Maps provider errors to LLM* exceptions.
 
-    async def complete(self, request: ProviderRequest) -> ProviderResponse: ...
+    `on_token`(可选)非 None 时 provider 走 streaming 路径,每个 delta
+    回调一次;返回值仍是完整 `ProviderResponse`(content + usage),与非流
+    式语义一致。Provider 不支持流式时**也允许**忽略 `on_token`,但 ADR-0004
+    生产路径上的 DashScope 必须实现。"""
+
+    async def complete(
+        self,
+        request: ProviderRequest,
+        *,
+        on_token: OnTokenCallback | None = None,
+    ) -> ProviderResponse: ...
 
 
 # ---------- LLMClient layer (agent-facing) ----------
@@ -118,7 +139,11 @@ class LLMRequest:
 
 
 class LLMClient(Protocol):
-    """Agent-facing surface. Implementations: `BaseLLMClient`."""
+    """Agent-facing surface. Implementations: `BaseLLMClient`.
+
+    `on_token` 仅 drafter 链路使用(简历正文,plain text,无 schema);设
+    schema + on_token 同时存在的语义未定义(若校验失败二次重试时 token 流
+    会再来一遍),agent 层应避免这种组合。"""
 
     async def complete(
         self,
@@ -136,6 +161,7 @@ class LLMClient(Protocol):
         related_entity: str | None = None,
         related_id: int | None = None,
         prompt_version_id: int | None = None,
+        on_token: OnTokenCallback | None = None,
     ) -> LLMResult: ...
 
 
@@ -275,6 +301,7 @@ class BaseLLMClient:
         related_entity: str | None = None,
         related_id: int | None = None,
         prompt_version_id: int | None = None,
+        on_token: OnTokenCallback | None = None,
     ) -> LLMResult:
         del cache_system  # ADR-0004 D2: semantic placeholder, no SDK toggle today
         cfg = tier_to_model(tier)
@@ -301,7 +328,8 @@ class BaseLLMClient:
                     thinking_mode=cfg.thinking_mode,
                     timeout_s=effective_timeout,
                     max_tokens=effective_max_tokens,
-                )
+                ),
+                on_token=on_token,
             )
             self._absorb(acc, resp)
 
@@ -319,7 +347,8 @@ class BaseLLMClient:
                             thinking_mode=cfg.thinking_mode,
                             timeout_s=effective_timeout,
                             max_tokens=effective_max_tokens,
-                        )
+                        ),
+                        on_token=on_token,
                     )
                     self._absorb(acc, retry_resp)
                     try:
@@ -373,7 +402,12 @@ class BaseLLMClient:
 
     # ---------- internals ----------
 
-    async def _call_with_retry(self, request: ProviderRequest) -> ProviderResponse:
+    async def _call_with_retry(
+        self,
+        request: ProviderRequest,
+        *,
+        on_token: OnTokenCallback | None = None,
+    ) -> ProviderResponse:
         async for attempt in AsyncRetrying(
             retry=retry_if_exception_type((LLMTimeoutError, LLMUpstreamError)),
             stop=stop_after_attempt(self._retry_attempts),
@@ -381,7 +415,7 @@ class BaseLLMClient:
             reraise=True,
         ):
             with attempt:
-                return await self._provider.complete(request)
+                return await self._provider.complete(request, on_token=on_token)
         # Unreachable: AsyncRetrying with reraise=True always either returns or raises.
         raise RuntimeError("retry loop exited without result")  # pragma: no cover
 

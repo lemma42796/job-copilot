@@ -22,6 +22,8 @@ list / get / soft_delete 走 caller-managed session(同 match_service 模式)。
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from datetime import datetime
 from decimal import Decimal
@@ -59,7 +61,7 @@ from jobcopilot_api.models import (
     ResumeVersion,
     User,
 )
-from jobcopilot_api.schemas.resumes import ResumeReview
+from jobcopilot_api.schemas.resumes import RESUME_VERSION_NOTE_MAX, ResumeReview
 
 log = structlog.get_logger(__name__)
 
@@ -144,11 +146,20 @@ async def run_generate_stream(
 ) -> AsyncIterator[dict[str, Any]]:
     """Phase 2: build graph → stream node events → 写 resume + resume_versions v1。
 
-    分层(永久约束 #7 + M3 W7):
+    分层(永久约束 #7 + M3 W7 + W8):
     1. 短 tx: 读 resume 行 + jd + (optional) match → 拿 hint + candidate
-    2. build graph(MemorySaver,5 节点)+ pre_loaded context
-    3. graph.astream(updates) → 转发 node_completed 事件给 caller
+    2. build graph(无 checkpointer,5 节点)+ pre_loaded context +
+       drafter token 回调
+    3. 跑 graph 在后台 task,通过 asyncio.Queue 把 `drafter_token` /
+       `node_completed` 两类事件交错发给 caller(W8 起)
     4. 单事务: UPDATE resume + INSERT resume_versions v1
+
+    SSE 事件交错说明(W8 新):drafter / revise 节点跑 LLM 时,token delta
+    从 `on_drafter_token` 流入 queue;**同一节点结束**才会有 `node_completed`
+    事件入 queue。所以前端见到的是
+    `drafter_token*(phase=draft) → node_completed(node=draft)
+     → drafter_token*(phase=revise)? → node_completed(node=revise)?`,phase
+    切换是前端重置预览缓冲的信号。
 
     Failure path:
     - retrieve 召回空 → mark_failed + ResumeGenerationFailedError(422)
@@ -163,7 +174,13 @@ async def run_generate_stream(
             session, resume_id=resume_id, user_id=user_id
         )
 
-    # Phase 2.2 — build graph + run
+    # Phase 2.2 — queue + drafter token callback,交错 SSE 事件
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    SENTINEL_DONE: dict[str, Any] = {"__sentinel__": "done"}
+
+    async def _on_drafter_token(phase: str, delta: str) -> None:
+        await queue.put({"event": "drafter_token", "phase": phase, "delta": delta})
+
     deps = ResumeGraphDeps(
         sessionmaker=sessionmaker,
         llm=llm,
@@ -172,6 +189,7 @@ async def run_generate_stream(
         reviewer_prompt=reviewer_prompt,
         planner_prompt=planner_prompt,
         k=k,
+        on_drafter_token=_on_drafter_token,
     )
     pre_loaded = PreLoadedResumeContext(
         profile_id=resume.profile_id,
@@ -192,35 +210,65 @@ async def run_generate_stream(
     }
 
     final_state: dict[str, Any] = {}
+    runner_error: BaseException | None = None
+
+    async def _runner() -> None:
+        """Drive the graph; push events into queue. Captures business
+        exceptions to be re-raised by the outer coroutine after queue drain
+        — this preserves the original exc-chain mapping(LLMUpstream → 502
+        etc.)without losing in-flight token / node events."""
+        nonlocal runner_error, final_state
+        try:
+            async for kind, payload in stream_resume_graph(
+                graph, initial_state, thread_id=str(resume_id)
+            ):
+                if kind == "node_completed":
+                    await queue.put(
+                        {
+                            "event": "node_completed",
+                            "node": payload.node,
+                            "revision_count": payload.revision_count,
+                        }
+                    )
+                elif kind == "final":
+                    final_state = payload
+        except Exception as exc:  # noqa: BLE001 — restored via re-raise below
+            runner_error = exc
+        finally:
+            queue.put_nowait(SENTINEL_DONE)
+
+    runner_task = asyncio.create_task(_runner())
     try:
-        async for kind, payload in stream_resume_graph(
-            graph, initial_state, thread_id=str(resume_id)
-        ):
-            if kind == "node_completed":
-                yield {
-                    "event": "node_completed",
-                    "node": payload.node,
-                    "revision_count": payload.revision_count,
-                }
-            elif kind == "final":
-                final_state = payload
-    except (LLMUpstreamError, LLMTimeoutError) as exc:
-        await _mark_failed(sessionmaker, resume_id=resume_id)
-        raise LLMUpstreamError(str(exc) or "LLM 上游异常", status_code=502) from exc
-    except LLMSchemaInvalidError as exc:
-        await _mark_failed(sessionmaker, resume_id=resume_id)
-        snippet = str(exc)[:500] if str(exc) else ""
-        raise ResumeGenerationFailedError(
-            f"LLM 返回的 JSON 不符合 schema:{snippet}"
-            if snippet
-            else "LLM 返回的 JSON 不符合 schema"
-        ) from exc
-    except ResumeGenerationFailedError:
-        await _mark_failed(sessionmaker, resume_id=resume_id)
+        while True:
+            ev = await queue.get()
+            if ev is SENTINEL_DONE:
+                break
+            yield ev
+    except BaseException:
+        # SSE client disconnect / outer cancel → tear down graph runner
+        runner_task.cancel()
+        with contextlib.suppress(BaseException):
+            await runner_task
         raise
-    except Exception:
+    else:
+        await runner_task
+
+    if runner_error is not None:
+        if isinstance(runner_error, (LLMUpstreamError, LLMTimeoutError)):
+            await _mark_failed(sessionmaker, resume_id=resume_id)
+            raise LLMUpstreamError(
+                str(runner_error) or "LLM 上游异常", status_code=502
+            ) from runner_error
+        if isinstance(runner_error, LLMSchemaInvalidError):
+            await _mark_failed(sessionmaker, resume_id=resume_id)
+            snippet = str(runner_error)[:500] if str(runner_error) else ""
+            raise ResumeGenerationFailedError(
+                f"LLM 返回的 JSON 不符合 schema:{snippet}"
+                if snippet
+                else "LLM 返回的 JSON 不符合 schema"
+            ) from runner_error
         await _mark_failed(sessionmaker, resume_id=resume_id)
-        raise
+        raise runner_error
 
     if not final_state or "draft_markdown" not in final_state:
         await _mark_failed(sessionmaker, resume_id=resume_id)
@@ -345,6 +393,73 @@ async def get_resume(session: AsyncSession, *, user_id: int, resume_id: int) -> 
     if resume is None:
         raise NotFoundError(f"resume {resume_id} not found")
     return resume
+
+
+async def list_resume_versions(
+    session: AsyncSession, *, user_id: int, resume_id: int
+) -> list[ResumeVersion]:
+    """All versions of a resume, oldest → newest by `version_number`.
+
+    Resume 所有权校验先行(`get_resume` 抛 NotFoundError);只读路径,caller
+    管 session。"""
+    await get_resume(session, user_id=user_id, resume_id=resume_id)
+    rows = (
+        await session.scalars(
+            sa.select(ResumeVersion)
+            .where(ResumeVersion.resume_id == resume_id)
+            .order_by(ResumeVersion.version_number.asc())
+        )
+    ).all()
+    return list(rows)
+
+
+async def create_resume_version(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    resume_id: int,
+    markdown: str,
+    note: str | None,
+) -> ResumeVersion:
+    """User-driven 编辑保存。逻辑:
+
+    1. 取所有权 + 校验 resume.status ∈ {ready, review_failed}(failed /
+       generating 不允许编辑 — 没意义)
+    2. SELECT max(version_number) → next_version
+    3. INSERT resume_versions row(`edit_type='edited'`)
+    4. UPDATE resumes.markdown = 新内容(便于 GET /resumes/{id} 默认拿活
+       动版本,同时 review_findings 不动 — 那是 reviewer 跑的快照,跟用户
+       手改无关;若希望"编辑后清空 findings",留 W8 后续讨论)
+
+    Caller 必须把 session 包在 begin() 事务里。"""
+    if note is not None and len(note) > RESUME_VERSION_NOTE_MAX:
+        raise ResumePreconditionError(
+            f"编辑备注超过 {RESUME_VERSION_NOTE_MAX} 字符上限"
+        )
+    resume = await get_resume(session, user_id=user_id, resume_id=resume_id)
+    if resume.status not in ("ready", "review_failed"):
+        raise ResumePreconditionError(
+            f"Resume {resume_id} 当前状态 {resume.status},不能编辑(只允许 ready / review_failed)"
+        )
+
+    next_version = (
+        await session.scalar(
+            sa.select(sa.func.coalesce(sa.func.max(ResumeVersion.version_number), 0)).where(
+                ResumeVersion.resume_id == resume_id
+            )
+        )
+    ) or 0
+    new_version = ResumeVersion(
+        resume_id=resume_id,
+        version_number=next_version + 1,
+        markdown=markdown,
+        edit_type="edited",
+        edit_note=note,
+    )
+    session.add(new_version)
+    resume.markdown = markdown
+    await session.flush()
+    return new_version
 
 
 async def soft_delete_resume(session: AsyncSession, *, user_id: int, resume_id: int) -> None:
@@ -623,7 +738,9 @@ __all__ = [
     "ResumeGenerationFailedError",
     "ResumePreconditionError",
     "create_pending_resume",
+    "create_resume_version",
     "get_resume",
+    "list_resume_versions",
     "list_resumes",
     "run_generate_stream",
     "soft_delete_resume",

@@ -25,7 +25,14 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
-from jobcopilot_api.llm.client import Provider, ProviderRequest, ProviderResponse
+from jobcopilot_api.llm.client import (
+    OnTokenCallback,
+    Provider,
+    ProviderRequest,
+    ProviderResponse,
+)
+
+DUMMY_STREAM_CHUNK_CHARS = 32
 
 
 @dataclass(frozen=True)
@@ -100,7 +107,12 @@ class DummyProvider(Provider):
         )
         return provider
 
-    async def complete(self, request: ProviderRequest) -> ProviderResponse:
+    async def complete(
+        self,
+        request: ProviderRequest,
+        *,
+        on_token: OnTokenCallback | None = None,
+    ) -> ProviderResponse:
         self.calls.append(request)
         if not self._queue:
             raise RuntimeError(
@@ -110,4 +122,11 @@ class DummyProvider(Provider):
         item = self._queue.popleft()
         if isinstance(item, BaseException):
             raise item
+        if on_token is not None and item.content:
+            # Simulate streaming by chunking the canned content. Lets dev /
+            # dogfood paths exercise the SSE drafter_token wiring without a
+            # real provider; tests that don't pass on_token keep the cheap
+            # synchronous path.
+            for i in range(0, len(item.content), DUMMY_STREAM_CHUNK_CHARS):
+                await on_token(item.content[i : i + DUMMY_STREAM_CHUNK_CHARS])
         return item

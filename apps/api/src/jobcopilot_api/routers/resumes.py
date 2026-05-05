@@ -2,12 +2,14 @@
 
 Endpoints:
 
-- POST   /v1/resumes/generate         SSE: started → node_completed* → result → done
-                                         (pre-insert / generate failure: started?
-                                          → error → done — see _sse_resume docstring)
-- GET    /v1/resumes                  ResumeListResponse (cursor)
-- GET    /v1/resumes/{id}             ResumeDetail
-- DELETE /v1/resumes/{id}             204
+- POST   /v1/resumes/generate            SSE: started → node_completed* → result → done
+                                            (pre-insert / generate failure: started?
+                                             → error → done — see _sse_resume docstring)
+- GET    /v1/resumes                     ResumeListResponse (cursor)
+- GET    /v1/resumes/{id}                ResumeDetail
+- GET    /v1/resumes/{id}/versions       全部版本(W8)
+- POST   /v1/resumes/{id}/versions       用户编辑后保存(W8 — body {markdown, note?})
+- DELETE /v1/resumes/{id}                204
 
 POST 强制 SSE(API_SPEC §6.6):简历定制是 retrieve + planner + drafter
 + reviewer (+ optional revise) 4-5 次 LLM 调用,P95 ~60-120s,sync 等不起。
@@ -19,6 +21,11 @@ SSE shape(M3 W7 升级):`started` 在 phase-1 INSERT 之后 emit 带
 `node_completed` data:`{"node": "retrieve|plan|draft|review|revise",
 "revision_count": int}`。前端可按节点完成数量驱动进度条;revision_count
 反映 reviewer 失败后 revise 节点重跑次数(0 = 首次,1+ = revise)。
+
+W8 新增 `drafter_token` 事件:`{"phase": "draft|revise", "delta": str}`。
+drafter / revise 节点跑 LLM 时按 token chunk 流式发出,front-end 累积成
+预览;phase 切换是前端重置缓冲的信号(revise 重写整篇,不要追加)。
+其余节点(retrieve / plan / review)无流式价值,不发该事件。
 
 永久约束 #21 前端走 `lib/sse.ts`,不用 EventSource。
 """
@@ -42,7 +49,7 @@ from jobcopilot_api.infra.prompts import LoadedPrompt
 from jobcopilot_api.infra.request_id import generate_uuid7
 from jobcopilot_api.llm.client import LLMClient
 from jobcopilot_api.llm.embedders import Embedder
-from jobcopilot_api.models import Resume
+from jobcopilot_api.models import Resume, ResumeVersion
 from jobcopilot_api.routers._deps import current_user_id
 from jobcopilot_api.schemas.resumes import (
     ResumeCreateInput,
@@ -51,11 +58,16 @@ from jobcopilot_api.schemas.resumes import (
     ResumeListResponse,
     ResumeStatus,
     ResumeTokens,
+    ResumeVersionCreateInput,
+    ResumeVersionItem,
+    ResumeVersionListResponse,
     ReviewFinding,
 )
 from jobcopilot_api.services.resume_service import (
     create_pending_resume,
+    create_resume_version,
     get_resume,
+    list_resume_versions,
     list_resumes,
     run_generate_stream,
     soft_delete_resume,
@@ -115,6 +127,17 @@ def _detail(resume: Resume) -> ResumeDetail:
         latency_ms=resume.latency_ms,
         created_at=resume.created_at,
         updated_at=resume.updated_at,
+    )
+
+
+def _version_item(v: ResumeVersion) -> ResumeVersionItem:
+    return ResumeVersionItem(
+        id=v.id,
+        version_number=v.version_number,
+        markdown=v.markdown,
+        edit_type=v.edit_type,  # type: ignore[arg-type]  # Literal narrowing on free-form col
+        edit_note=v.edit_note,
+        created_at=v.created_at,
     )
 
 
@@ -228,7 +251,15 @@ async def _sse_resume(
             trace_id=job_id,
         ):
             kind = event.get("event")
-            if kind == "node_completed":
+            if kind == "drafter_token":
+                yield _sse(
+                    "drafter_token",
+                    {
+                        "phase": event["phase"],
+                        "delta": event["delta"],
+                    },
+                )
+            elif kind == "node_completed":
                 yield _sse(
                     "node_completed",
                     {
@@ -327,3 +358,45 @@ async def delete(
 ) -> None:
     async with session.begin():
         await soft_delete_resume(session, user_id=user_id, resume_id=resume_id)
+
+
+# ---------------------------------------------------------------------------
+# Versions(W8)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/resumes/{resume_id}/versions",
+    response_model=ResumeVersionListResponse,
+    summary="List versions of a resume",
+)
+async def list_versions(
+    resume_id: int,
+    user_id: Annotated[int, Depends(current_user_id)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ResumeVersionListResponse:
+    rows = await list_resume_versions(session, user_id=user_id, resume_id=resume_id)
+    return ResumeVersionListResponse(data=[_version_item(r) for r in rows])
+
+
+@router.post(
+    "/resumes/{resume_id}/versions",
+    response_model=ResumeVersionItem,
+    status_code=status.HTTP_201_CREATED,
+    summary="Save edited resume markdown as a new version",
+)
+async def create_version(
+    resume_id: int,
+    body: ResumeVersionCreateInput,
+    user_id: Annotated[int, Depends(current_user_id)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ResumeVersionItem:
+    async with session.begin():
+        version = await create_resume_version(
+            session,
+            user_id=user_id,
+            resume_id=resume_id,
+            markdown=body.markdown,
+            note=body.note,
+        )
+    return _version_item(version)

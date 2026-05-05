@@ -35,7 +35,12 @@ from openai import (
     UnprocessableEntityError,
 )
 
-from jobcopilot_api.llm.client import Provider, ProviderRequest, ProviderResponse
+from jobcopilot_api.llm.client import (
+    OnTokenCallback,
+    Provider,
+    ProviderRequest,
+    ProviderResponse,
+)
 from jobcopilot_api.llm.errors import LLMAuthError, LLMTimeoutError, LLMUpstreamError
 
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -63,7 +68,12 @@ class DashscopeProvider(Provider):
             raise ValueError("DashscopeProvider requires a non-empty api_key")
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
 
-    async def complete(self, request: ProviderRequest) -> ProviderResponse:
+    async def complete(
+        self,
+        request: ProviderRequest,
+        *,
+        on_token: OnTokenCallback | None = None,
+    ) -> ProviderResponse:
         kwargs: dict[str, Any] = {
             "model": request.model,
             "messages": [
@@ -76,6 +86,9 @@ class DashscopeProvider(Provider):
         }
         if request.response_format is not None:
             kwargs["response_format"] = request.response_format
+
+        if on_token is not None:
+            return await self._complete_stream(kwargs, on_token=on_token)
 
         try:
             resp = await self._client.chat.completions.create(**kwargs)
@@ -110,4 +123,63 @@ class DashscopeProvider(Provider):
             tokens_in=int(usage.prompt_tokens),
             tokens_out=int(usage.completion_tokens),
             cached_tokens=_read_cached_tokens(usage),
+        )
+
+    async def _complete_stream(
+        self,
+        kwargs: dict[str, Any],
+        *,
+        on_token: OnTokenCallback,
+    ) -> ProviderResponse:
+        """Streaming variant: emit deltas via callback while accumulating
+        the full content + usage to return.
+
+        DashScope OpenAI-compat 实测 `stream_options={"include_usage": True}`
+        在最末一帧(`choices=[]` 的 sentinel chunk)给出完整 usage,与 OpenAI
+        语义对齐;这里依赖此行为,若 provider 不返回 usage 则降级到 0
+        (与非流式 `usage is None` 分支一致)。"""
+        stream_kwargs = {**kwargs, "stream": True, "stream_options": {"include_usage": True}}
+        content_parts: list[str] = []
+        tokens_in = 0
+        tokens_out = 0
+        cached_tokens = 0
+        try:
+            stream = await self._client.chat.completions.create(**stream_kwargs)
+            async for chunk in stream:
+                if chunk.usage is not None:
+                    tokens_in = int(chunk.usage.prompt_tokens)
+                    tokens_out = int(chunk.usage.completion_tokens)
+                    cached_tokens = _read_cached_tokens(chunk.usage)
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                piece = getattr(delta, "content", None)
+                if piece:
+                    content_parts.append(piece)
+                    await on_token(piece)
+        except (APITimeoutError, APIConnectionError) as e:
+            raise LLMTimeoutError(str(e)) from e
+        except RateLimitError as e:
+            raise LLMUpstreamError(str(e), status_code=429) from e
+        except InternalServerError as e:
+            raise LLMUpstreamError(str(e), status_code=e.status_code or 500) from e
+        except (
+            AuthenticationError,
+            PermissionDeniedError,
+            BadRequestError,
+            NotFoundError,
+            UnprocessableEntityError,
+        ) as e:
+            raise LLMAuthError(str(e)) from e
+        except APIStatusError as e:
+            status = e.status_code or 0
+            if status >= 500 or status == 429:
+                raise LLMUpstreamError(str(e), status_code=status) from e
+            raise LLMAuthError(str(e)) from e
+
+        return ProviderResponse(
+            content="".join(content_parts),
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cached_tokens=cached_tokens,
         )

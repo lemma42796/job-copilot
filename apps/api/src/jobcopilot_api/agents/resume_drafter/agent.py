@@ -36,7 +36,7 @@ from __future__ import annotations
 from typing import Any
 
 from jobcopilot_api.infra.prompts import LoadedPrompt, render_user
-from jobcopilot_api.llm.client import LLMClient, LLMResult
+from jobcopilot_api.llm.client import LLMClient, LLMResult, OnTokenCallback
 from jobcopilot_api.llm.tiers import Tier
 from jobcopilot_api.models import Jd, ProfileChunk
 from jobcopilot_api.schemas.resumes import ResumePlan, ReviewFinding
@@ -104,6 +104,7 @@ async def draft_resume(
     trace_id: str | None = None,
     related_id: int | None = None,
     timeout_s: float | None = DEFAULT_TIMEOUT_S,
+    on_token: OnTokenCallback | None = None,
 ) -> LLMResult:
     """Generate a markdown resume. `result.content` is the markdown text;
     `result.parsed` is None (no response_schema).
@@ -147,4 +148,5 @@ async def draft_resume(
         related_entity=RELATED_ENTITY,
         related_id=related_id,
         prompt_version_id=prompt.id,
+        on_token=on_token,
     )

@@ -286,8 +286,11 @@ export async function deleteMatch(id: number): Promise<void> {
 
 export type ResumeNodeName = 'retrieve' | 'plan' | 'draft' | 'review' | 'revise';
 
+export type DrafterPhase = 'draft' | 'revise';
+
 export type ResumeSseFrame =
   | SseFrame<'started', { job_id: string; resource_id: number }>
+  | SseFrame<'drafter_token', { phase: DrafterPhase; delta: string }>
   | SseFrame<'node_completed', { node: ResumeNodeName; revision_count: number }>
   | SseFrame<
       'result',
@@ -341,6 +344,52 @@ export async function listResumes(
 
 export async function deleteResume(id: number): Promise<void> {
   await jsonFetch<void>(`/v1/resumes/${id}`, { method: 'DELETE' });
+}
+
+// ---------------------------------------------------------------------------
+// Resume versions(W8 — monaco 编辑器 + 版本 diff)
+// ---------------------------------------------------------------------------
+//
+// 这些类型暂时手写,等用户跑 `pnpm gen:api` 后可以替换为
+// `components['schemas']['ResumeVersionItem']` 等生成版,与本文件其他 wire
+// 类型保持一致(jds/profiles/matches 等)。
+
+export type ResumeVersionEditType = 'generated' | 'edited' | 'regenerated';
+
+export type ResumeVersionItem = {
+  id: number;
+  version_number: number;
+  markdown: string;
+  edit_type: ResumeVersionEditType | null;
+  edit_note: string | null;
+  created_at: string;
+};
+
+export type ResumeVersionListResponse = {
+  data: ResumeVersionItem[];
+};
+
+export type ResumeVersionCreateInput = {
+  markdown: string;
+  note?: string | null;
+};
+
+export async function listResumeVersions(
+  id: number,
+  signal?: AbortSignal,
+): Promise<ResumeVersionListResponse> {
+  return jsonFetch<ResumeVersionListResponse>(`/v1/resumes/${id}/versions`, { signal });
+}
+
+export async function createResumeVersion(
+  id: number,
+  body: ResumeVersionCreateInput,
+): Promise<ResumeVersionItem> {
+  return jsonFetch<ResumeVersionItem>(`/v1/resumes/${id}/versions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }
 
 export { API_BASE_URL };

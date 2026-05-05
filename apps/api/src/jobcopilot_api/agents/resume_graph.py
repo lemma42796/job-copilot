@@ -48,7 +48,7 @@ Graph 本身**不**捕获业务异常。
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
@@ -59,7 +59,7 @@ from jobcopilot_api.agents.resume_drafter import draft_resume
 from jobcopilot_api.agents.resume_planner import plan_resume
 from jobcopilot_api.agents.resume_reviewer import review_resume
 from jobcopilot_api.infra.prompts import LoadedPrompt
-from jobcopilot_api.llm.client import LLMClient, LLMResult
+from jobcopilot_api.llm.client import LLMClient, LLMResult, OnTokenCallback
 from jobcopilot_api.llm.embedders import Embedder
 from jobcopilot_api.models import Jd, ProfileChunk
 from jobcopilot_api.schemas.resumes import ResumePlan, ResumeReview
@@ -71,6 +71,10 @@ from jobcopilot_api.services.retrieval_service import (
 
 DEFAULT_MAX_REVISIONS = 1
 DEFAULT_RESUME_K = 20
+
+DrafterTokenCallback = Callable[[str, str], Awaitable[None]]
+"""(phase, delta) → awaitable. `phase` 是 `"draft"` 或 `"revise"`,让 SSE
+消费方区分首轮起草与修订重写(前端遇 phase 切换重置预览缓冲)。"""
 
 
 class ResumeGraphState(TypedDict, total=False):
@@ -115,7 +119,12 @@ class ResumeGraphState(TypedDict, total=False):
 
 @dataclass(frozen=True)
 class ResumeGraphDeps:
-    """运行时依赖打包。所有 node 闭包从这里读,不放 state(避免不必要的 state 字段)。"""
+    """运行时依赖打包。所有 node 闭包从这里读,不放 state(避免不必要的 state 字段)。
+
+    `on_drafter_token`:可选;非 None 时 draft / revise 节点把 LLM 流式
+    delta 通过该回调向上送(service 层用一个 asyncio.Queue 桥接到 SSE
+    `drafter_token` 事件)。Planner / Reviewer 不开流式(JSON schema 输出
+    流式没有渲染价值)。"""
 
     sessionmaker: async_sessionmaker[AsyncSession]
     llm: LLMClient
@@ -124,6 +133,21 @@ class ResumeGraphDeps:
     reviewer_prompt: LoadedPrompt
     planner_prompt: LoadedPrompt
     k: int = DEFAULT_RESUME_K
+    on_drafter_token: DrafterTokenCallback | None = None
+
+
+def _phase_token_cb(
+    cb: DrafterTokenCallback | None, phase: str
+) -> OnTokenCallback | None:
+    """Adapt a (phase, delta) deps callback into the (delta) shape that
+    LLMClient.on_token wants. None in → None out(短路 streaming)。"""
+    if cb is None:
+        return None
+
+    async def _wrapped(delta: str) -> None:
+        await cb(phase, delta)
+
+    return _wrapped
 
 
 def build_resume_graph(
@@ -188,6 +212,7 @@ def build_resume_graph(
         return {"plan": plan, "planner_result": result}
 
     async def draft_node(state: ResumeGraphState) -> dict[str, Any]:
+        on_token = _phase_token_cb(deps.on_drafter_token, "draft")
         result = await draft_resume(
             jd=state["jd"],
             chunks=state["chunks"],
@@ -200,6 +225,7 @@ def build_resume_graph(
             user_id=state["user_id"],
             trace_id=state.get("trace_id"),
             related_id=state["resume_id"],
+            on_token=on_token,
         )
         markdown = (result.content or "").strip()
         if not markdown:
@@ -237,6 +263,7 @@ def build_resume_graph(
 
     async def revise_node(state: ResumeGraphState) -> dict[str, Any]:
         """Re-run drafter with prev_findings; bump revision_count."""
+        on_token = _phase_token_cb(deps.on_drafter_token, "revise")
         result = await draft_resume(
             jd=state["jd"],
             chunks=state["chunks"],
@@ -249,6 +276,7 @@ def build_resume_graph(
             user_id=state["user_id"],
             trace_id=state.get("trace_id"),
             related_id=state["resume_id"],
+            on_token=on_token,
         )
         markdown = (result.content or "").strip()
         if not markdown:
@@ -308,6 +336,7 @@ class PreLoadedResumeContext:
 __all__ = [
     "DEFAULT_MAX_REVISIONS",
     "DEFAULT_RESUME_K",
+    "DrafterTokenCallback",
     "PreLoadedResumeContext",
     "ResumeGraphDeps",
     "ResumeGraphState",
