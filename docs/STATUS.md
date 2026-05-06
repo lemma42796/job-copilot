@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-06 — **M3 W8 子任务 1+2+3 完成 + 第二轮 dogfood 暴露反幻觉链路三层洞**:回归 5 条 resume(match #4/6/8/11)发现 (1) reviewer 假阳性 — 教育 / 语言 chunks 因 retrieve Top-K JD-anchored 召回不全被误判编造;(2) drafter 镜像 JD — 把 JD hard_skills 候选人不会的(C++/Java/OpenAI/Claude/LLaMA)抄进技能段;(3) **更深根因**:`_compose_hint` 文案在主动诱导 — 原版 "缺失关键技能(可在简历中补强相关项目/课程)" 等于命令 drafter 补漏。三层联合修:reviewer 走 profile 全量 chunks + candidate(prompt v1.0.3 加 M7 教育核查) + drafter prompt v1.0.5 加 D.3 严禁 JD-only 技能 + v1.0.6 加 hint 段防注入语 + `_compose_hint` 改反向警告语义("**严禁列入简历的技能**…")+ 前端区分 obsolete vs bogus("已处理" vs "标记可能有误")。验证:resume #21 (match #4 / JD #9) 一轮 0 finding 通过,JD-only 技能全消失,M1 跨 chunk 错配也顺带消(根因不在 prompt 而在 hint 引导污染)。子任务 4(对抗集 + Judge)+ 子任务 5 未起。
+last_updated: 2026-05-06 — **M3 W8 子任务 1+2+3 完成 + 第二轮 dogfood 暴露反幻觉链路三层洞**:回归 5 条 resume(match #4/6/8/11)发现 (1) reviewer 假阳性 — 教育 / 语言 chunks 因 retrieve Top-K JD-anchored 召回不全被误判编造;(2) drafter 镜像 JD — 把 JD hard_skills 候选人不会的(C++/Java/OpenAI/Claude/LLaMA)抄进技能段;(3) **更深根因**:`_compose_hint` 文案在主动诱导 — 原版 "缺失关键技能(可在简历中补强相关项目/课程)" 等于命令 drafter 补漏。三层联合修:reviewer 走 profile 全量 chunks + candidate(prompt v1.0.3 加 M7 教育核查) + drafter prompt v1.0.5 加 D.3 严禁 JD-only 技能 + v1.0.6 加 hint 段防注入语 + `_compose_hint` 改反向警告语义("**严禁列入简历的技能**…")+ 前端区分 obsolete vs bogus("已处理" vs "标记可能有误")。验证:resume #21 (match #4 / JD #9) 一轮 0 finding 通过,JD-only 技能全消失,M1 跨 chunk 错配也顺带消(根因不在 prompt 而在 hint 引导污染)。子任务 4 已重新规划为 A/B/C/D 四件(Hybrid Search + Prompt cache + Judge harness + 评测集,详见"下一刀"区)+ 子任务 5 未起。
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -21,10 +21,10 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 - ✅ **#2 Monaco 编辑器 + 版本 diff**:加 `GET/POST /v1/resumes/{id}/versions` + `ResumeVersionItem` schema(generated/edited/regenerated)+ `create_resume_version` 自增 version_number + UPDATE resumes.markdown / 前端 `@monaco-editor/react`(`ssr:false` 动态导入)+ MarkdownEditor + MarkdownDiff 包装 / ResumeDetail 加编辑模式 + 版本历史卡 + 历史预览 + DiffPanel(side-by-side)
 - ✅ **#3 Reviewer 标记交互**:可点 finding 行 + 滚动到对应章节(H2 `id=section-{slug}` 7 个章节)+ 一键采纳(`stripQuoted` literal substring 删除 + 标点/空行/空 bullet 收尾,失败提示用户去编辑器手改)+ 忽略(UI 局部)+ obsolete 检测 + 黄底 `<mark>` 高亮(匹配做在整段 md 拿全局偏移 / parseBlocks 给每个 block + bullet item 记 textOffset / 渲染时每个 block 取本段交集 / fallback 2 用 normalized substring 反向索引)
 - ✅ **#3.1 第二轮 dogfood 反幻觉链路修订(衍生)**:5 match 重生成回归暴露 (a) reviewer 走 retrieve Top-K JD-anchored 漏 education / language → [M4] 假阳性;(b) drafter 镜像 JD hard_skills(C++/Java/OpenAI/Claude/LLaMA);(c) `_compose_hint` 文案诱导补漏。三层联合修:**reviewer 全量** — `retrieval_service.load_all_profile_chunks` + `ResumeGraphState.all_chunks` + `review_resume(candidate=...)` + reviewer prompt **v1.0.3**(profile 完整 + Profile 字段 + 新 M7);**drafter 反镜像** — prompt **v1.0.5** 加 D.3 严禁 JD-only 技能 + 机械自检 + 心智模型,**v1.0.6** 加 hint 段防注入语;**hint 反向文案** — `_compose_hint` 从"补强相关项目/课程"改成"**严禁列入简历的技能**(候选人 chunks 没有,JD 要 — 列了就是编造)";**前端 obsolete 区分** — 用历史 versions.markdown 做"曾经出现过"判定,任何版本都没的标 bogus("标记可能有误"黄)而非 obsolete("已处理"绿)。**验证**:resume #21 (match #4 / JD #9) 一轮 0 finding,JD-only 技能全消失,M1 跨 chunk 错配同步消(根因在 hint 引导污染,不在 prompt 加约束)
-- ⏳ **#4 dataset + Judge + 对抗集**:`resume_generate` 25 条 dataset、对抗集 20 条、LLM-as-Judge(目标 fabrication recall ≥ 0.95)。**对抗集种子**(本次 dogfood 收集):#18 "具备高并发架构设计能力"(M4 模糊能力陈述 / 用 chunks 间接证据)、#19 C++/Java/OpenAI/Claude/LLaMA 抄 JD(已被 v1.0.5/v1.0.6 修但应作回归 case)、#20 "12w QPS 保障 AI 服务高可用"(M1 跨 chunk 业务 context 错配,已被 hint 文案修)、#20 reviewer 凭空捏 "AWS"(reviewer 模型 noise,留给 LLM-as-Judge 评测)
+- ⏳ **#4(扩) 评测扎根 + RAG/Judge 深度补强**:重新规划为 4 件(详见"下一刀"区)— A. Hybrid Search + RRF + 中文分词;B. Prompt cache layer;C. LLM-as-Judge harness + Cohen's kappa;D. 评测数据集(`match_analysis` 30 + `resume_generate` 25 + `resume_review_adversarial` 20 + `retrieval` 20)+ multi-persona synthetic fixture。**对抗集种子**(本次 dogfood 收集):#18 "具备高并发架构设计能力"(M4 模糊能力陈述 / 用 chunks 间接证据)、#19 C++/Java/OpenAI/Claude/LLaMA 抄 JD(已被 v1.0.5/v1.0.6 修但应作回归 case)、#20 "12w QPS 保障 AI 服务高可用"(M1 跨 chunk 业务 context 错配,已被 hint 文案修)、#20 reviewer 凭空捏 "AWS"(reviewer 模型 noise,留给 LLM-as-Judge 评测)
 - ⏳ **#5 W7 末 DoD 复测**:review 通过率 ≥ 50% / 无 high severity 幻觉
 
-**当前 working tree**:即将 commit 第二轮 dogfood 反幻觉三层修(reviewer 全量 chunks + drafter v1.0.5/v1.0.6 + hint 文案 + bogus UI 区分)后清空。
+**当前 working tree**:`f9e13b3` 第二轮 dogfood 三层修已 commit + push;本次改动 = STATUS.md 子任务 4 重新规划为 A/B/C/D(待 commit)。
 
 **当前生效 prompt**(W8 第二轮 dogfood 修订后):
 - `match_analyst` = v1.1.2(4 条规则简化版,消费 `or_group_id`)
@@ -34,7 +34,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 - `jd_parser` = v1.0.6(B.1 复合句式新规)
 - `profile_parser` = v1.0.1
 
-**当前闸门**(M2 末,W7 + W8 子任务 1+2+3 + 第二轮 dogfood 修订未跑闸):后端 `pytest -q` 321 passed + ruff / mypy 全过 + alembic 0012;前端 typecheck / biome / next build 全过。W7(S19/S20)+ W8(S21 子任务 1+2+3 + 第二轮修订)**未跑测试**(用户手动验);dogfood 通过项:W7 端到端、drafter token 流式、monaco 编辑/版本/diff、reviewer 标记可点+滚动+采纳+黄底高亮、第二轮 dogfood 5 个 match 重生成全 ready(resume #16/#17/#21 一轮 passed,#18/#19 暴露 drafter 真问题但已被 v1.0.5/v1.0.6 修)。所有数字推 W8 子任务 4 + W9 闸门一起跑。
+**当前闸门**(M2 末,W7 + W8 子任务 1+2+3 + 第二轮 dogfood 修订未跑闸):后端 `pytest -q` 321 passed + ruff / mypy 全过 + alembic 0012;前端 typecheck / biome / next build 全过。W7(S19/S20)+ W8(S21 子任务 1+2+3 + 第二轮修订)**未跑测试**(用户手动验);dogfood 通过项:W7 端到端、drafter token 流式、monaco 编辑/版本/diff、reviewer 标记可点+滚动+采纳+黄底高亮、第二轮 dogfood 5 个 match 重生成全 ready(resume #16/#17/#21 一轮 passed,#18/#19 暴露 drafter 真问题但已被 v1.0.5/v1.0.6 修)。所有数字推 W8 子任务 4(扩) + W9 闸门一起跑。
 
 **M1 完成**:[slices/M1-summary.md](slices/M1-summary.md) — 整体经验 + 25 条永久约束 + DoD 检查 + 给 M2 的数据底座。各切片归档:`slices/{S0.5,S1..S11}-*.md`。
 
@@ -42,17 +42,38 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 > 2026-05-01 LLM Provider 由 DeepSeek V4 切换到阿里云百炼 Qwen3.6,见 ADR-0003。ADR-0001 复审条件 1(余额 < ¥1)触发时回切。
 
-## 下一刀:S21 子任务 4 + 5
+## 下一刀:S21 子任务 4(扩)+ 5
 
-子任务 1+2+3 已落地。下一步子任务 4(对抗集 + Judge)+ W7 末 DoD 复测(子任务 5)一起跑,做完整个 S21 收官。
+子任务 1+2+3 已落地。子任务 4 重新规划为**评测扎根 + RAG/Judge 深度补强**四件(A/B/C/D),依赖顺序 **A → B → C/D 并行**(B 让 C/D 评测跑得起,A 让 D 有 ablation 数据),合做完成 S21 收官。
 
-### 子任务 4 dataset + Judge + 对抗集
+设计原则:每件都满足 ① 真解决项目问题 ② 自己实现非纯调库 ③ 面试值钱(hybrid search / prompt caching / LLM-as-Judge 都是 LLM 应用层面试必问题)。**不在范围**:supervisor agent 改造、context compaction、token budget tracker、checkpointer 真做 — 这些是"为简历加的装饰",已撤回。
 
-`evals/suites/resume_generate/` 新建 25 条样本(JD + profile + 期望特征);`resume_review_adversarial/` 20 条对抗集;LLM-as-Judge prompt + harness;目标 fabrication recall ≥ 0.95。
+### 子任务 4-A:Hybrid Search + RRF(retrieval 深度补强)
+
+Postgres `tsvector`(中文分词扩展 zhparser/pg_jieba)+ pgvector 双路召回,application 层 RRF 融合(`score(d) = Σ 1/(k+rank_i(d))`,k=60)。**自己实现非调 LangChain EnsembleRetriever** — 要看两路 score 分布做 ablation。顺手做 `evals/suites/retrieval/` 20 对 ground-truth,量化 Recall@10 / NDCG@10,跑 v0(纯向量)vs v1(hybrid + RRF)ablation 表。**触发的真问题**:W8 第二轮 dogfood reviewer Top-K 召回不全已暴露此洞,reviewer 已临时改全量 chunks 兜住,A 是根治。
+
+### 子任务 4-B:Prompt cache layer(评测降本 + 工程深度)
+
+`hash(model + temperature + system + user + prompt_version)` → response cache,存 Postgres jsonb(不引 Redis,P99 多 5ms 可接受 + 可观测)。LLMClient 加 cache layer,**streaming skip cache**(半截缓存复杂度不值)。dogfood 阶段命中率预期 70%+,直接降评测成本一个数量级,让 C/D 跑得起。Anthropic prompt caching 是 server-side 仅对 Claude API,DashScope 没有 → 必须客户端做。
+
+### 子任务 4-C:LLM-as-Judge harness + Cohen's kappa
+
+Judge 用 qwen3.6-plus(thinking on),evaluatee 是 qwen3.6-flash(防"评委即被评者"偏差,自评偏高 5-10pp)。CoT + JSON 输出 + few-shot。抽 50 条人工复核计算 Cohen's kappa(`κ = (po - pe)/(1 - pe)`,**pe 这一项是关键** — 直接用 accuracy 反映可靠性会高估),要求 ≥ 0.7;低于阈值触发 Judge prompt 改版 + 历史 Judge 结果重跑。覆盖 resume_generate 6 维 Rubric(EVAL_PLAN §7.3)+ match_analysis evidence_validity(§6.3)。
+
+### 子任务 4-D:评测数据集
+
+- `evals/suites/match_analysis/` 30 条(高/中/低各 10,EVAL_PLAN §6.1)
+- `evals/suites/resume_generate/` 25 条(15 条与 match 共用 JD/profile,§7.2)
+- `evals/suites/resume_review_adversarial/` 20 条对抗集(§8.1,种子见上方进度区)
+- `evals/suites/retrieval/` 20 条(A 顺手做)
+
+**数据来源 = multi-persona synthetic**(无真实用户阶段标准做法,EVAL_PLAN §6.1 即此思路):写 8-10 个 personas(应届 / 后端转 AI / 前端中年 / quant 海归 / PM 跨行 / 算法转 infra 等)入 fixture,每个 persona × 公开脱敏 JD 笛卡尔积。README 透明标注 `synthetic persona for evaluation`,**不伪造为真用户**。
+
+**目标**:fabrication recall ≥ 0.95;match `score_mae ≤ 8` / `bucket_acc ≥ 0.85`;resume_generate Judge 综合分均值 ≥ 75。
 
 ### 子任务 5 W7 末 DoD 复测
 
-跑 13-JD 第二轮 dogfood:review 通过率 ≥ 50% / 无 high severity 幻觉。
+跑 13-JD 第二轮 dogfood:review 通过率 ≥ 50% / 无 high severity 幻觉。**A/B/C/D 完成后再跑** — 此时已是 hybrid + cache 后的真实生产形态,数字才有定型意义。
 
 ### W9 渲染与导出
 LaTeX `awesome-cv` 中文化 + md → LaTeX 转换器 + `/v1/resumes/{id}/export?format=pdf|docx|md` + PDF 预览 + 字体 license 合规。
@@ -109,6 +130,7 @@ LaTeX `awesome-cv` 中文化 + md → LaTeX 转换器 + `/v1/resumes/{id}/export
 | 文件 | 用途 |
 |------|------|
 | `1-PRD.md` / `2-TECH_DESIGN.md` / `3-DATA_MODEL.md` / `4-API_SPEC.md` / `5-AGENT_DESIGN.md` / `6-EVAL_PLAN.md` / `7-ROADMAP.md` / `8-ENGINEERING.md` | 设计文档,**只在写对应代码时按需读相关章节** |
+| `9-LESSONS.md` | 工程踩坑录(8 大类 ~30 条,面试备考册 + GitHub 引流页 + 博客大纲三合一) |
 | `slices/M1-summary.md` | M1 收官总结(整体经验 + 25 条永久约束 + DoD 检查) |
 | `slices/M2-summary.md` | M2 收官总结(整体经验 + 6 条永久约束 + DoD 检查 + 未验证已发布清单) |
 | `slices/{S0.5,S1..S11}-*.md` | M1 各切片归档 |
