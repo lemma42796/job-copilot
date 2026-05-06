@@ -646,10 +646,23 @@ async def _load_resume_for_generate(
 
 
 def _compose_hint(match: Match) -> str | None:
-    """把 match.gap_summary + missing_skills 拼成 drafter prompt 的 hint 段。"""
+    """把 match.gap_summary + missing_skills 拼成 drafter prompt 的 hint 段。
+
+    ⚠️ **文案设计的关键约束**(S21 W8 dogfood resume #19 真 bug 后修订):
+    hint 注入到 drafter USER 段,LLM 视为权威指令位。原版文案"缺失关键技能
+    (可在简历中补强相关项目/课程)"等于明确命令 drafter 把候选人不会的技能
+    写进简历(JD 镜像 + 编造)。新文案改成**反向警告语义** — gap_summary 加
+    "只读,不要写入简历"前缀;missing_skills 改成"以下技能候选人 chunks 没
+    有,**严禁列入简历**(gap 留给用户决策,不是简历该粉饰的)"。这与
+    drafter prompt v1.0.5 D.3 + v1.0.6 USER 段 hint 防注入语相互兜底。
+    """
     parts: list[str] = []
     if match.gap_summary:
-        parts.append(f"差距分析:{match.gap_summary.strip()}")
+        parts.append(
+            "**只读差距分析**(供 drafter 理解候选人弱点,**不要写入简历**;"
+            "gap 信息归 match 模块负责告知用户,不是简历该粉饰的):\n"
+            + match.gap_summary.strip()
+        )
     if match.missing_skills:
         names: list[str] = []
         for ms in match.missing_skills:
@@ -658,8 +671,11 @@ def _compose_hint(match: Match) -> str | None:
                 if isinstance(name, str) and name.strip():
                     names.append(name.strip())
         if names:
-            parts.append("缺失关键技能(可在简历中补强相关项目/课程):" + ", ".join(names))
-    return "\n".join(parts) if parts else None
+            parts.append(
+                "**严禁列入简历的技能**(候选人 chunks 没有,JD 要 — 列了就是编造):"
+                + ", ".join(names)
+            )
+    return "\n\n".join(parts) if parts else None
 
 
 async def _get_resume_locked(session: AsyncSession, *, resume_id: int, user_id: int) -> Resume:

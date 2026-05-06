@@ -153,18 +153,33 @@ export function ResumeDetailView({ resume }: { resume: ResumeDetail }) {
   const activeQuoted =
     activeFindingIdx != null ? resume.review_findings[activeFindingIdx]?.quoted_text ?? null : null;
 
-  // Reviewer findings 是 graph 生成时存的快照,不会随用户 edit 重跑;若用
-  // 户已经 adopt(或手动改掉了那段内容),quoted_text 就不再出现在 current
-  // markdown 里 — 这种 finding 标"已处理"灰化展示,避免误导。
-  const obsoleteFindings = React.useMemo(() => {
-    if (!resume.markdown) return new Set<number>();
-    const md = resume.markdown;
-    const set = new Set<number>();
+  // Reviewer findings 是 graph 生成时存的快照,不会随用户 edit 重跑。
+  // quoted_text 在当前 markdown 里找不到时分两种情况,前端要区分:
+  //   (a) **obsolete** — 用户 adopt 或手动改掉了那段:在某个**历史版本**里
+  //       出现过,但当前已不在 → 真"已处理"
+  //   (b) **bogus** — Reviewer 凭空捏造 quoted_text,**任何版本**里都不在
+  //       → "标记可能有误",不应误导用户以为自己处理过
+  // 实现:遍历当前 markdown + 所有 versions.markdown 拼成"曾经出现过"的全集,
+  // 当前没有 + 全集里也没有 → bogus;当前没有 + 全集里有 → obsolete。
+  const { obsoleteFindings, bogusFindings } = React.useMemo(() => {
+    const obsolete = new Set<number>();
+    const bogus = new Set<number>();
+    if (!resume.markdown) return { obsoleteFindings: obsolete, bogusFindings: bogus };
+    const currentMd = resume.markdown;
+    // versions == null 时只有 current 可比;此情形下"曾经出现过"= currentMd
+    const allMarkdowns = versions
+      ? [currentMd, ...versions.map((v) => v.markdown)]
+      : [currentMd];
     resume.review_findings.forEach((f, i) => {
-      if (findQuotedInText(md, f.quoted_text) == null) set.add(i);
+      if (findQuotedInText(currentMd, f.quoted_text) != null) return; // active
+      const everPresent = allMarkdowns.some(
+        (md) => findQuotedInText(md, f.quoted_text) != null,
+      );
+      if (everPresent) obsolete.add(i);
+      else bogus.add(i);
     });
-    return set;
-  }, [resume.markdown, resume.review_findings]);
+    return { obsoleteFindings: obsolete, bogusFindings: bogus };
+  }, [resume.markdown, resume.review_findings, versions]);
 
   function startEdit() {
     setEditorMarkdown(resume.markdown ?? '');
@@ -232,6 +247,7 @@ export function ResumeDetailView({ resume }: { resume: ResumeDetail }) {
           activeIdx={activeFindingIdx}
           dismissed={dismissedSet}
           obsolete={obsoleteFindings}
+          bogus={bogusFindings}
           adoptingIdx={adoptingIdx}
           adoptError={adoptError}
           onActivate={activateFinding}
@@ -261,6 +277,8 @@ export function ResumeDetailView({ resume }: { resume: ResumeDetail }) {
               findings={resume.review_findings}
               activeIdx={activeFindingIdx}
               dismissed={dismissedSet}
+              obsolete={obsoleteFindings}
+              bogus={bogusFindings}
               adoptingIdx={adoptingIdx}
               adoptError={adoptError}
               onActivate={activateFinding}
@@ -650,7 +668,10 @@ function FailedBanner() {
 type FindingActions = {
   activeIdx: number | null;
   dismissed: ReadonlySet<number>;
+  /** quoted 在某个历史版本里出现过、当前 markdown 里已不在 — "已处理"语义。 */
   obsolete: ReadonlySet<number>;
+  /** quoted 任何版本都没有过 — Reviewer 凭空捏造 — "标记可能有误"语义。 */
+  bogus: ReadonlySet<number>;
   adoptingIdx: number | null;
   adoptError: string | null;
   onActivate: (idx: number | null) => void;
@@ -703,6 +724,7 @@ function ReviewFindingsList({
   activeIdx,
   dismissed,
   obsolete,
+  bogus,
   adoptingIdx,
   adoptError,
   onActivate,
@@ -715,12 +737,10 @@ function ReviewFindingsList({
   if (visible.length === 0) {
     return <p className="text-xs text-muted">所有标记已处理</p>;
   }
-  // 排序:未处理在前,obsolete(已处理)在后
-  visible.sort((a, b) => {
-    const ao = obsolete.has(a.i) ? 1 : 0;
-    const bo = obsolete.has(b.i) ? 1 : 0;
-    return ao - bo;
-  });
+  // 排序:active(未处理)在前,obsolete / bogus 在后(都灰化展示,
+  // 因为对它们俩"采纳"按钮都没意义)
+  const isStale = (i: number) => obsolete.has(i) || bogus.has(i);
+  visible.sort((a, b) => Number(isStale(a.i)) - Number(isStale(b.i)));
   return (
     <div className="space-y-2">
       {adoptError ? (
@@ -733,13 +753,15 @@ function ReviewFindingsList({
           const isActive = activeIdx === i;
           const isAdopting = adoptingIdx === i;
           const isObsolete = obsolete.has(i);
+          const isBogus = bogus.has(i);
+          const stale = isObsolete || isBogus;
           return (
             <li
               key={`${f.section}-${i}`}
               className={`group cursor-pointer rounded-md border px-3 py-2 transition-colors ${
                 SEVERITY_TONES[f.severity]
               } ${isActive ? 'ring-2 ring-[var(--color-accent)] ring-offset-1' : ''} ${
-                isObsolete ? 'opacity-55' : ''
+                stale ? 'opacity-55' : ''
               }`}
               onClick={() => onActivate(isActive ? null : i)}
               onKeyDown={(e) => {
@@ -767,6 +789,14 @@ function ReviewFindingsList({
                     已处理
                   </span>
                 ) : null}
+                {isBogus ? (
+                  <span
+                    className="rounded-full bg-[var(--color-warning-bg)] px-1.5 py-0.5 text-[10px] text-[var(--color-warning-fg)]"
+                    title="Reviewer 引用的原文片段从未在简历任何版本中出现 — 可能是 LLM 标记时凭空捏造,可忽略"
+                  >
+                    标记可能有误
+                  </span>
+                ) : null}
               </div>
               <p className="mt-1.5 text-sm leading-5 italic opacity-90">"{f.quoted_text}"</p>
               <p className="mt-1 text-sm leading-5">{f.explanation}</p>
@@ -776,7 +806,7 @@ function ReviewFindingsList({
                 onKeyDown={(e) => e.stopPropagation()}
                 role="presentation"
               >
-                {!isObsolete ? (
+                {!stale ? (
                   <Button
                     variant="outline"
                     size="sm"
@@ -787,7 +817,7 @@ function ReviewFindingsList({
                   </Button>
                 ) : null}
                 <Button variant="ghost" size="sm" onClick={() => onDismiss(i)}>
-                  {isObsolete ? '从列表移除' : '忽略'}
+                  {stale ? '从列表移除' : '忽略'}
                 </Button>
               </div>
             </li>

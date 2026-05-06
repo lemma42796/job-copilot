@@ -135,3 +135,27 @@ async def _search_chunks(
         .limit(k)
     )
     return list((await session.execute(stmt)).scalars().all())
+
+
+async def load_all_profile_chunks(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    profile_id: int,
+) -> list[ProfileChunk]:
+    """Load **all** chunks for a profile, ordered by id.
+
+    Reviewer 用这个拿完整事实库做核查 — `retrieve_for_match` 走 JD-anchored
+    Top-K 会漏掉 JD-不相关的 education / language skill chunks,触发 reviewer
+    假阳性 [M4](见 STATUS.md S21 子任务 3 后的修复)。Reviewer 是单文档全文
+    事实核查,不应走相关性召回。
+    """
+    async with sessionmaker() as session:
+        stmt = (
+            sa.select(ProfileChunk)
+            .where(
+                ProfileChunk.profile_id == profile_id,
+                ProfileChunk.embedding.is_not(None),
+            )
+            .order_by(ProfileChunk.id)
+        )
+        return list((await session.execute(stmt)).scalars().all())

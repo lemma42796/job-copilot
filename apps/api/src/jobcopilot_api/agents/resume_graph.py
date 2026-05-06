@@ -66,6 +66,7 @@ from jobcopilot_api.schemas.resumes import ResumePlan, ResumeReview
 from jobcopilot_api.services.retrieval_service import (
     RetrieveResult,
     build_match_query,
+    load_all_profile_chunks,
     retrieve_for_match,
 )
 
@@ -96,7 +97,8 @@ class ResumeGraphState(TypedDict, total=False):
     jd: Jd
     hint: str | None
     candidate: dict[str, Any]
-    chunks: list[ProfileChunk]
+    chunks: list[ProfileChunk]  # JD-anchored Top-K — 给 planner / drafter 聚焦
+    all_chunks: list[ProfileChunk]  # profile 完整 chunks — 给 reviewer 做全文事实核查
     retrieve_result: RetrieveResult
 
     # plan 节点产出
@@ -184,11 +186,17 @@ def build_resume_graph(
             raise ResumeGenerationFailedError(
                 "Profile chunks 召回为空,无法生成简历(profile 是否已 chunk?embedding 是否完整?)"
             )
+        # Reviewer 走全量 chunks(不是 JD-anchored Top-K)避免 [M4] 假阳性 —
+        # JD-不相关的 education / language skill chunks 在 Top-K 里召回不到。
+        all_chunks = await load_all_profile_chunks(
+            deps.sessionmaker, profile_id=pre_loaded.profile_id
+        )
         return {
             "jd": pre_loaded.jd,
             "hint": pre_loaded.hint,
             "candidate": pre_loaded.candidate,
             "chunks": retrieve.chunks,
+            "all_chunks": all_chunks,
             "retrieve_result": retrieve,
         }
 
@@ -240,9 +248,13 @@ def build_resume_graph(
         }
 
     async def review_node(state: ResumeGraphState) -> dict[str, Any]:
+        # 用 all_chunks(profile 全量)+ candidate(profile 表上 deterministic 字段)
+        # 做事实核查;chunks (JD-anchored Top-K) 漏的 education / language 等
+        # 类别会在这里补回来。
         result = await review_resume(
             draft_markdown=state["draft_markdown"],
-            chunks=state["chunks"],
+            chunks=state["all_chunks"],
+            candidate=state.get("candidate"),
             prompt=deps.reviewer_prompt,
             llm=deps.llm,
             user_id=state["user_id"],

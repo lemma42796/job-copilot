@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-05 — **M3 W8 子任务 1+2 完成 / 子任务 3 部分完成**:drafter token 流式(LLMClient.complete 加 on_token + DashScope stream + 前端实时预览)+ Monaco 编辑器 + 版本 diff(GET/POST `/resumes/{id}/versions` + monaco MarkdownEditor / DiffEditor + 版本历史卡 + 切换/对比)+ Reviewer 标记部分交互(可点 + 滚动定位 + 一键采纳 strip 文 + 忽略 + obsolete 灰化"已处理"标签 + stripQuoted 标点收尾)。**已知 bug**:点击 finding 行后正文里 `<mark>` 黄底高亮组件没出现在 DOM 里(matched 检测疑似有问题,4 档 fallback 都没命中 / 或 ctx 传递异常),DevTools 搜不到 `data-finding-highlight`。下一步:加 console.log trace 哪一档 fallback 走到了,或换实现策略。子任务 4(对抗集 + Judge)+ 子任务 5(W7 末 DoD 复测)未起。
+last_updated: 2026-05-06 — **M3 W8 子任务 1+2+3 完成 + 第二轮 dogfood 暴露反幻觉链路三层洞**:回归 5 条 resume(match #4/6/8/11)发现 (1) reviewer 假阳性 — 教育 / 语言 chunks 因 retrieve Top-K JD-anchored 召回不全被误判编造;(2) drafter 镜像 JD — 把 JD hard_skills 候选人不会的(C++/Java/OpenAI/Claude/LLaMA)抄进技能段;(3) **更深根因**:`_compose_hint` 文案在主动诱导 — 原版 "缺失关键技能(可在简历中补强相关项目/课程)" 等于命令 drafter 补漏。三层联合修:reviewer 走 profile 全量 chunks + candidate(prompt v1.0.3 加 M7 教育核查) + drafter prompt v1.0.5 加 D.3 严禁 JD-only 技能 + v1.0.6 加 hint 段防注入语 + `_compose_hint` 改反向警告语义("**严禁列入简历的技能**…")+ 前端区分 obsolete vs bogus("已处理" vs "标记可能有误")。验证:resume #21 (match #4 / JD #9) 一轮 0 finding 通过,JD-only 技能全消失,M1 跨 chunk 错配也顺带消(根因不在 prompt 而在 hint 引导污染)。子任务 4(对抗集 + Judge)+ 子任务 5 未起。
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -12,28 +12,29 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | 切片 | 内容 | 状态 |
 |------|------|------|
 | S19+S20 | W7 简历定制状态机 + 前端联动 + checkpointer serde 修 | ✅ [slices/S19-S20-w7-resume-graph.md] |
-| S21  | W8 反幻觉 + 可编辑(对抗集 + monaco + version diff + LLM-as-Judge + drafter token 流式)| 🔄 子任务 1+2 ✅ / 3 ⚠ 部分 / 4+5 ⏳ |
+| S21  | W8 反幻觉 + 可编辑(对抗集 + monaco + version diff + LLM-as-Judge + drafter token 流式)| 🔄 子任务 1+2+3 ✅ / 4+5 ⏳ |
 | S22  | W9 渲染与导出(LaTeX awesome-cv + PDF 导出)| ⏳ |
 | S23  | W10 内测 v0.5(招募 + 飞书反馈 + 性能收尾 + Release)| ⏳ |
 
 **S21 W8 子任务进度**:
 - ✅ **#1 drafter token 流式**:`LLMClient.complete` 加 `on_token` 回调 / DashScope `stream=True` + `include_usage` / DummyProvider 32 字符切片模拟 / `ResumeGraphDeps.on_drafter_token(phase, delta)` 闭包 / `service.run_generate_stream` 用 asyncio.Queue 桥接 graph 内部 token 与外部 SSE / Router 加 `drafter_token` event / 前端 `ResumeTrigger` 实时预览 buffer + phase 切换重置
 - ✅ **#2 Monaco 编辑器 + 版本 diff**:加 `GET/POST /v1/resumes/{id}/versions` + `ResumeVersionItem` schema(generated/edited/regenerated)+ `create_resume_version` 自增 version_number + UPDATE resumes.markdown / 前端 `@monaco-editor/react`(`ssr:false` 动态导入)+ MarkdownEditor + MarkdownDiff 包装 / ResumeDetail 加编辑模式 + 版本历史卡 + 历史预览 + DiffPanel(side-by-side)
-- 🔄 **#3 Reviewer 标记交互**:可点 finding 行 ✅ + 滚动到对应章节 ✅(H2 `id=section-{slug}` 7 个章节)+ 一键采纳(`stripQuoted` literal substring 删除 + 标点/空行/空 bullet 收尾,失败提示用户去编辑器手改)✅ + 忽略(UI 局部)✅ + obsolete 检测(quoted_text 已不在 markdown → "已处理"灰化)✅ — **黄底高亮 `<mark>` 渲染失败 ⚠**:4 档 fallback 已写(精确 / fuzzy regex / 头尾双锚 / head-only 16 字符)但 DevTools 搜不到 `data-finding-highlight`,推测 matched 检测或 ctx 传递有问题。下一步加 console.log 定位
-- ⏳ **#4 dataset + Judge + 对抗集**:`resume_generate` 25 条 dataset、对抗集 20 条、LLM-as-Judge(目标 fabrication recall ≥ 0.95)
+- ✅ **#3 Reviewer 标记交互**:可点 finding 行 + 滚动到对应章节(H2 `id=section-{slug}` 7 个章节)+ 一键采纳(`stripQuoted` literal substring 删除 + 标点/空行/空 bullet 收尾,失败提示用户去编辑器手改)+ 忽略(UI 局部)+ obsolete 检测 + 黄底 `<mark>` 高亮(匹配做在整段 md 拿全局偏移 / parseBlocks 给每个 block + bullet item 记 textOffset / 渲染时每个 block 取本段交集 / fallback 2 用 normalized substring 反向索引)
+- ✅ **#3.1 第二轮 dogfood 反幻觉链路修订(衍生)**:5 match 重生成回归暴露 (a) reviewer 走 retrieve Top-K JD-anchored 漏 education / language → [M4] 假阳性;(b) drafter 镜像 JD hard_skills(C++/Java/OpenAI/Claude/LLaMA);(c) `_compose_hint` 文案诱导补漏。三层联合修:**reviewer 全量** — `retrieval_service.load_all_profile_chunks` + `ResumeGraphState.all_chunks` + `review_resume(candidate=...)` + reviewer prompt **v1.0.3**(profile 完整 + Profile 字段 + 新 M7);**drafter 反镜像** — prompt **v1.0.5** 加 D.3 严禁 JD-only 技能 + 机械自检 + 心智模型,**v1.0.6** 加 hint 段防注入语;**hint 反向文案** — `_compose_hint` 从"补强相关项目/课程"改成"**严禁列入简历的技能**(候选人 chunks 没有,JD 要 — 列了就是编造)";**前端 obsolete 区分** — 用历史 versions.markdown 做"曾经出现过"判定,任何版本都没的标 bogus("标记可能有误"黄)而非 obsolete("已处理"绿)。**验证**:resume #21 (match #4 / JD #9) 一轮 0 finding,JD-only 技能全消失,M1 跨 chunk 错配同步消(根因在 hint 引导污染,不在 prompt 加约束)
+- ⏳ **#4 dataset + Judge + 对抗集**:`resume_generate` 25 条 dataset、对抗集 20 条、LLM-as-Judge(目标 fabrication recall ≥ 0.95)。**对抗集种子**(本次 dogfood 收集):#18 "具备高并发架构设计能力"(M4 模糊能力陈述 / 用 chunks 间接证据)、#19 C++/Java/OpenAI/Claude/LLaMA 抄 JD(已被 v1.0.5/v1.0.6 修但应作回归 case)、#20 "12w QPS 保障 AI 服务高可用"(M1 跨 chunk 业务 context 错配,已被 hint 文案修)、#20 reviewer 凭空捏 "AWS"(reviewer 模型 noise,留给 LLM-as-Judge 评测)
 - ⏳ **#5 W7 末 DoD 复测**:review 通过率 ≥ 50% / 无 high severity 幻觉
 
-**当前 working tree**:即将 commit S21 子任务 1+2 + 子任务 3 部分(高亮 bug 待续)后清空。
+**当前 working tree**:即将 commit 第二轮 dogfood 反幻觉三层修(reviewer 全量 chunks + drafter v1.0.5/v1.0.6 + hint 文案 + bogus UI 区分)后清空。
 
-**当前生效 prompt**(W7 后端骨架后):
+**当前生效 prompt**(W8 第二轮 dogfood 修订后):
 - `match_analyst` = v1.1.2(4 条规则简化版,消费 `or_group_id`)
-- `resume_planner` = **v1.0.0(W7 新增)**— 章节计划 + emphasis_skills + de_emphasize,response_schema = ResumePlan
-- `resume_drafter` = **v1.0.4(W7 新增)**— v1.0.3 基础上加 G(plan 联动)+ H(revise 修订规则);prompt 内分支:plan=null 时退化 v1.0.3;prev_findings=null 时按首次 draft
-- `resume_reviewer` = v1.0.2(M2/M4/M5 判定收窄 + granularity 字段说明)
+- `resume_planner` = v1.0.0(W7 新增)— 章节计划 + emphasis_skills + de_emphasize,response_schema = ResumePlan
+- `resume_drafter` = **v1.0.6(W8 第二轮 dogfood)**— v1.0.5 D.3 严禁 JD-only 技能 + 机械自检 + 心智模型("简历 = 真实能力 ∩ JD 关心方向"子集);v1.0.6 加 hint 段防注入语,配合 service `_compose_hint` 反向警告文案
+- `resume_reviewer` = **v1.0.3(W8 第二轮 dogfood)**— v1.0.2 基础上把"chunks 是召回子集"改为 profile 全量 + candidate Profile 字段(同等可信),加 M7 教育与 Profile 字段比对
 - `jd_parser` = v1.0.6(B.1 复合句式新规)
 - `profile_parser` = v1.0.1
 
-**当前闸门**(M2 末,W7 + W8 子任务 1+2+3 改动未跑闸):后端 `pytest -q` 321 passed + ruff / mypy 全过 + alembic 0012;前端 typecheck / biome / next build 全过。W7(S19/S20)+ W8(S21 子任务 1+2+3)**未跑测试**(用户手动验);dogfood 通过项:W7 端到端(revise 路径)、drafter token 流式(浏览器 SSE 帧 + 实时预览)、monaco 编辑保存创建 v2 + 版本切换 + diff;**未通过**:W8 子任务 3 黄底高亮渲染。所有数字推 W8 子任务 4 + W9 闸门一起跑。
+**当前闸门**(M2 末,W7 + W8 子任务 1+2+3 + 第二轮 dogfood 修订未跑闸):后端 `pytest -q` 321 passed + ruff / mypy 全过 + alembic 0012;前端 typecheck / biome / next build 全过。W7(S19/S20)+ W8(S21 子任务 1+2+3 + 第二轮修订)**未跑测试**(用户手动验);dogfood 通过项:W7 端到端、drafter token 流式、monaco 编辑/版本/diff、reviewer 标记可点+滚动+采纳+黄底高亮、第二轮 dogfood 5 个 match 重生成全 ready(resume #16/#17/#21 一轮 passed,#18/#19 暴露 drafter 真问题但已被 v1.0.5/v1.0.6 修)。所有数字推 W8 子任务 4 + W9 闸门一起跑。
 
 **M1 完成**:[slices/M1-summary.md](slices/M1-summary.md) — 整体经验 + 25 条永久约束 + DoD 检查 + 给 M2 的数据底座。各切片归档:`slices/{S0.5,S1..S11}-*.md`。
 
@@ -41,19 +42,9 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 > 2026-05-01 LLM Provider 由 DeepSeek V4 切换到阿里云百炼 Qwen3.6,见 ADR-0003。ADR-0001 复审条件 1(余额 < ¥1)触发时回切。
 
-## 下一刀:S21 子任务 3 收尾 + 子任务 4
+## 下一刀:S21 子任务 4 + 5
 
-子任务 1+2 已落地。子任务 3 高亮 bug **优先修复**,然后子任务 4 + W7 末 DoD 复测(子任务 5)一起跑。
-
-### 子任务 3 黄底高亮 bug 排查思路(下次开机直接接)
-
-`resume-detail.tsx` 内 `findQuotedInText` 4 档 fallback 都写好了,但 `<mark data-finding-highlight>` 不出现在 DOM。可能原因:
-1. `activeFindingIdx` click 后没正确传到 `activeQuoted`(state 链断在某处) — 加 `console.log("activate", idx, quoted)` 在 `activateFinding` 验证
-2. `ctx.remaining` 在某次 React strict mode 双渲染中先被吃光 — 检查 `ResumeRender` 内 `const ctx = ...` 是否每次重新创建(应该是)
-3. `parseBlocks` 把 reviewer 引用的章节段落和实际 block 对不齐(eg. block.text 有 leading `### ` 而 quoted 头没有) — 加 `console.log("block", block.kind, block.text.slice(0,30))` 看 H3 是否被解析为 paragraph 含 `### ` 前缀
-4. Inline 内 `findQuotedInText` 实际命中但 `<mark>` 因 React fragment 嵌套被并掉 / 父元素 z-index / overflow 盖住
-
-最快验证:`Inline` 函数顶上加 `console.log("inline", text.slice(0,20), ctx.quoted?.slice(0,20), ctx.remaining)`,点一次 finding 行,看终端打多少条、ctx.remaining 是否都是 0、哪个 block 被检查。
+子任务 1+2+3 已落地。下一步子任务 4(对抗集 + Judge)+ W7 末 DoD 复测(子任务 5)一起跑,做完整个 S21 收官。
 
 ### 子任务 4 dataset + Judge + 对抗集
 
@@ -90,6 +81,10 @@ LaTeX `awesome-cv` 中文化 + md → LaTeX 转换器 + `/v1/resumes/{id}/export
 - **[来自 S21 子任务 1] graph 内 LLM 流式事件向上送 = asyncio.Queue + 后台 task 模式**:graph.astream 只在 node 边界 yield 事件,LLM token 是节点内部异步事件,不能挤回 astream;service 层用 `asyncio.Queue` 作 sidechannel,`_runner` 后台 task 跑 graph + 把 node_completed/final 入队,outer 协程消费 queue + yield SSE。失败语义保留:`runner_error: BaseException | None` 捕获后在主协程末尾按原 W7 except 链路 mark_failed + raise(LLMUpstream 502 / SchemaInvalid / ResumeGenerationFailed)。客户端断开时 `runner_task.cancel()` + `contextlib.suppress(BaseException) await runner_task` 保证清理。
 - **[来自 S21 子任务 2] Resume 编辑 = 创建新 ResumeVersion + UPDATE resumes.markdown 同步**:用户编辑保存走 `POST /v1/resumes/{id}/versions {markdown, note?}`,service `create_resume_version` 在同事务里 `INSERT resume_versions (next_version, edit_type='edited')` + 把新 markdown 同步回 `resumes.markdown`(让 GET /resumes/{id} 默认拿活动版本,无需引入 `active_version_id` 列)。`resume.review_findings` **不**清空 — 那是 reviewer 跑的快照,跟用户手改无关;前端遇 quoted_text 已不在 markdown 中时给 finding 行打"已处理"灰化标签做 obsolete 提示。Resume status ∈ {ready, review_failed} 时才允许编辑(failed/generating 不允许)。
 - **[来自 S21 子任务 2] Frontend wire 类型在 OpenAPI 同步前手写 inline,标注 TODO**:新加的 ResumeVersionItem / ResumeVersionListResponse / ResumeVersionCreateInput 在 `apps/web/src/lib/api.ts` 里手写;用户跑 `pnpm gen:api`(连 running API 拉 openapi.json)后再切到 `components['schemas']['ResumeVersionItem']` 生成版,与 jds/profiles/matches 等保持一致。后续切片新加 endpoint 都先手写 + 注释,等批量 gen:api 时一次切。
+- **[来自 S21 子任务 3] LLM 复述类引用(reviewer.quoted_text 等)的高亮匹配做在原始整段 markdown 上,不分块后逐块匹配**:旧实现在每个 `block.text` 上跑 `findQuotedInText`,reviewer 引文经常跨 block(整章节 / 含 `## H2` 标题 / 多个 bullet),逐块匹配各档 fallback 全失败,DOM 里搜不到 `<mark>`。新模式:在整段 md 上一次拿全局 `[start, end)` 偏移,`parseBlocks` 给每个 block / bullet item 记 `textOffset`,渲染时让每个 block 取本段范围内的交集做高亮 — 跨段引用在每个相关 block 里各自高亮自己那一截。fuzzy regex 用 normalized substring(去空白 + 中英标点等价化 + 反向索引映回原始偏移)替代,边界更稳。同时去掉了 `ctx.remaining` 这种渲染期可变状态。后续如果给面试模拟做 reviewer-style 高亮(引用题目片段)应复用此模式。
+- **[来自 S21 第二轮 dogfood] Reviewer 是单文档全文事实核查,不走 JD-anchored Top-K 召回**:reviewer 看到的 chunks 必须是 profile **全量**(`load_all_profile_chunks`),不能复用 drafter 用的 `retrieve_for_match` Top-K 结果。原因:Top-K 按 JD 相关性排序,JD 偏 AI Agent → 教育 chunks / "language" 类 skill chunks(Python/Go)被挤出 Top-K → reviewer 视角"chunks 中无证据" → [M4] 假阳性。同时 reviewer **必须**也拿 `candidate` 字段(profile 表上 deterministic 数据,姓名 / 联系方式 / 求职意向 / educations,**永远不在 chunks 里**),否则教育 / 基本信息会被误判编造。Reviewer prompt v1.0.3 起把这两点纳入,加 M7 "教育 / 基本信息核查与 Profile 字段比对"。后续如果给其他事实核查类 agent(面试评分 / 投递评估)设计 chunks 接口,**默认全量 + deterministic 字段并发**,不要复用 drafter 的相关性召回。
+- **[来自 S21 第二轮 dogfood] hint 是 LLM 视角的权威指令位,文案必须反向警告而非"补强"诱导**:`_compose_hint(match)` 把 `gap_summary + missing_skills` 拼成 drafter prompt USER 段的 hint 文本。原版"缺失关键技能(可在简历中补强相关项目/课程)"等于明确命令 drafter 把候选人不会的技能写进简历(JD 镜像),导致 #19 列 C++/Java/OpenAI/Claude/LLaMA 全编造,#20 间接 leak "AI 服务高可用"。修订后必须用反向警告语义:gap_summary 加 "**只读差距分析**(不要写入简历;gap 信息归 match 模块负责告知用户)";missing_skills 改 "**严禁列入简历的技能**(候选人 chunks 没有,JD 要 — 列了就是编造)"。drafter prompt v1.0.6 USER 段 hint 块标题也同步从 "## 历史匹配差距提示(参考,辅助强化简历对 JD 的针对性)" 改 "## 差距警示段(**只读 — 严禁成为简历内容来源**)" + 防注入指引段。**心智模型**:简历 = 候选人真实能力 ∩ JD 关心方向;凸显交集,不补缺集。Gap 信息归 match 模块,不归简历。后续如果有别处往 prompt USER 段注入"差距 / 缺失 / 待补"类信息,文案默认走反向警告,而非鼓励补漏。
+- **[来自 S21 第二轮 dogfood] Reviewer findings UI 需要区分 obsolete vs bogus 两态**:reviewer 标记的 quoted_text 在当前 markdown 找不到时分两种语义,前端必须区分:(a) **obsolete** = 在某个**历史版本**里出现过,但当前已不在(用户编辑 / 采纳掉了)→ 标"已处理"绿色;(b) **bogus** = 任何版本都没出现过(reviewer 凭空捏造 quoted_text,本会话见过 reviewer 凭空写"AWS")→ 标"标记可能有误"黄色。`obsoleteFindings` 不能只看当前 `resume.markdown`,要把所有 `versions[].markdown` 拼成"曾经出现过"全集。两态显示行为合并(都灰化 + 隐藏"采纳"按钮 + dismiss 改"从列表移除"),但用户提示语必须不同 — bogus 显示"已处理"会误导用户以为自己处理过(用户没动过)。后续如果有别处展示 LLM 引用 + 当前文档的对照 UI,默认要 (a)/(b) 区分,不要简单"是否在当前文本"二分。
 
 ---
 
