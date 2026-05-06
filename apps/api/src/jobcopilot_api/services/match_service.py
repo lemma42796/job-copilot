@@ -38,7 +38,7 @@ from jobcopilot_api.services.retrieval_service import (
     DEFAULT_TOP_K,
     RetrieveResult,
     build_match_query,
-    retrieve_for_match,
+    hybrid_retrieve_for_match,
 )
 
 log = structlog.get_logger(__name__)
@@ -118,7 +118,7 @@ async def run_analyze(
     分层(永久约束 #7):
     1. 短 tx: 读 match 行 + 关联 jd(校验所有权,得到查询输入)
     2. 纯函数: build_match_query(jd)
-    3. 慢 IO(无事务): retrieve_for_match (embed + select own session)
+    3. 慢 IO(无事务): hybrid_retrieve_for_match (embed + 向量+lexical 双路 select own session)
     4. 慢 IO(无事务): analyze_match (LLM, 无 DB)
     5. 业务校验: 剔除 LLM 编造的 evidence_chunk_ids (AGENT_DESIGN §6.6 简化版,
        MVP 不重试)
@@ -135,7 +135,7 @@ async def run_analyze(
     query_text = build_match_query(jd)
 
     try:
-        retrieve = await retrieve_for_match(
+        retrieve = await hybrid_retrieve_for_match(
             sessionmaker,
             profile_id=match.profile_id,
             query_text=query_text,

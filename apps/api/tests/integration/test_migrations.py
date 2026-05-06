@@ -140,6 +140,27 @@ def test_migration_round_trip(pg_async_url: str) -> None:
             ).scalar_one_or_none()
             assert uq_exists == 1
 
+            # 0014: char_ngrams SQL function exists and content_tsv GENERATED
+            # expression goes through it (hybrid lexical 路径的命脉)。
+            char_ngrams_exists = conn.execute(
+                sa.text(
+                    "SELECT 1 FROM pg_proc WHERE proname='char_ngrams' "
+                    "AND pronamespace = 'public'::regnamespace"
+                )
+            ).scalar_one_or_none()
+            assert char_ngrams_exists == 1
+            content_tsv_def = conn.execute(
+                sa.text(
+                    "SELECT pg_get_expr(adbin, adrelid) AS expr "
+                    "FROM pg_attrdef ad "
+                    "JOIN pg_attribute a ON a.attrelid=ad.adrelid AND a.attnum=ad.adnum "
+                    "WHERE a.attrelid='profile_chunks'::regclass "
+                    "  AND a.attname='content_tsv'"
+                )
+            ).first()
+            assert content_tsv_def is not None
+            assert "char_ngrams" in content_tsv_def.expr.lower()
+
             # 0007: files (user_id, sha256) partial unique index, only
             # indexing rows where deleted_at IS NULL (so soft-delete
             # does not block re-uploading the same bytes).

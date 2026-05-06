@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-06 — **M3 W8 子任务 1+2+3 完成 + 第二轮 dogfood 暴露反幻觉链路三层洞**:回归 5 条 resume(match #4/6/8/11)发现 (1) reviewer 假阳性 — 教育 / 语言 chunks 因 retrieve Top-K JD-anchored 召回不全被误判编造;(2) drafter 镜像 JD — 把 JD hard_skills 候选人不会的(C++/Java/OpenAI/Claude/LLaMA)抄进技能段;(3) **更深根因**:`_compose_hint` 文案在主动诱导 — 原版 "缺失关键技能(可在简历中补强相关项目/课程)" 等于命令 drafter 补漏。三层联合修:reviewer 走 profile 全量 chunks + candidate(prompt v1.0.3 加 M7 教育核查) + drafter prompt v1.0.5 加 D.3 严禁 JD-only 技能 + v1.0.6 加 hint 段防注入语 + `_compose_hint` 改反向警告语义("**严禁列入简历的技能**…")+ 前端区分 obsolete vs bogus("已处理" vs "标记可能有误")。验证:resume #21 (match #4 / JD #9) 一轮 0 finding 通过,JD-only 技能全消失,M1 跨 chunk 错配也顺带消(根因不在 prompt 而在 hint 引导污染)。子任务 4 已重新规划为 A/B/C/D 四件(Hybrid Search + Prompt cache + Judge harness + 评测集,详见"下一刀"区)+ 子任务 5 未起。
+last_updated: 2026-05-06 — **M3 W8 子任务 4-A 完成(Hybrid Search + RRF)**:reviewer Top-K 漏召回的洞(W8 第二轮 dogfood 已临时用全量 chunks 兜住)根治。alembic 0014 引入 IMMUTABLE SQL 函数 `char_ngrams`(字符 bigram + ASCII unigram,跳过空格 bigram),`profile_chunks.content_tsv` GENERATED 表达式改走 `to_tsvector('simple', char_ngrams(content))`,自动重算 + 重建 GIN — chunk_service 入库逻辑零改。Python 端 `services/tokenize.py` 与 SQL 切法严格一致,`tests/integration/test_tokenize_consistency.py` 15 case 参数化双端守护;偏离 STATUS.md 原方案(zhparser / pg_jieba):n-gram 不依赖语言学规则、对未登录词鲁棒、纯字符串操作能放进 IMMUTABLE SQL 函数让 GENERATED 列自动重算,工程量最小。`hybrid_retrieve_for_match` 双路 `asyncio.gather` 并发 + RRF(`Σ 1/(60+rank_i)`)融合,`per_path_k = max(2k, 20)` 自动放大;`match_service` / `resume_graph` 切到 hybrid,reviewer 仍走 `load_all_profile_chunks` 全量(永久约束 #6)。评测脚本 `apps/api/scripts/retrieval_eval.py` + `evals/suites/retrieval/` 框架就位,20 条 ground-truth 推到 4-D 与 multi-persona synthetic 一起做。子任务 4-B/C/D + 5 未起。
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -12,7 +12,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | 切片 | 内容 | 状态 |
 |------|------|------|
 | S19+S20 | W7 简历定制状态机 + 前端联动 + checkpointer serde 修 | ✅ [slices/S19-S20-w7-resume-graph.md] |
-| S21  | W8 反幻觉 + 可编辑(对抗集 + monaco + version diff + LLM-as-Judge + drafter token 流式)| 🔄 子任务 1+2+3 ✅ / 4+5 ⏳ |
+| S21  | W8 反幻觉 + 可编辑(对抗集 + monaco + version diff + LLM-as-Judge + drafter token 流式)| 🔄 子任务 1+2+3 ✅ / 4-A ✅ / 4-B+C+D+5 ⏳ |
 | S22  | W9 渲染与导出(LaTeX awesome-cv + PDF 导出)| ⏳ |
 | S23  | W10 内测 v0.5(招募 + 飞书反馈 + 性能收尾 + Release)| ⏳ |
 
@@ -21,10 +21,15 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 - ✅ **#2 Monaco 编辑器 + 版本 diff**:加 `GET/POST /v1/resumes/{id}/versions` + `ResumeVersionItem` schema(generated/edited/regenerated)+ `create_resume_version` 自增 version_number + UPDATE resumes.markdown / 前端 `@monaco-editor/react`(`ssr:false` 动态导入)+ MarkdownEditor + MarkdownDiff 包装 / ResumeDetail 加编辑模式 + 版本历史卡 + 历史预览 + DiffPanel(side-by-side)
 - ✅ **#3 Reviewer 标记交互**:可点 finding 行 + 滚动到对应章节(H2 `id=section-{slug}` 7 个章节)+ 一键采纳(`stripQuoted` literal substring 删除 + 标点/空行/空 bullet 收尾,失败提示用户去编辑器手改)+ 忽略(UI 局部)+ obsolete 检测 + 黄底 `<mark>` 高亮(匹配做在整段 md 拿全局偏移 / parseBlocks 给每个 block + bullet item 记 textOffset / 渲染时每个 block 取本段交集 / fallback 2 用 normalized substring 反向索引)
 - ✅ **#3.1 第二轮 dogfood 反幻觉链路修订(衍生)**:5 match 重生成回归暴露 (a) reviewer 走 retrieve Top-K JD-anchored 漏 education / language → [M4] 假阳性;(b) drafter 镜像 JD hard_skills(C++/Java/OpenAI/Claude/LLaMA);(c) `_compose_hint` 文案诱导补漏。三层联合修:**reviewer 全量** — `retrieval_service.load_all_profile_chunks` + `ResumeGraphState.all_chunks` + `review_resume(candidate=...)` + reviewer prompt **v1.0.3**(profile 完整 + Profile 字段 + 新 M7);**drafter 反镜像** — prompt **v1.0.5** 加 D.3 严禁 JD-only 技能 + 机械自检 + 心智模型,**v1.0.6** 加 hint 段防注入语;**hint 反向文案** — `_compose_hint` 从"补强相关项目/课程"改成"**严禁列入简历的技能**(候选人 chunks 没有,JD 要 — 列了就是编造)";**前端 obsolete 区分** — 用历史 versions.markdown 做"曾经出现过"判定,任何版本都没的标 bogus("标记可能有误"黄)而非 obsolete("已处理"绿)。**验证**:resume #21 (match #4 / JD #9) 一轮 0 finding,JD-only 技能全消失,M1 跨 chunk 错配同步消(根因在 hint 引导污染,不在 prompt 加约束)
-- ⏳ **#4(扩) 评测扎根 + RAG/Judge 深度补强**:重新规划为 4 件(详见"下一刀"区)— A. Hybrid Search + RRF + 中文分词;B. Prompt cache layer;C. LLM-as-Judge harness + Cohen's kappa;D. 评测数据集(`match_analysis` 30 + `resume_generate` 25 + `resume_review_adversarial` 20 + `retrieval` 20)+ multi-persona synthetic fixture。**对抗集种子**(本次 dogfood 收集):#18 "具备高并发架构设计能力"(M4 模糊能力陈述 / 用 chunks 间接证据)、#19 C++/Java/OpenAI/Claude/LLaMA 抄 JD(已被 v1.0.5/v1.0.6 修但应作回归 case)、#20 "12w QPS 保障 AI 服务高可用"(M1 跨 chunk 业务 context 错配,已被 hint 文案修)、#20 reviewer 凭空捏 "AWS"(reviewer 模型 noise,留给 LLM-as-Judge 评测)
+- 🔄 **#4(扩) 评测扎根 + RAG/Judge 深度补强**:4 件子任务,A 已落地,B/C/D 待起
+  - ✅ **4-A Hybrid Search + RRF**:alembic 0014 SQL `char_ngrams` IMMUTABLE 函数(字符 bigram + ASCII unigram + 跨边界 bigram 保留);`profile_chunks.content_tsv` GENERATED 改走 ngram + GIN 重建(chunk_service 零改);Python `services/tokenize.py` 镜像 SQL,`test_tokenize_consistency.py` 15 case 参数化守护双端一致;`hybrid_retrieve_for_match` 双路 `asyncio.gather` 并发 + RRF 融合 + `per_path_k=max(2k,20)`;`match_service` / `resume_graph` 切 hybrid,reviewer 仍全量;评测脚本 `apps/api/scripts/retrieval_eval.py` + `evals/suites/retrieval/` 框架就位(20 条 ground-truth 推到 4-D)
+  - ⏳ **4-B Prompt cache layer**(下一步)
+  - ⏳ **4-C LLM-as-Judge harness + Cohen's kappa**
+  - ⏳ **4-D 评测数据集**(`retrieval` 20 顺带 + `match_analysis` 30 + `resume_generate` 25 + `resume_review_adversarial` 20)+ multi-persona synthetic fixture
+  - **对抗集种子**(W8 第二轮 dogfood 收集):#18 "具备高并发架构设计能力"(M4 模糊能力陈述 / 用 chunks 间接证据)、#19 C++/Java/OpenAI/Claude/LLaMA 抄 JD(已被 v1.0.5/v1.0.6 修但应作回归 case)、#20 "12w QPS 保障 AI 服务高可用"(M1 跨 chunk 业务 context 错配,已被 hint 文案修)、#20 reviewer 凭空捏 "AWS"(reviewer 模型 noise,留给 LLM-as-Judge 评测)
 - ⏳ **#5 W7 末 DoD 复测**:review 通过率 ≥ 50% / 无 high severity 幻觉
 
-**当前 working tree**:`f9e13b3` 第二轮 dogfood 三层修已 commit + push;本次改动 = STATUS.md 子任务 4 重新规划为 A/B/C/D(待 commit)。
+**当前 working tree**:`bde5330` STATUS.md 4 重新规划已 push;本次改动 = 子任务 4-A Hybrid Search 落地(alembic 0014 + tokenize + hybrid_retrieve + 切两个 caller + 测试 + 评测框架)+ STATUS.md 进度更新(待 commit)。
 
 **当前生效 prompt**(W8 第二轮 dogfood 修订后):
 - `match_analyst` = v1.1.2(4 条规则简化版,消费 `or_group_id`)
@@ -34,7 +39,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 - `jd_parser` = v1.0.6(B.1 复合句式新规)
 - `profile_parser` = v1.0.1
 
-**当前闸门**(M2 末,W7 + W8 子任务 1+2+3 + 第二轮 dogfood 修订未跑闸):后端 `pytest -q` 321 passed + ruff / mypy 全过 + alembic 0012;前端 typecheck / biome / next build 全过。W7(S19/S20)+ W8(S21 子任务 1+2+3 + 第二轮修订)**未跑测试**(用户手动验);dogfood 通过项:W7 端到端、drafter token 流式、monaco 编辑/版本/diff、reviewer 标记可点+滚动+采纳+黄底高亮、第二轮 dogfood 5 个 match 重生成全 ready(resume #16/#17/#21 一轮 passed,#18/#19 暴露 drafter 真问题但已被 v1.0.5/v1.0.6 修)。所有数字推 W8 子任务 4(扩) + W9 闸门一起跑。
+**当前闸门**(M2 末,W7 + W8 子任务 1+2+3 + 第二轮 dogfood 修订 + 4-A 未跑闸):后端 `pytest -q` 321 passed + ruff / mypy 全过 + alembic 0012;前端 typecheck / biome / next build 全过。W7(S19/S20)+ W8(S21 子任务 1+2+3 + 第二轮修订 + **4-A**)**未跑测试**(用户手动验);dogfood 通过项:W7 端到端、drafter token 流式、monaco 编辑/版本/diff、reviewer 标记可点+滚动+采纳+黄底高亮、第二轮 dogfood 5 个 match 重生成全 ready(resume #16/#17/#21 一轮 passed,#18/#19 暴露 drafter 真问题但已被 v1.0.5/v1.0.6 修)。**4-A 待验**:跑 alembic 0014 upgrade + 跑 `pytest -q tests/unit/test_tokenize.py tests/integration/test_tokenize_consistency.py tests/integration/test_retrieval_hybrid.py tests/integration/test_migrations.py`;dogfood 用第二轮那 5 条 match 重新跑 match analyze + 简历定制看 reviewer 误报率(JD-不相关 chunks 漏召回的洞应消)。所有数字推 W8 子任务 4(扩) + W9 闸门一起跑。
 
 **M1 完成**:[slices/M1-summary.md](slices/M1-summary.md) — 整体经验 + 25 条永久约束 + DoD 检查 + 给 M2 的数据底座。各切片归档:`slices/{S0.5,S1..S11}-*.md`。
 
@@ -48,9 +53,19 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 设计原则:每件都满足 ① 真解决项目问题 ② 自己实现非纯调库 ③ 面试值钱(hybrid search / prompt caching / LLM-as-Judge 都是 LLM 应用层面试必问题)。**不在范围**:supervisor agent 改造、context compaction、token budget tracker、checkpointer 真做 — 这些是"为简历加的装饰",已撤回。
 
-### 子任务 4-A:Hybrid Search + RRF(retrieval 深度补强)
+### 子任务 4-A:Hybrid Search + RRF(retrieval 深度补强)— ✅ 已完成
 
-Postgres `tsvector`(中文分词扩展 zhparser/pg_jieba)+ pgvector 双路召回,application 层 RRF 融合(`score(d) = Σ 1/(k+rank_i(d))`,k=60)。**自己实现非调 LangChain EnsembleRetriever** — 要看两路 score 分布做 ablation。顺手做 `evals/suites/retrieval/` 20 对 ground-truth,量化 Recall@10 / NDCG@10,跑 v0(纯向量)vs v1(hybrid + RRF)ablation 表。**触发的真问题**:W8 第二轮 dogfood reviewer Top-K 召回不全已暴露此洞,reviewer 已临时改全量 chunks 兜住,A 是根治。
+落地偏离原方案(zhparser / pg_jieba):用**字符 n-gram**(bigram + ASCII unigram)纯字符串切分代替中文分词器 — 不依赖语言学规则、对未登录词鲁棒、纯字符串操作能放进 IMMUTABLE SQL 函数让 GENERATED 列 Postgres 自动重算,工程量最小且 chunk_service 入库逻辑零改。
+
+实施清单:
+1. **alembic 0014**:`char_ngrams(text)` IMMUTABLE SQL 函数(lower → 替换非 [a-z0-9 中文] 为空格 → 提取 ASCII 单词作 unigram + 字符滑窗 bigram 跳过含空格 bigram);drop + 重加 `profile_chunks.content_tsv` GENERATED(STORED 不能 ALTER 表达式)+ 重建 GIN
+2. **`services/tokenize.py`** Python 端镜像 SQL 切法,`tokenize_ngram` / `to_tsquery_string`(query 用 OR `|` 拼,任一 token 命中即召回 + ts_rank 排序;AND 太严)
+3. **`services/retrieval_service.py`** 加 `hybrid_retrieve_for_match`:`asyncio.gather` 并发跑向量(HNSW)+ lexical(GIN tsvector @@ ts_rank);RRF `Σ 1/(60+rank_i)` 融合;`per_path_k=max(2k, 20)` 自动放大避免融合退化;`RetrieveResult` 加 `vector_chunks/lexical_chunks/lexical_query/rrf_scores` 4 个 ablation 字段
+4. **切 caller**:`match_service.run_phase_2_analyze` + `resume_graph.retrieve_node` 改 hybrid;**reviewer 仍走 `load_all_profile_chunks` 全量**(事实核查不该走相关性召回 — hybrid 也到不了 100% 召回)
+5. **测试**:unit `test_tokenize.py`(纯字符串 + edge cases);integration `test_tokenize_consistency.py`(15 case 参数化跑真 PG,守护 Python ↔ SQL 切法漂移立刻报错)+ `test_retrieval_hybrid.py`(中文短词 / 英文技术名词 / 纯标点降级 / RRF 去重 / 跨边界 bigram 命中);`test_migrations.py` 加 `char_ngrams` 函数存在 + `content_tsv` GENERATED 表达式断言
+6. **评测框架**(轻量):`apps/api/scripts/retrieval_eval.py`(读 jsonl + 算 Recall@10 / NDCG@10 + 输出 markdown)+ `evals/suites/retrieval/{README.md, dataset.example.jsonl}`;**20 条真 ground-truth 推到 4-D** 与 multi-persona synthetic 一起做(STATUS 4-D 本来就规划了 retrieval 20 条)
+
+**触发的真问题已根治**:W8 第二轮 dogfood reviewer Top-K 召回不全(教育 / 语言 chunks 漏召回)已被全量 chunks 临时兜住,A 之后即便 hybrid 召回不全,reviewer 全量路径仍是兜底。
 
 ### 子任务 4-B:Prompt cache layer(评测降本 + 工程深度)
 
@@ -106,6 +121,7 @@ LaTeX `awesome-cv` 中文化 + md → LaTeX 转换器 + `/v1/resumes/{id}/export
 - **[来自 S21 第二轮 dogfood] Reviewer 是单文档全文事实核查,不走 JD-anchored Top-K 召回**:reviewer 看到的 chunks 必须是 profile **全量**(`load_all_profile_chunks`),不能复用 drafter 用的 `retrieve_for_match` Top-K 结果。原因:Top-K 按 JD 相关性排序,JD 偏 AI Agent → 教育 chunks / "language" 类 skill chunks(Python/Go)被挤出 Top-K → reviewer 视角"chunks 中无证据" → [M4] 假阳性。同时 reviewer **必须**也拿 `candidate` 字段(profile 表上 deterministic 数据,姓名 / 联系方式 / 求职意向 / educations,**永远不在 chunks 里**),否则教育 / 基本信息会被误判编造。Reviewer prompt v1.0.3 起把这两点纳入,加 M7 "教育 / 基本信息核查与 Profile 字段比对"。后续如果给其他事实核查类 agent(面试评分 / 投递评估)设计 chunks 接口,**默认全量 + deterministic 字段并发**,不要复用 drafter 的相关性召回。
 - **[来自 S21 第二轮 dogfood] hint 是 LLM 视角的权威指令位,文案必须反向警告而非"补强"诱导**:`_compose_hint(match)` 把 `gap_summary + missing_skills` 拼成 drafter prompt USER 段的 hint 文本。原版"缺失关键技能(可在简历中补强相关项目/课程)"等于明确命令 drafter 把候选人不会的技能写进简历(JD 镜像),导致 #19 列 C++/Java/OpenAI/Claude/LLaMA 全编造,#20 间接 leak "AI 服务高可用"。修订后必须用反向警告语义:gap_summary 加 "**只读差距分析**(不要写入简历;gap 信息归 match 模块负责告知用户)";missing_skills 改 "**严禁列入简历的技能**(候选人 chunks 没有,JD 要 — 列了就是编造)"。drafter prompt v1.0.6 USER 段 hint 块标题也同步从 "## 历史匹配差距提示(参考,辅助强化简历对 JD 的针对性)" 改 "## 差距警示段(**只读 — 严禁成为简历内容来源**)" + 防注入指引段。**心智模型**:简历 = 候选人真实能力 ∩ JD 关心方向;凸显交集,不补缺集。Gap 信息归 match 模块,不归简历。后续如果有别处往 prompt USER 段注入"差距 / 缺失 / 待补"类信息,文案默认走反向警告,而非鼓励补漏。
 - **[来自 S21 第二轮 dogfood] Reviewer findings UI 需要区分 obsolete vs bogus 两态**:reviewer 标记的 quoted_text 在当前 markdown 找不到时分两种语义,前端必须区分:(a) **obsolete** = 在某个**历史版本**里出现过,但当前已不在(用户编辑 / 采纳掉了)→ 标"已处理"绿色;(b) **bogus** = 任何版本都没出现过(reviewer 凭空捏造 quoted_text,本会话见过 reviewer 凭空写"AWS")→ 标"标记可能有误"黄色。`obsoleteFindings` 不能只看当前 `resume.markdown`,要把所有 `versions[].markdown` 拼成"曾经出现过"全集。两态显示行为合并(都灰化 + 隐藏"采纳"按钮 + dismiss 改"从列表移除"),但用户提示语必须不同 — bogus 显示"已处理"会误导用户以为自己处理过(用户没动过)。后续如果有别处展示 LLM 引用 + 当前文档的对照 UI,默认要 (a)/(b) 区分,不要简单"是否在当前文本"二分。
+- **[来自 S21 子任务 4-A] 中文 lexical 检索走字符 n-gram,SQL 端与 Python 端镜像必须 100% 一致**:`profile_chunks.content_tsv` GENERATED 列源端是 `to_tsvector('simple', public.char_ngrams(content))`(alembic 0014),query 端 `services/tokenize.py::tokenize_ngram` / `to_tsquery_string` 必须切出与 SQL 完全相同的 token 集 — 漂移 = 文档侧 lexeme 与 query 端 ts_query 对不上,lexical 路召回率瞬间 0。`tests/integration/test_tokenize_consistency.py` 15 case 参数化跑真 PG 守护双端一致;改任一端必须同步改另一端。`zhparser` / `pg_jieba` / `jieba` 都没引入 — n-gram 思路不依赖语言学规则、对未登录词鲁棒、纯字符串操作能放进 IMMUTABLE SQL 函数让 GENERATED 列 Postgres 自动重算,工程量最小。Reviewer 仍走 `load_all_profile_chunks` 全量,与 hybrid 改进相关性召回不冲突 — hybrid 也到不了 100% 召回。后续如果给别的检索路径(JD chunks / 候选答案库等)做 lexical 索引,默认复用 `char_ngrams` SQL 函数 + `tokenize_ngram` Python 函数,不要重新发明分词器。
 
 ---
 

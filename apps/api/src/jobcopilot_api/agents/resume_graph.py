@@ -6,7 +6,7 @@
 
 ## 节点
 
-1. **retrieve**:`retrieve_for_match`(K=20)+ 加载 JD / candidate / hint
+1. **retrieve**:`hybrid_retrieve_for_match`(K=20,向量+lexical RRF 融合,S21 4-A)+ 加载 JD / candidate / hint
 2. **plan**:`plan_resume` → ResumePlan(章节计划 + emphasis_skills)
 3. **draft**:`draft_resume(plan=plan, prev_findings=None)` → markdown
 4. **review**:`review_resume(draft_markdown, chunks)` → ResumeReview
@@ -66,8 +66,8 @@ from jobcopilot_api.schemas.resumes import ResumePlan, ResumeReview
 from jobcopilot_api.services.retrieval_service import (
     RetrieveResult,
     build_match_query,
+    hybrid_retrieve_for_match,
     load_all_profile_chunks,
-    retrieve_for_match,
 )
 
 DEFAULT_MAX_REVISIONS = 1
@@ -173,7 +173,7 @@ def build_resume_graph(
         if pre_loaded is None:
             raise RuntimeError("pre_loaded resume context required for retrieve_node")
         query_text = build_match_query(pre_loaded.jd)
-        retrieve = await retrieve_for_match(
+        retrieve = await hybrid_retrieve_for_match(
             deps.sessionmaker,
             profile_id=pre_loaded.profile_id,
             query_text=query_text,
