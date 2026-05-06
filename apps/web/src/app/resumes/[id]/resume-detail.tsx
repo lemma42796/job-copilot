@@ -814,35 +814,18 @@ function ResumeRender({
   markdown: string;
   activeQuoted: string | null;
 }) {
-  const blocks = parseBlocks(markdown);
-  // 高亮策略:
-  //   1. 先 normalize 双方(空白 collapse + 中文标点全角→半角)再做 indexOf
-  //   2. 命中后用 normalize 前的原始字符串去定位 inline 段
-  //   3. 仍找不到 → 顶部 fallback 提示让用户知道这条 finding 是 LLM 标记
-  //      位置不精确(对 LLM-as-reviewer 是常态),但还是滚到了 section
-  // 预扫一遍判断是否能命中,不能命中 → 顶部出"未对上"提示。用与 Inline
-  // 同一套 findQuotedInText(精确 → fuzzy regex → 头尾双锚)避免精度不一致。
-  let matched = false;
-  if (activeQuoted) {
-    for (const b of blocks) {
-      const blockTexts = b.kind === 'bullets' ? b.items : [b.text];
-      for (const t of blockTexts) {
-        if (findQuotedInText(t, activeQuoted) != null) {
-          matched = true;
-          break;
-        }
-      }
-      if (matched) break;
-    }
-  }
-  const ctx: HighlightCtx = {
-    remaining: activeQuoted ? 1 : 0,
-    quoted: activeQuoted,
-  };
+  // 高亮策略:reviewer.quoted_text 是 LLM 复述的原文片段,通常逐字一致,偶
+  // 有空白 / 中英标点等价差异,且经常**跨 block**(整章节 / 含 ## 标题 / 含
+  // **bold** 标记 / 多个 bullet)。匹配做在**整段 markdown** 上,拿到全局
+  // [start, end) 偏移,再让每个 block 取自己范围内的交集做高亮 —— 跨段引用
+  // 在每个相关 block 里都会高亮自己那一截。
+  const md = markdown.replace(/\r\n/g, '\n');
+  const blocks = parseBlocks(md);
+  const highlightSpan = activeQuoted ? findQuotedInText(md, activeQuoted) : null;
   return (
     <Card>
       <CardContent className="py-8">
-        {activeQuoted && !matched ? (
+        {activeQuoted && !highlightSpan ? (
           <div className="mb-4 rounded-md border border-[var(--color-warning-fg)]/30 bg-[var(--color-warning-bg)] px-3 py-2 text-xs text-[var(--color-warning-fg)]">
             ⚠ Reviewer 引用的"{activeQuoted.slice(0, 30)}
             {activeQuoted.length > 30 ? '…' : ''}"
@@ -857,7 +840,7 @@ function ResumeRender({
             <Block
               key={`${b.kind}-${i}-${b.kind === 'bullets' ? b.items.length : b.text.slice(0, 12)}`}
               block={b}
-              ctx={ctx}
+              highlightSpan={highlightSpan}
             />
           ))}
         </article>
@@ -866,51 +849,49 @@ function ResumeRender({
   );
 }
 
-type HighlightCtx = {
-  remaining: number;
-  quoted: string | null;
-};
+/** 把 markdown 全局区间 `span` 投到本段 [textOffset, textOffset+textLen) 上。
+ *  无交集返回 null;有交集返回本段的本地区间 [localStart, localEnd)。*/
+function localOverlap(
+  textOffset: number,
+  textLen: number,
+  span: { start: number; end: number } | null,
+): { start: number; end: number } | null {
+  if (!span) return null;
+  const blockEnd = textOffset + textLen;
+  const overlapStart = Math.max(span.start, textOffset);
+  const overlapEnd = Math.min(span.end, blockEnd);
+  if (overlapStart >= overlapEnd) return null;
+  return { start: overlapStart - textOffset, end: overlapEnd - textOffset };
+}
 
 /** 在 `text` 中找 `quoted` 的位置,返回原始 text 上的 [start, end);找不到
  *  返回 null。
  *
  *  策略:
  *  1. 精确 substring
- *  2. fallback 1 — fuzzy 正则吃掉 `\s+` 与中英标点等价(LLM reviewer 偶尔
- *     会把全角逗号写成半角或反之),返回 *原始 text* 上的实际匹配范围以
- *     便 slice 正确
- *  3. fallback 2 — 取 quoted 头 6 个非空白字符 + 末 6 个非空白字符做"锚定式"
- *     模糊匹配。reviewer 偶尔在中段加 / 删一两个字,锚 + 锚之间的 ≤ 3× 长度
- *     的内容包成一段命中
+ *  2. normalized substring — 双方去空白 + 中英标点等价化(逗号 / 句号 /
+ *     分号 / 冒号 / 叹号 / 问号 / 引号 / 括号),用反向索引把命中区间映回
+ *     原始 text 偏移。LLM reviewer 偶尔把全角逗号写半角 / 多写一格空白,
+ *     在这一步被吃掉。
+ *  3. anchor (头 6 + 尾 6 字符,quoted 完整出现在同一段) — 中段被 reviewer
+ *     改写时仍能锚定首尾
+ *  4. head-only — quoted 头 16 字符精确或 normalized 命中,只标这一截
  *  全部失败返回 null。*/
 function findQuotedInText(
   text: string,
   quoted: string,
 ): { start: number; end: number } | null {
+  if (!quoted) return null;
+
   // 1. exact
   const exact = text.indexOf(quoted);
   if (exact >= 0) return { start: exact, end: exact + quoted.length };
 
-  // 2. fuzzy regex — \s+ + 中文/英文标点等价
-  try {
-    const escaped = quoted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const flexed = escaped
-      .replace(/[,,]/g, '[,,]')
-      .replace(/[.。]/g, '[.。]')
-      .replace(/[;;]/g, '[;;]')
-      .replace(/[::]/g, '[::]')
-      .replace(/[!!]/g, '[!!]')
-      .replace(/[??]/g, '[??]')
-      .replace(/\s+/g, '\\s+');
-    const m = text.match(new RegExp(flexed));
-    if (m && m.index != null) {
-      return { start: m.index, end: m.index + m[0].length };
-    }
-  } catch {
-    // 过长 quoted 编出过大正则时,RegExp ctor 抛 — 安静吞掉走 fallback 3
-  }
+  // 2. normalized substring(空白 + 标点等价)
+  const normMatch = findNormalizedSubstring(text, quoted);
+  if (normMatch) return normMatch;
 
-  // 3. anchor (head + tail) — 双锚 6 字符,quoted 完整出现在同一 block 时
+  // 3. anchor (head + tail)
   const stripped = quoted.replace(/\s+/g, '');
   if (stripped.length >= 12) {
     const head = stripped.slice(0, 6);
@@ -924,69 +905,119 @@ function findQuotedInText(
     }
   }
 
-  // 4. head-only — 跨 block 的 quote(reviewer 引整章节)退化:本 block 含
-  //    quote 起点片段就算命中,只标这一截。让用户至少看到正确的起点位置;
-  //    完整内容仍在 finding 卡片里展示。
-  //    用**原始** quoted 头 16 字符(保留空格 / 标点),指 reviewer 引文与
-  //    正文那一段开头逐字一致 — 这是 LLM reviewer 最稳的匹配点。
+  // 4. head-only — quoted 头 16 字符精确或 normalized 命中,只标这一截
   if (quoted.length >= 8) {
     const headLen = Math.min(16, quoted.length);
     const head = quoted.slice(0, headLen);
     const headIdx = text.indexOf(head);
-    if (headIdx >= 0) {
-      return { start: headIdx, end: headIdx + headLen };
-    }
-    // fuzzy 头 — 空白 / 标点等价
-    try {
-      const escaped = head.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const flexed = escaped
-        .replace(/[,,]/g, '[,,]')
-        .replace(/[.。]/g, '[.。]')
-        .replace(/[;;]/g, '[;;]')
-        .replace(/[::]/g, '[::]')
-        .replace(/\s+/g, '\\s+');
-      const m = text.match(new RegExp(flexed));
-      if (m && m.index != null) {
-        return { start: m.index, end: m.index + m[0].length };
-      }
-    } catch {
-      // 忽略
-    }
+    if (headIdx >= 0) return { start: headIdx, end: headIdx + headLen };
+    const headNorm = findNormalizedSubstring(text, head);
+    if (headNorm) return headNorm;
   }
 
   return null;
 }
 
+const PUNCT_NORM: Record<string, string> = {
+  '，': ',', // ,
+  '。': '.', // 。
+  '；': ';', // ;
+  '：': ':', // :
+  '！': '!', // !
+  '？': '?', // ?
+  '「': '"', // 「
+  '」': '"', // 」
+  '『': '"', // 『
+  '』': '"', // 』
+  '“': '"', // 左双引号
+  '”': '"', // 右双引号
+  '‘': "'", // 左单引号
+  '’': "'", // 右单引号
+  '（': '(', // (
+  '）': ')', // )
+};
+
+/** 去空白 + 标点等价化,同时记录每个保留字符在原始字符串里的位置,
+ *  便于命中后把 [idx, idx+q.norm.length) 反向映射回原始 text 偏移。*/
+function buildNormalized(s: string): { norm: string; origIdx: number[] } {
+  const norm: string[] = [];
+  const origIdx: number[] = [];
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i] ?? '';
+    if (/\s/.test(c)) continue;
+    norm.push(PUNCT_NORM[c] ?? c);
+    origIdx.push(i);
+  }
+  return { norm: norm.join(''), origIdx };
+}
+
+function findNormalizedSubstring(
+  text: string,
+  quoted: string,
+): { start: number; end: number } | null {
+  const t = buildNormalized(text);
+  const q = buildNormalized(quoted);
+  if (q.norm.length < 4) return null;
+  const idx = t.norm.indexOf(q.norm);
+  if (idx < 0) return null;
+  const startOrig = t.origIdx[idx] ?? 0;
+  const endOrigInclusive = t.origIdx[idx + q.norm.length - 1] ?? startOrig;
+  return { start: startOrig, end: endOrigInclusive + 1 };
+}
+
 type Block =
-  | { kind: 'h2'; text: string }
-  | { kind: 'bullets'; items: string[] }
-  | { kind: 'p'; text: string };
+  | { kind: 'h2'; text: string; textOffset: number }
+  | { kind: 'bullets'; items: BulletItem[] }
+  | { kind: 'p'; text: string; textOffset: number };
+
+type BulletItem = { text: string; textOffset: number };
 
 function parseBlocks(md: string): Block[] {
   // tsconfig 启用 noUncheckedIndexedAccess,`arr[i]` 返 `string | undefined`,
   // 这里循环里频繁 index,先固定 `line: string` 局部变量再判断,避免到处 ?? '' 兜底。
-  const lines = md.replace(/\r\n/g, '\n').split('\n');
+  // 每个 block 的 textOffset 记 block.text 在 md 里的起始偏移(已扣掉
+  // `## ` / `- ` 前缀),用于把 markdown-level 高亮区间映射到本段。调用方
+  // 应已把 \r\n → \n 规范化过,这里不再重复。
+  const lines = md.split('\n');
+  const lineOffsets: number[] = [];
+  {
+    let off = 0;
+    for (const l of lines) {
+      lineOffsets.push(off);
+      off += l.length + 1; // +1 for the trailing \n that split removed
+    }
+  }
   const blocks: Block[] = [];
   let i = 0;
   while (i < lines.length) {
     const line = lines[i] ?? '';
+    const lineOff = lineOffsets[i] ?? 0;
     if (line.startsWith('## ')) {
-      blocks.push({ kind: 'h2', text: line.slice(3).trim() });
+      blocks.push({
+        kind: 'h2',
+        text: line.slice(3).trim(),
+        textOffset: lineOff + 3,
+      });
       i++;
       continue;
     }
     if (line.startsWith('# ')) {
       // Drafter 不应输出 H1;若出现按 H2 渲染兜底(避免漏章)
-      blocks.push({ kind: 'h2', text: line.slice(2).trim() });
+      blocks.push({
+        kind: 'h2',
+        text: line.slice(2).trim(),
+        textOffset: lineOff + 2,
+      });
       i++;
       continue;
     }
     if (line.startsWith('- ') || line.startsWith('* ')) {
-      const items: string[] = [];
+      const items: BulletItem[] = [];
       while (i < lines.length) {
         const cur = lines[i] ?? '';
         if (!(cur.startsWith('- ') || cur.startsWith('* '))) break;
-        items.push(cur.slice(2).trim());
+        const curOff = lineOffsets[i] ?? 0;
+        items.push({ text: cur.slice(2).trim(), textOffset: curOff + 2 });
         i++;
       }
       blocks.push({ kind: 'bullets', items });
@@ -998,6 +1029,7 @@ function parseBlocks(md: string): Block[] {
     }
     // 段落 — 收紧到下一个空行 / heading / bullet
     const buf: string[] = [];
+    const startOff = lineOff;
     while (i < lines.length) {
       const l = lines[i] ?? '';
       if (
@@ -1012,56 +1044,69 @@ function parseBlocks(md: string): Block[] {
       buf.push(l);
       i++;
     }
-    blocks.push({ kind: 'p', text: buf.join('\n') });
+    blocks.push({ kind: 'p', text: buf.join('\n'), textOffset: startOff });
   }
   return blocks;
 }
 
-function Block({ block, ctx }: { block: Block; ctx: HighlightCtx }) {
+function Block({
+  block,
+  highlightSpan,
+}: {
+  block: Block;
+  highlightSpan: { start: number; end: number } | null;
+}) {
   if (block.kind === 'h2') {
     const slug = sectionSlugOf(block.text);
+    const local = localOverlap(block.textOffset, block.text.length, highlightSpan);
     return (
       <h2
         id={slug ? `section-${slug}` : undefined}
         className="mt-2 scroll-mt-20 border-b border-border pb-2 text-lg font-semibold tracking-tight first:mt-0"
       >
-        {block.text}
+        <Inline text={block.text} highlight={local} />
       </h2>
     );
   }
   if (block.kind === 'bullets') {
     return (
       <ul className="list-disc space-y-1 pl-5 text-sm leading-6">
-        {block.items.map((it, i) => (
-          <li key={`${i}-${it.slice(0, 16)}`}>
-            <Inline text={it} ctx={ctx} />
-          </li>
-        ))}
+        {block.items.map((it, i) => {
+          const local = localOverlap(it.textOffset, it.text.length, highlightSpan);
+          return (
+            <li key={`${i}-${it.text.slice(0, 16)}`}>
+              <Inline text={it.text} highlight={local} />
+            </li>
+          );
+        })}
       </ul>
     );
   }
+  const local = localOverlap(block.textOffset, block.text.length, highlightSpan);
   return (
     <p className="text-sm leading-6 whitespace-pre-wrap">
-      <Inline text={block.text} ctx={ctx} />
+      <Inline text={block.text} highlight={local} />
     </p>
   );
 }
 
-function Inline({ text, ctx }: { text: string; ctx: HighlightCtx }) {
-  // 高亮 reviewer 标记的 quoted_text:简化策略 — 仅当片段完整出现在本行内
-  // (跨段落的暂不支持)且高亮余额 > 0 时,把首处出现拆出 <mark>。`<mark>`
-  // 内仍要支持 **bold** 内联,故先按 quoted 拆,再各段按 bold 拆。
-  const quoted = ctx.quoted;
-  if (quoted && ctx.remaining > 0) {
-    const span = findQuotedInText(text, quoted);
-    if (span != null) {
-      ctx.remaining -= 1;
-      // Tailwind 4 preflight 会把 <mark> 默认黄底重置掉,直接 inline style 强
-      // 制上色;同时 box-shadow 顶下避免靠 ring(`ring-*` 也可能被 utility
+function Inline({
+  text,
+  highlight,
+}: {
+  text: string;
+  highlight: { start: number; end: number } | null;
+}) {
+  if (highlight) {
+    const start = Math.max(0, highlight.start);
+    const end = Math.min(text.length, highlight.end);
+    if (start < end) {
+      // Tailwind 4 preflight 会把 <mark> 默认黄底重置掉,直接 inline style
+      // 强制上色;同时 box-shadow 顶下避免靠 ring(`ring-*` 也可能被 utility
       // 顺序压住)。颜色:macOS Highlights 的暖黄 + 浅边线。
       return (
         <>
-          <BoldInline text={text.slice(0, span.start)} />
+          <BoldInline text={text.slice(0, start)} />
           <mark
             data-finding-highlight
             style={{
@@ -1072,9 +1117,9 @@ function Inline({ text, ctx }: { text: string; ctx: HighlightCtx }) {
               boxShadow: '0 0 0 1px rgba(202, 138, 4, 0.55)',
             }}
           >
-            <BoldInline text={text.slice(span.start, span.end)} />
+            <BoldInline text={text.slice(start, end)} />
           </mark>
-          <BoldInline text={text.slice(span.end)} />
+          <BoldInline text={text.slice(end)} />
         </>
       );
     }
