@@ -1,3 +1,0 @@
-{"id":"ev-001-true-skill","claim":"候选人具备 Go + Kafka 高并发后端经验","chunk":"工作经历 - 某互联网公司 后端工程师:主导订单系统重构,Go + Postgres + Redis,峰值 8w QPS;引入 Kafka 异步解耦订单状态","human_supports":true,"notes":"直接命中 Go / Kafka / 高并发,Judge 应判 supports=true"}
-{"id":"ev-002-false-mismatch","claim":"候选人具备 Rust 自研中间件经验","chunk":"教育:北京大学 计算机本科 2014-2018,主修课程 数据结构 / 操作系统 / 计算机网络","human_supports":false,"notes":"chunk 是教育段,与 Rust 无任何关系,Judge 应判 supports=false"}
-{"id":"ev-003-true-paraphrase","claim":"候选人有大规模分布式存储设计经验","chunk":"项目:亿级用户行为日志存储系统,Cassandra + 自研索引层,日均写入 50TB","human_supports":true,"notes":"同义改写测试 — 'distributed storage' 与 'Cassandra + 50TB 写入' 是合法支持关系"}

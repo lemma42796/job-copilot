@@ -1,25 +1,40 @@
 # JobCopilot
 
-> **AI 求职助手**——给 1-3 年跳槽开发者的 LLM 应用工程化代表作。
+> **给程序员的 AI 面试陪练。把你写过的笔记变成你的面试题。**
 >
 > 一行 `docker compose up` 启动,本地优先,数据不出机器。
 
 [![Status](https://img.shields.io/badge/status-WIP%20M0-orange)](docs/STATUS.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Provider](https://img.shields.io/badge/LLM-Qwen3.6%20%40%20DashScope-1f7ae0)](docs/adr/0003-switch-to-qwen.md)
+[![LLM](https://img.shields.io/badge/LLM-Qwen3.6%20%40%20DashScope-1f7ae0)]()
 
 ---
 
 ## 这是什么
 
-JobCopilot 把"找一份更好工作"拆成可被 LLM Agent 处理的一连串任务:
+写技术笔记的程序员都遇到过同款情境:**学过、写过的东西,面试一问就讲不清楚**。
 
-1. **结构化 JD**:粘贴文本 / 上传 PDF / 截图,系统抽 9 个关键字段
-2. **建立个人能力档案**:简历→结构化档案→多粒度向量索引
-3. **匹配分析**:对一份 JD 给评分、命中技能、能力差距、改进建议(每条结论可追溯到简历原文)
-4. **定制简历**:基于档案 RAG + Reviewer 反幻觉,生成针对该 JD 的 markdown / PDF 简历
-5. **面试模拟**:多轮技术面试 + 追问 + 评分 + reference answer
-6. **投递追踪**:看板管理状态,沉淀面试邀约率(产品 NSM)
+JobCopilot 把你的笔记当成私人题库,模拟真面试的强度反问你 — 直到把盲区暴露出来。
+
+**核心闭环**:
+
+```
+1. 笔记入库 — 上传本地 markdown 文件夹 / 在 Web 编辑器里写
+2. 选知识点 — 沿用你笔记的文件夹层级,例如 "Java / 并发 / synchronized"
+3. 系统自动出题 — 3-10 道开放式 + 八股,基于你笔记的 chunks(反幻觉:每题标 source_chunk_ids)
+4. 你不能看笔记 — 纯靠记忆答
+5. LLM Judge 三层评分 — 覆盖度 / 忠实度 / 深度
+6. 弱点入队 — 知识点维度跟踪,下次按 spaced repetition 重点考你
+```
+
+**跟现有工具的区别**
+
+| 工具 | 在做什么 | JobCopilot 的差异 |
+|------|---------|-------------------|
+| Anki | 手动写卡片 | LLM 从你笔记自动出题 |
+| 面试鸭 / 牛客 | 公共题库 | 私人题库(你写过的就是你的题) |
+| ChatGPT 出题 | 无记忆 / 无评分 / 无校准 | 持续记忆 + 三层评分 + 弱点跟踪 |
+| Notion AI | 被动检索(你问它才答) | 主动 active recall(它反问你) |
 
 ---
 
@@ -27,44 +42,44 @@ JobCopilot 把"找一份更好工作"拆成可被 LLM Agent 处理的一连串�
 
 ```
 ┌────────────────────────────────────────────────────┐
-│  apps/web (Next.js 15)  对话/看板/简历编辑/面试    │
+│  apps/web (Next.js 15)  macOS 风格                 │
+│  树形导航 / Markdown 编辑器 / 答题 / 弱点 dashboard │
 └────────────────────┬───────────────────────────────┘
                      │ REST + SSE
 ┌────────────────────┴───────────────────────────────┐
 │  apps/api (FastAPI)                                 │
-│  ├─ services/  业务编排                             │
-│  ├─ agents/    JDParser / ProfileParser / Match    │
-│  │             ResumeDrafter+Reviewer / Interviewer │
-│  ├─ llm/       Tier 路由 + Prompt Cache + 重试     │
-│  └─ infra/     pgvector / pgmq / Langfuse trace    │
+│  ├─ services/  notes / quiz / answer / sessions     │
+│  ├─ agents/    QuizGenerator / AnswerJudge          │
+│  ├─ llm/       Provider 抽象 + Prompt Cache         │
+│  └─ infra/     pgvector / hybrid search / kappa     │
 └────────────────────┬───────────────────────────────┘
                      │
               ┌──────┴──────┐
-              │  Postgres 16 │  业务表 + 向量 + 队列 + 文件 bytea
+              │  Postgres 16 │  notes / chunks / questions /
+              │              │  sessions / answers / knowledge_gap
               └──────┬──────┘
                      │
               ┌──────┴───────────┐
-              │ 阿里云百炼 API    │ Qwen3.6-Flash / Plus / VL
+              │ 阿里云百炼 API    │ Qwen3.6-Flash(thinking on)
               └──────────────────┘
 ```
 
-详见 [`docs/2-TECH_DESIGN.md`](docs/2-TECH_DESIGN.md)。
-
 ---
 
-## 核心特性(工程化亮点)
+## 工程亮点
 
-| 主题 | 实现要点 | 详细 |
+| 主题 | 实现要点 | 文档 |
 |------|---------|------|
-| **Agent 编排** | LangGraph 状态机(简历定制 + 面试模拟),其余场景单 Agent | `5-AGENT_DESIGN` |
-| **RAG** | pgvector + tsvector + RRF + Reranker(`gte-rerank-v2`)| `5-AGENT_DESIGN §6` |
-| **反幻觉** | ResumeReviewer 对抗集 fabrication recall ≥ 0.95 | `6-EVAL_PLAN §8` |
-| **评测体系** | 200 条评测集 + LLM-as-Judge + GitHub Actions 不退化 | `6-EVAL_PLAN` |
-| **成本工程** | Tier 路由 + Prompt Cache(命中率 ≥ 70% 简历定制场景)| `2-TECH_DESIGN §4.3` |
-| **多模态** | `qwen3.6-flash` 原生多模态,直接 OCR + 抽取一步完成 | `5-AGENT_DESIGN §3` |
-| **MCP Server** | 5 工具 + 1 资源,接 Claude Desktop | `7-ROADMAP M5` |
-| **可观测** | Langfuse 自托管 trace,每次响应附 `X-Langfuse-Trace-Id` | `2-TECH_DESIGN §6` |
-| **本地优先** | docker compose 一键起 + BYOK,数据不出机器 | `1-PRD §5.3` |
+| **笔记 RAG** | hybrid search(pgvector + tsvector + RRF)+ 中文 char n-gram | `docs/2-TECH_DESIGN` / `docs/5-AGENT_DESIGN` |
+| **反幻觉出题** | 每题强制标 `source_chunk_ids`;chunks 里不存在的术语禁止入题 | `docs/5-AGENT_DESIGN` |
+| **LLM-as-Judge 三层** | Coverage(覆盖度)+ Fidelity(反幻觉)+ Depth(深度),先证据后打分 | `docs/6-EVAL_PLAN` |
+| **Cohen's kappa 守门** | Judge 自身可靠性指标(po-pe)/(1-pe),≥ 0.7 才上 | `docs/6-EVAL_PLAN` |
+| **知识点弱点跟踪** | 用 `folder_path / heading_path` 作 ground truth tag,无需 LLM 抽 | `docs/3-DATA_MODEL` |
+| **Prompt Cache** | sha256(prompt+schema) → cache_key,自动失效,异常降级 miss | `docs/2-TECH_DESIGN` |
+| **Spaced Repetition** | 简化版 SM-2 思路 + 一行 SQL 排期 | `docs/3-DATA_MODEL` |
+| **多轮 Agent(M3)** | LangGraph 状态机:出题 → 答 → 追问 → 评分 | `docs/5-AGENT_DESIGN` |
+| **可观测** | 每次响应附 trace_id,LLM 调用全量入库 `llm_calls` | `docs/2-TECH_DESIGN` |
+| **本地优先** | docker compose 一键起 + BYOK,数据不出机器 | `docs/1-PRD` |
 
 ---
 
@@ -82,7 +97,7 @@ git clone https://github.com/lemma42796/job-copilot.git
 cd job-copilot
 cp .env.example .env
 # 编辑 .env,填入:
-#   DASHSCOPE_API_KEY=sk-xxx
+#   JOBCOPILOT_DASHSCOPE_API_KEY=sk-xxx
 docker compose up -d
 ```
 
@@ -94,108 +109,78 @@ API:  http://localhost:8000/v1/health
 Docs: http://localhost:8000/v1/docs   # 开发模式
 ```
 
-### 启用可观测面板(可选)
-
-```bash
-docker compose --profile observability up -d
-# Langfuse: http://localhost:3030
-```
-
-### 切回 DeepSeek(¥15 阿里云额度耗尽后)
-
-替换 `.env` 中:
-
-```
-LLM_PROVIDER=deepseek
-DEEPSEEK_API_KEY=sk-xxx
-```
-
-(实现见 ADR-0001 的回切方案)
-
 ---
 
 ## 文档导航
 
-| 文档 | 内容 |
+| 文件 | 内容 |
 |------|------|
 | [`docs/STATUS.md`](docs/STATUS.md) | 当前进度的单一可信源 — **新会话从这里开始** |
-| [`docs/1-PRD.md`](docs/1-PRD.md) | 产品需求:用户画像、用户故事、NFR、NSM |
-| [`docs/2-TECH_DESIGN.md`](docs/2-TECH_DESIGN.md) | 技术设计:架构、模块分层、LLM 调用层、可观测 |
-| [`docs/3-DATA_MODEL.md`](docs/3-DATA_MODEL.md) | 数据模型:全部表 schema、索引、生命周期 |
-| [`docs/4-API_SPEC.md`](docs/4-API_SPEC.md) | API 规范:REST + SSE 端点、错误码、限流、流式协议 |
-| [`docs/5-AGENT_DESIGN.md`](docs/5-AGENT_DESIGN.md) | Agent 设计:每个 Agent 的输入/输出/Prompt/失败处理 |
-| [`docs/6-EVAL_PLAN.md`](docs/6-EVAL_PLAN.md) | 评测计划:8 个 suite、200 条样本、CI 回归、Bad Case 闭环 |
-| [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md) | 16 周里程碑:M0-M6 节奏与退出标准 |
-| [`docs/8-ENGINEERING.md`](docs/8-ENGINEERING.md) | 工程规范:仓库结构、Python+TS 规范、Git 工作流、CI/CD |
-| [`docs/adr/`](docs/adr) | 关键架构决策(0001:DeepSeek (Superseded);0002:Postgres 一把梭;0003:Qwen3.6) |
+| [`docs/1-PRD.md`](docs/1-PRD.md) | 产品需求:目标用户、核心闭环、NSM |
+| [`docs/2-TECH_DESIGN.md`](docs/2-TECH_DESIGN.md) | 技术设计:架构、模块分层、LLM 调用层 |
+| [`docs/3-DATA_MODEL.md`](docs/3-DATA_MODEL.md) | 数据模型:notes / chunks / questions / sessions / answers / knowledge_gap |
+| [`docs/4-API_SPEC.md`](docs/4-API_SPEC.md) | API 规范:REST + SSE 端点、错误码、流式协议 |
+| [`docs/5-AGENT_DESIGN.md`](docs/5-AGENT_DESIGN.md) | Agent 设计:QuizGenerator / AnswerJudge 输入输出 + Prompt 全文 |
+| [`docs/6-EVAL_PLAN.md`](docs/6-EVAL_PLAN.md) | 评测计划:answer_judge / quiz_generate suite + Cohen's kappa |
+| [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md) | 4 个里程碑:M0-M3 节奏与退出标准 |
+| [`docs/8-ENGINEERING.md`](docs/8-ENGINEERING.md) | 工程规范:仓库结构、Python+TS 规范、CI/CD |
+| [`docs/9-LESSONS.md`](docs/9-LESSONS.md) | 工程踩坑录(8 大类 ~30 条) |
 
 ---
 
 ## JD 考点对照表
 
-把"招聘 JD 里高频出现的能力点"映射到本项目的具体实现。求职复盘用。
+把 LLM 应用工程师 JD 高频能力点映射到本项目实现。
 
 | 招聘考点 | 本项目证据 | 文档 / 代码定位 |
 |---------|-----------|----------------|
-| LLM 应用工程化端到端落地 | 8 份设计文档 + ADR + 16 周路线图 | `docs/` 全部 |
-| Agent 编排(LangGraph / 状态机) | 简历定制 5 节点 + 面试模拟 7 节点 | `5-AGENT_DESIGN §7,§8` / `apps/api/agents/` |
-| RAG(混合检索 / 重排)| Hybrid: pgvector + tsvector + RRF + Reranker | `5-AGENT_DESIGN §6` / `apps/api/services/match_service.py` |
-| Prompt 工程 + 版本管理 | Prompt 即代码,Jinja2 模板 + `prompt_versions` 表 | `5-AGENT_DESIGN §10` / `apps/api/agents/prompts/` |
-| 反幻觉 / 引用追溯 | ResumeReviewer + 引用 chunk_id 强约束 | `5-AGENT_DESIGN §1.2,§7.3.4` |
-| 结构化输出 / Function Calling | Pydantic Schema + JSON Schema 强约束 | `4-API_SPEC §1.2` / `5-AGENT_DESIGN §1.4` |
-| 评测体系 / Eval-as-Code | 200 条评测集 + promptfoo + CI 不退化 | `6-EVAL_PLAN` / `evals/` |
-| LLM-as-Judge | qwen3.6-plus 思考开,Cohen's kappa ≥ 0.7 季度复审 | `6-EVAL_PLAN §6.3,§13.2` |
-| 多模态 LLM(OCR / 视觉)| `qwen3.6-flash` 原生多模态,一步出结构化 JD | `5-AGENT_DESIGN §3.4` |
-| 流式协议 / 长任务 SSE | EventSource + node_started/token/result/done 事件协议 | `4-API_SPEC §5` |
-| Prompt Cache 成本工程 | Tier 路由 + 前缀稳定布局,缓存命中 ≥ 70% | `2-TECH_DESIGN §4.3` |
-| 多 Provider 抽象层 | LLMProvider Protocol + Qwen / DeepSeek 双实现 | `2-TECH_DESIGN §4` / `apps/api/llm/` |
-| 可观测性(Tracing)| Langfuse 自托管,每请求 X-Langfuse-Trace-Id | `2-TECH_DESIGN §6` |
-| 向量数据库工程实践 | pgvector HNSW + 归一化 + 多粒度 chunk | `3-DATA_MODEL §3.8` / `adr/0002` |
-| 任务队列 / 异步编排 | pgmq(无 Redis,见 ADR-0002)| `3-DATA_MODEL §3.19` |
-| MCP 协议接入 | MCP Server,5 tool + 1 resource,接 Claude Desktop | `7-ROADMAP M5` / `mcp/` |
-| 浏览器扩展开发 | Chrome MV3,内容脚本 + 智能粘贴 | `7-ROADMAP M5` / `extension/` |
-| FastAPI / SQLAlchemy 2.x async | 全异步 IO,asyncio.to_thread 隔离 CPU 重活 | `8-ENGINEERING §2.4` |
-| Next.js 15 App Router + RSC | 服务端组件 + Tanstack Query | `apps/web/` |
-| TypeScript 类型一致性 | OpenAPI → datamodel-code-generator → TS 类型,CI 卡口 | `8-ENGINEERING §5.2` |
-| Docker Compose 一键部署 | postgres + api + web + caddy + (langfuse) | `docker-compose.yml` |
-| ADR 决策文化 | 三份 ADR(provider / 存储 / 切换),含 supersede 关系 | `docs/adr/` |
-| 工程纪律(CI / Lint / 覆盖率)| 8 个 GH workflow,8 项强制门槛 | `8-ENGINEERING §5,§6` |
+| LLM 应用工程化端到端落地 | 8 份设计文档 + ROADMAP + 工程踩坑录 | `docs/` |
+| Agent 编排(LangGraph 状态机) | 多轮追问面试编排(M3) | `docs/5-AGENT_DESIGN` |
+| RAG 工程(混合检索 + 重排) | hybrid search:pgvector + tsvector + RRF + char n-gram | `docs/5-AGENT_DESIGN` / `apps/api/services/retrieval_service.py` |
+| Prompt 工程 + 版本管理 | Prompt 即代码,Jinja2 模板 + `prompt_versions` 表 | `apps/api/agents/prompts/` |
+| 反幻觉 / 引用追溯 | quiz_generator 强约束 source_chunk_ids;answer_judge fidelity 层 | `docs/5-AGENT_DESIGN` |
+| LLM-as-Judge | 三层评分(Coverage / Fidelity / Depth)+ 先证据后打分 | `docs/6-EVAL_PLAN` |
+| 评测有效性 | Cohen's kappa 守门 ≥ 0.7;Judge 不引入 prompt 没要求的维度 | `docs/6-EVAL_PLAN` |
+| 评测踩坑案例 | 公开记录评测翻车 + 重做经验 | `docs/9-LESSONS.md` |
+| 结构化输出 | Pydantic Schema + JSON Schema retry | `docs/4-API_SPEC` / `apps/api/llm/` |
+| 流式 SSE | EventSource + node 级事件协议 | `docs/4-API_SPEC` |
+| Prompt Cache 成本工程 | sha256 cache key + 异常降级 + Postgres 存储 | `docs/2-TECH_DESIGN` |
+| 多 Provider 抽象 | LLMProvider Protocol + qwen / dummy 双实现 | `apps/api/llm/` |
+| 向量数据库工程 | pgvector HNSW + 归一化 + 多粒度 chunk | `docs/3-DATA_MODEL` |
+| FastAPI / SQLAlchemy 2.x async | 全异步 IO | `docs/8-ENGINEERING` |
+| Next.js 15 + RSC + TS | 服务端组件 + Tanstack Query | `apps/web/` |
+| Docker Compose 一键部署 | postgres + api + web 三件套 | `docker-compose.yml` |
+| 工程纪律(CI / Lint) | ruff / mypy / typecheck / build 强制门槛 | `docs/8-ENGINEERING` |
 
 ---
 
 ## 当前状态
 
-详见 [`docs/STATUS.md`](docs/STATUS.md)。摘要:
+**阶段**:M0 重构准备 — 文档已就位,代码改造待启动
 
-- **阶段**:文档撰写完成,准备进入编码阶段(M0 仓库骨架)
-- **LLM Provider**:阿里云百炼 Qwen3.6([ADR-0003](docs/adr/0003-switch-to-qwen.md));DeepSeek 备选
-- **下一步**:`git init` + 按 [7-ROADMAP M0](docs/7-ROADMAP.md#3-m0--仓库骨架week-1) 搭骨架
+详见 [`docs/STATUS.md`](docs/STATUS.md)。
 
 ---
 
 ## 路线图
 
-16 周(M0-M6)。详见 [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md)。
+4 个里程碑(详见 [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md)):
 
 ```
-W1   M0  仓库骨架
-W2-3 M1  数据入口贯通(JD / 个人档案 / chunks)
-W4-6 M2  匹配分析 + 评测体系
-W7-10 M3 简历定制 GA + v0.5 内测
-W11-13 M4 面试模拟 + 投递追踪
-W14-15 M5 浏览器扩展 + MCP Server
-W16   M6 v1.0 公开发布
+M0  仓库改造 + 文档重写
+M1  笔记入库(.md 上传 + Web 编辑器)+ chunker + 树形导航
+M2  出题 + 答题 + LLM Judge 三层评分
+M3  弱点跟踪 + SR 队列 + 多轮追问 Agent + 语雀同步
 ```
 
 ---
 
-## 贡献与反馈
+## 项目演进
 
-当前(M0 之前)处于单人作者主导阶段,主要欢迎:
+JobCopilot v1 是 "AI 改简历 + 投递追踪",做到 W8 时通过真实评测发现产品价值假设站不住(JD 同质化 + retrieval 错放在不增长的 profile)。
+v2 重新定位为 "AI 面试陪练 + 笔记即题库",同一目标用户(1-3 年跳槽开发者),换更强痛点(面试焦虑)+ 更对的工程能力归宿(笔记 RAG / 知识点弱点跟踪 / 开放式答题 LLM Judge)。
 
-- **试用反馈**:M3 v0.5(预计 W10)开放招募内测,关注本仓库
-- **Bug / Idea**:GitHub Issues
-- **PR**:小修改(typo / 文档更清晰)直接 PR;功能改动请先开 Discussion 对齐
+工程踩坑沉淀在 [`docs/9-LESSONS.md`](docs/9-LESSONS.md),v1 → v2 的反思在 [`docs/STATUS.md`](docs/STATUS.md) 末尾。
 
 ---
 
@@ -203,12 +188,9 @@ W16   M6 v1.0 公开发布
 
 [MIT](LICENSE)
 
-第三方组件许可证清单见 `docs/THIRD_PARTY_NOTICES.md`(M6 完整版)。
-
 ---
 
 ## 致谢
 
 - 阿里云百炼:Qwen3.6 与百炼平台
-- DeepSeek:V4 系列(备选 Provider,见 [ADR-0001](docs/adr/0001-only-deepseek.md))
-- LangGraph / FastAPI / Next.js / pgvector / Langfuse / promptfoo / awesome-cv 等开源社区
+- LangGraph / FastAPI / Next.js / pgvector / SQLAlchemy / Tailwind 等开源社区

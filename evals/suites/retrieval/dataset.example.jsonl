@@ -1,2 +1,0 @@
-{"id":"case-01-zh-short","category":"中文短词","profile_id":1,"query_text":"后端开发","expected_chunk_ids":[12,15,18],"notes":"JD-style 极短 query,主要测 lexical bigram 命中'后端';v0 纯向量在真 embedder 下 query 太短嵌入信号弱,理论上 v1 应大幅领先。"}
-{"id":"case-02-en-tech-term","category":"英文技术名词","profile_id":1,"query_text":"PostgreSQL pgvector","expected_chunk_ids":[13,19],"notes":"ASCII 单词作为 unigram 整体匹配,lexical 路必精准命中含 'PostgreSQL' 的 chunks。"}
