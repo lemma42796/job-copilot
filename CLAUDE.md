@@ -36,6 +36,7 @@
 
 ## 风格规矩
 
+- **必须用大白话回答**:解释概念 / 设计 / 问题排查时,先把核心结论用一两句日常语言讲清楚,再展开技术细节。避免上来就堆术语 / schema / 缩写。读者每多走一步抽象就少一个能跟上的人。
 - **中文为主**,代码示例与 schema 标识符为英文
 - **不估工时**(不写小时数 / 天数 / Week 汇总)
 - **不加 Co-Author**(git commit / PR body 一律省略 `Co-Authored-By: Claude` 与 "Generated with Claude Code" 注脚)

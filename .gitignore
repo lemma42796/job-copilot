@@ -18,6 +18,9 @@ Thumbs.db
 
 # Local dogfood fixtures (test resumes / JDs)
 fixtures/
+# 但 evals 下的 synthetic personas 必须入库(评测用,化名 + 化邮箱)
+!evals/fixtures/
+!evals/fixtures/**
 
 # Python
 __pycache__/
