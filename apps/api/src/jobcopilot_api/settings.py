@@ -36,5 +36,9 @@ class Settings(BaseSettings):
     dashscope_api_key: str = Field(default="")
     llm_provider: str = Field(default="dashscope")
 
+    # S21 4-B: response cache 默认开 — dogfood/评测命中率 70%+,直接降一个数量级
+    # 成本。需要每次都走真 LLM(prompt 调试 / token 流式)时设 false 关掉。
+    llm_cache_enabled: bool = Field(default=True)
+
 
 settings = Settings()

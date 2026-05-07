@@ -2,9 +2,18 @@
 
 S21 子任务 4-A(Hybrid Search)第 1 步。
 
-原 0005 把 `content_tsv` 建成 `to_tsvector('simple', content)`,但 `simple`
-配置不分词,中文连续文本被当成单一长 lexeme,GIN 索引 `idx_pc_content_tsv`
-对中文 lexical 检索基本失效(英文按空格切勉强能用)。
+原 0005 把 `content_tsv` 建成 `to_tsvector('simple', content)`,但 Postgres
+默认 parser(`pg_catalog.default`)不识别中文词边界,整段连续 CJK 字符被
+当作单一 `word` token(注:`simple` 是 dictionary 配置,管 stemming /
+stop words,**不**管 token 切分;切是 parser 干的)。GIN 索引存到的就是
+整段 lexeme,搜任何子串都 0 命中(英文 ASCII 段照常按空格切成 `asciiword`
+还能用)。
+
+实测(PG 16):
+    SELECT to_tsvector('simple', '后端开发工程师 Python Kafka');
+    -> 'kafka':3 'python':2 '后端开发工程师':1
+    SELECT '后端开发工程师'::tsvector @@ to_tsquery('simple', '后端');
+    -> false
 
 本迁移引入字符 n-gram 切分(bigram + ASCII unigram),源端在 SQL 函数里
 做,与 Python 端 `tokenize_ngram` 输出严格一致(测试 `tests/integration/

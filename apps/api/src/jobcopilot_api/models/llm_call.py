@@ -36,6 +36,9 @@ class LlmCall(Base, IDMixin):
     success: Mapped[bool] = mapped_column(Boolean, nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(50))
 
+    # True iff served from llm_response_cache (added by alembic 0015).
+    cached: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+
     trace_id: Mapped[str | None] = mapped_column(String(100))
     related_entity: Mapped[str | None] = mapped_column(String(50))
     related_id: Mapped[int | None] = mapped_column(BigInteger)

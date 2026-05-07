@@ -176,7 +176,7 @@ async def run_generate_stream(
 
     # Phase 2.2 — queue + drafter token callback,交错 SSE 事件
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    SENTINEL_DONE: dict[str, Any] = {"__sentinel__": "done"}
+    sentinel_done: dict[str, Any] = {"__sentinel__": "done"}
 
     async def _on_drafter_token(phase: str, delta: str) -> None:
         await queue.put({"event": "drafter_token", "phase": phase, "delta": delta})
@@ -232,16 +232,16 @@ async def run_generate_stream(
                     )
                 elif kind == "final":
                     final_state = payload
-        except Exception as exc:  # noqa: BLE001 — restored via re-raise below
+        except Exception as exc:
             runner_error = exc
         finally:
-            queue.put_nowait(SENTINEL_DONE)
+            queue.put_nowait(sentinel_done)
 
     runner_task = asyncio.create_task(_runner())
     try:
         while True:
             ev = await queue.get()
-            if ev is SENTINEL_DONE:
+            if ev is sentinel_done:
                 break
             yield ev
     except BaseException:

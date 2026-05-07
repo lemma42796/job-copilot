@@ -35,6 +35,8 @@ from tenacity import (
 )
 from tenacity.wait import wait_base
 
+from jobcopilot_api.llm.cache_key import compute_cache_key
+from jobcopilot_api.llm.cache_store import CacheStore, NoopCacheStore
 from jobcopilot_api.llm.errors import (
     LLMAuthError,
     LLMSchemaInvalidError,
@@ -115,6 +117,10 @@ class LLMResult:
     related_entity: str | None
     related_id: int | None
     prompt_version_id: int | None
+    cached: bool = False
+    """True iff this result came from `CacheStore` (no upstream call). On
+    cache hit `cost_cny`/`tokens_*` are zeroed — analytics that want
+    "would-have-cost" should reconstruct from `llm_response_cache.response`."""
 
 
 @dataclass
@@ -277,11 +283,15 @@ class BaseLLMClient:
         *,
         provider: Provider,
         logger: CallLogger | None = None,
+        cache_store: CacheStore | None = None,
         retry_attempts: int = DEFAULT_RETRY_ATTEMPTS,
         retry_wait: wait_base = DEFAULT_RETRY_WAIT,
     ) -> None:
         self._provider = provider
         self._logger: CallLogger = logger if logger is not None else NoopCallLogger()
+        self._cache_store: CacheStore = (
+            cache_store if cache_store is not None else NoopCacheStore()
+        )
         self._retry_attempts = retry_attempts
         self._retry_wait = retry_wait
 
@@ -312,51 +322,79 @@ class BaseLLMClient:
         response_format: dict[str, Any] | None = (
             {"type": "json_object"} if response_schema is not None else None
         )
+        first_user = (
+            _augment_with_schema(user, response_schema) if response_schema is not None else user
+        )
+        cache_key = compute_cache_key(
+            model=cfg.model,
+            system=system,
+            user=first_user,
+            response_format=response_format,
+            thinking_mode=cfg.thinking_mode,
+            prompt_version_id=prompt_version_id,
+        )
 
         success = False
         error_code: str | None = None
+        cached = False
         try:
-            first_user = (
-                _augment_with_schema(user, response_schema) if response_schema is not None else user
+            # Streaming (on_token != None) skips cache: 半截缓存复杂度不值,
+            # 且 drafter 必须真流出来给前端预览;ADR-0004 复用此契约。
+            cached_resp = (
+                await self._cache_store.get(cache_key) if on_token is None else None
             )
-            resp = await self._call_with_retry(
-                ProviderRequest(
-                    model=cfg.model,
-                    system=system,
-                    user=first_user,
-                    response_format=response_format,
-                    thinking_mode=cfg.thinking_mode,
-                    timeout_s=effective_timeout,
-                    max_tokens=effective_max_tokens,
-                ),
-                on_token=on_token,
-            )
-            self._absorb(acc, resp)
-
-            if response_schema is not None:
-                try:
-                    acc.parsed = _parse(acc.content, response_schema)
-                except (json.JSONDecodeError, PydanticValidationError):
-                    acc.schema_attempt = 1
-                    retry_resp = await self._call_with_retry(
-                        ProviderRequest(
-                            model=cfg.model,
-                            system=system,
-                            user=_retry_prompt(user, response_schema, acc.content),
-                            response_format=response_format,
-                            thinking_mode=cfg.thinking_mode,
-                            timeout_s=effective_timeout,
-                            max_tokens=effective_max_tokens,
-                        ),
-                        on_token=on_token,
-                    )
-                    self._absorb(acc, retry_resp)
+            if cached_resp is not None:
+                acc.content = cached_resp.content
+                if response_schema is not None:
                     try:
                         acc.parsed = _parse(acc.content, response_schema)
-                    except (json.JSONDecodeError, PydanticValidationError) as e2:
-                        raise LLMSchemaInvalidError(
-                            f"schema validation failed after 1 retry: {e2}"
-                        ) from e2
+                        cached = True
+                    except (json.JSONDecodeError, PydanticValidationError):
+                        # Cached payload 与当前 schema 不兼容(写入后 schema
+                        # 被加了 required 字段等)→ 降级为 miss,继续走 LLM。
+                        acc = _CallAccumulator()
+                else:
+                    cached = True
+
+            if not cached:
+                resp = await self._call_with_retry(
+                    ProviderRequest(
+                        model=cfg.model,
+                        system=system,
+                        user=first_user,
+                        response_format=response_format,
+                        thinking_mode=cfg.thinking_mode,
+                        timeout_s=effective_timeout,
+                        max_tokens=effective_max_tokens,
+                    ),
+                    on_token=on_token,
+                )
+                self._absorb(acc, resp)
+
+                if response_schema is not None:
+                    try:
+                        acc.parsed = _parse(acc.content, response_schema)
+                    except (json.JSONDecodeError, PydanticValidationError):
+                        acc.schema_attempt = 1
+                        retry_resp = await self._call_with_retry(
+                            ProviderRequest(
+                                model=cfg.model,
+                                system=system,
+                                user=_retry_prompt(user, response_schema, acc.content),
+                                response_format=response_format,
+                                thinking_mode=cfg.thinking_mode,
+                                timeout_s=effective_timeout,
+                                max_tokens=effective_max_tokens,
+                            ),
+                            on_token=on_token,
+                        )
+                        self._absorb(acc, retry_resp)
+                        try:
+                            acc.parsed = _parse(acc.content, response_schema)
+                        except (json.JSONDecodeError, PydanticValidationError) as e2:
+                            raise LLMSchemaInvalidError(
+                                f"schema validation failed after 1 retry: {e2}"
+                            ) from e2
 
             success = True
         except (
@@ -379,6 +417,7 @@ class BaseLLMClient:
                 prompt_version_id=prompt_version_id,
                 success=False,
                 error_code=error_code,
+                cached=False,
             )
             await self._logger.log(result)
             raise
@@ -396,8 +435,32 @@ class BaseLLMClient:
             prompt_version_id=prompt_version_id,
             success=success,
             error_code=None,
+            cached=cached,
         )
         await self._logger.log(result)
+
+        # Cache miss + 成功 → 写入。streaming 不写(on_token 路径下 cached 永
+        # 远是 False,但语义上 streaming 不该污染 cache)。
+        if not cached and on_token is None:
+            await self._cache_store.put(
+                cache_key=cache_key,
+                model=cfg.model,
+                feature=feature,
+                prompt_version_id=prompt_version_id,
+                request={
+                    "system": system,
+                    "user": first_user,
+                    "response_format": response_format,
+                    "thinking_mode": cfg.thinking_mode,
+                },
+                response={
+                    "content": acc.content,
+                    "tokens_in": acc.tokens_in,
+                    "tokens_out": acc.tokens_out,
+                    "cached_tokens": acc.cached_tokens,
+                },
+            )
+
         return result
 
     # ---------- internals ----------
@@ -441,6 +504,7 @@ class BaseLLMClient:
         prompt_version_id: int | None,
         success: bool,
         error_code: str | None,
+        cached: bool,
     ) -> LLMResult:
         latency_ms = int((monotonic() - started) * 1000)
         cost = cost_for(
@@ -468,4 +532,5 @@ class BaseLLMClient:
             related_entity=related_entity,
             related_id=related_id,
             prompt_version_id=prompt_version_id,
+            cached=cached,
         )

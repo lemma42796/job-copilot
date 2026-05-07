@@ -58,6 +58,7 @@ def _to_record(result: LLMResult) -> LlmCall:
         latency_ms=result.latency_ms,
         success=result.success,
         error_code=result.error_code,
+        cached=result.cached,
         trace_id=result.trace_id,
         related_entity=result.related_entity,
         related_id=result.related_id,

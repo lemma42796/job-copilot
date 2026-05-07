@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-06 — **M3 W8 子任务 4-A 完成(Hybrid Search + RRF)**:reviewer Top-K 漏召回的洞(W8 第二轮 dogfood 已临时用全量 chunks 兜住)根治。alembic 0014 引入 IMMUTABLE SQL 函数 `char_ngrams`(字符 bigram + ASCII unigram,跳过空格 bigram),`profile_chunks.content_tsv` GENERATED 表达式改走 `to_tsvector('simple', char_ngrams(content))`,自动重算 + 重建 GIN — chunk_service 入库逻辑零改。Python 端 `services/tokenize.py` 与 SQL 切法严格一致,`tests/integration/test_tokenize_consistency.py` 15 case 参数化双端守护;偏离 STATUS.md 原方案(zhparser / pg_jieba):n-gram 不依赖语言学规则、对未登录词鲁棒、纯字符串操作能放进 IMMUTABLE SQL 函数让 GENERATED 列自动重算,工程量最小。`hybrid_retrieve_for_match` 双路 `asyncio.gather` 并发 + RRF(`Σ 1/(60+rank_i)`)融合,`per_path_k = max(2k, 20)` 自动放大;`match_service` / `resume_graph` 切到 hybrid,reviewer 仍走 `load_all_profile_chunks` 全量(永久约束 #6)。评测脚本 `apps/api/scripts/retrieval_eval.py` + `evals/suites/retrieval/` 框架就位,20 条 ground-truth 推到 4-D 与 multi-persona synthetic 一起做。子任务 4-B/C/D + 5 未起。
+last_updated: 2026-05-07 — **M3 W8 子任务 4-C 收尾 + 4-D 起步 6 条**:Judge 评测路径调整为 Claude Code session 里 Opus 4.7 人工评(撤回 Anthropic API 引入方案 — 避免 SDK 依赖 / Provider / Tier / Key / 错误映射 / Anthropic JSON 输出绕路 / 成本 360x;`JudgeClient` 代码保留作 future automation 钩子,**当前不是默认调用路径**,docstring 标注)。**dogfood 6 条已评完**:resume #21/#17/#16/#11/#9/#3,各按 6 维 Rubric + 80+/60-79/<60 锚点 + 先证据后打分 + 校准 -2pp 评出,落 `evals/suites/resume_generate/dataset.jsonl` + `evals/reports/judge-resume-2026-05-07-bootstrap.md`。**桶分布 high 4 / mid 2 / low 0**(low 桶缺 — 4-D 后续补 multi-persona synthetic);**阈值检查**:综合分均值 **76.8**(≥ 75 ✅)/ 事实一致性维度均值 **86.7**(≥ 85 ✅)/ P10 = 62(≥ 60 ✅)。**关键 actionable findings**:#21 是 W8 第二轮修订成功 anchor(JD-mirror 编造规避);#17 暴露 drafter/planner 漏选材(profile 有 TS 但简历技能段没列);#11 武大教育段被截掉;#9/#3 broken case(`姓名:[待补充]` / `[学校名称]` 占位符未替换 + #3 教育"学位:本科" 与 profile 实际硕士对不上 = 真 unsupported claim)— reviewer 应将占位符未填 + 学历缺失作 high severity 检出。**已知问题**:`profile_summary` 在 dataset.jsonl 把 candidate deterministic 字段与 chunks 拼成单字符串,违反永久约束 #6(应分开)— 待 `render_resume_rubric_user` prompt 改双字段后回填。子任务 5 + 4-D 剩余 19 条未起。:Judge 评测框架就位,4-D 数据集到位即可跑。`apps/api/src/jobcopilot_api/evals/` 新模块四件:`kappa.py` 实现 Cohen's kappa(`κ = (po - pe)/(1 - pe)`,**pe 基于双方边缘分布**,直接用 accuracy 反映可靠性会高估;支持任意 hashable label,二分类是 categorical 特例;含 `confusion_matrix` 辅助 debug 哪里偏);`judge_prompts.py` 两个 Rubric — `RESUME_RUBRIC_SYSTEM` 6 维(JD 对齐 30% / 事实一致 30% / 结构 15% / 量化 10% / 语言 10% / 长度 5%)+ 每维 80+/60-79/<60 三档锚点写死减少方差 + "先列证据再打分" 强制链式推理;`MATCH_EVIDENCE_SYSTEM` 二分类 supports + 同义改写 OK / "宁严不放水"。Pydantic schema `JudgeResumeRubric` / `JudgeEvidenceValidity` 走 LLMClient response_schema retry。`weighted_total` 加权计算放 Python 端(权重 = SSoT 代码,改权重不需要重提示工程;Judge 实测 5-15% 概率算偏权重,不让它算)。`judge.py::JudgeClient` 封装 LLMClient,固定 `Tier.PREMIUM`(qwen3.6-plus thinking on),被评 agent 走 qwen3.6-flash — **评委 ≠ 被评者**避免自评偏高 5-10pp。`scripts/judge_eval.py` CLI 支持两 suite,读 jsonl 跑 Judge → 写 results jsonl + markdown 报告(均值/P10/分桶/cache 命中数/总成本),有 human label 自动算 kappa + 输出 confusion matrix。`evals/suites/{resume_generate,match_analysis,resume_review_adversarial}/` 三个目录 README + dataset.example.jsonl 占位(数据集本身 4-D 做)。Temperature 注:EVAL_PLAN 写 Judge 用 0.2 但 LLMClient 接口未暴露 temperature,只能用 prompt 端"严格按锚点"约束逼近;真要硬控需扩 LLMClient 契约,本切片不做。子任务 4-D + 5 未起。:DashScope 无 server-side prompt caching(Anthropic 才有),评测/dogfood 同 prompt 反复跑成本线性放大;客户端 response cache 直接降一个数量级,让 4-C/D 跑得起。alembic 0015 加 `llm_response_cache` 表(`cache_key UNIQUE` / `request` / `response` JSONB / `created_at` / `last_hit_at` / `hit_count`)+ `llm_calls.cached` 列(命中率可观测)。`llm/cache_key.py::compute_cache_key` 把 `(model, system, user_augmented, response_format, thinking_mode, prompt_version_id)` 折 sha256 hex — schema 类改字段会让 user_augmented 变化 → 自动失效,无 TTL 维护负担。`llm/cache_store.py` 给 Protocol + `NoopCacheStore`(默认/disabled)+ `PostgresCacheStore`(独立 sessionmaker,与请求事务隔离;`get` 走 `UPDATE ... RETURNING` 一条 SQL 同时读 + 推 hit_count;`put` 走 `INSERT ... ON CONFLICT DO NOTHING` 处理并发 miss 撞车)。`BaseLLMClient.complete` 入口算 cache_key:on_token 非 None(streaming) → skip cache;非流式 hit → 命中后再跑 schema 校验(防写入后 schema 加 required 字段),校验失败降级为 miss 重跑 LLM;miss 跑完成功后 `cache_store.put` 留底。命中态 cost = 0 / tokens = 0 / latency = 真实读 cache 时间(几 ms),`llm_calls.cached` 给 `SELECT AVG(cached::int) FROM llm_calls GROUP BY feature` 直接看命中率。任何 cache DB 异常被 `PostgresCacheStore` 内部吞 + WARNING(cache 故障必须降级为 miss,不能砸 LLMClient)。settings 加 `JOBCOPILOT_LLM_CACHE_ENABLED`(默认 true)allow 前端调试 prompt 时关掉拿真 LLM 行为。子任务 4-C/D + 5 未起。
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -12,7 +12,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | 切片 | 内容 | 状态 |
 |------|------|------|
 | S19+S20 | W7 简历定制状态机 + 前端联动 + checkpointer serde 修 | ✅ [slices/S19-S20-w7-resume-graph.md] |
-| S21  | W8 反幻觉 + 可编辑(对抗集 + monaco + version diff + LLM-as-Judge + drafter token 流式)| 🔄 子任务 1+2+3 ✅ / 4-A ✅ / 4-B+C+D+5 ⏳ |
+| S21  | W8 反幻觉 + 可编辑(对抗集 + monaco + version diff + LLM-as-Judge + drafter token 流式)| 🔄 子任务 1+2+3 ✅ / 4-A+4-B+4-C ✅ / 4-D 6/25 🔄 / 5 ⏳ |
 | S22  | W9 渲染与导出(LaTeX awesome-cv + PDF 导出)| ⏳ |
 | S23  | W10 内测 v0.5(招募 + 飞书反馈 + 性能收尾 + Release)| ⏳ |
 
@@ -23,13 +23,14 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 - ✅ **#3.1 第二轮 dogfood 反幻觉链路修订(衍生)**:5 match 重生成回归暴露 (a) reviewer 走 retrieve Top-K JD-anchored 漏 education / language → [M4] 假阳性;(b) drafter 镜像 JD hard_skills(C++/Java/OpenAI/Claude/LLaMA);(c) `_compose_hint` 文案诱导补漏。三层联合修:**reviewer 全量** — `retrieval_service.load_all_profile_chunks` + `ResumeGraphState.all_chunks` + `review_resume(candidate=...)` + reviewer prompt **v1.0.3**(profile 完整 + Profile 字段 + 新 M7);**drafter 反镜像** — prompt **v1.0.5** 加 D.3 严禁 JD-only 技能 + 机械自检 + 心智模型,**v1.0.6** 加 hint 段防注入语;**hint 反向文案** — `_compose_hint` 从"补强相关项目/课程"改成"**严禁列入简历的技能**(候选人 chunks 没有,JD 要 — 列了就是编造)";**前端 obsolete 区分** — 用历史 versions.markdown 做"曾经出现过"判定,任何版本都没的标 bogus("标记可能有误"黄)而非 obsolete("已处理"绿)。**验证**:resume #21 (match #4 / JD #9) 一轮 0 finding,JD-only 技能全消失,M1 跨 chunk 错配同步消(根因在 hint 引导污染,不在 prompt 加约束)
 - 🔄 **#4(扩) 评测扎根 + RAG/Judge 深度补强**:4 件子任务,A 已落地,B/C/D 待起
   - ✅ **4-A Hybrid Search + RRF**:alembic 0014 SQL `char_ngrams` IMMUTABLE 函数(字符 bigram + ASCII unigram + 跨边界 bigram 保留);`profile_chunks.content_tsv` GENERATED 改走 ngram + GIN 重建(chunk_service 零改);Python `services/tokenize.py` 镜像 SQL,`test_tokenize_consistency.py` 15 case 参数化守护双端一致;`hybrid_retrieve_for_match` 双路 `asyncio.gather` 并发 + RRF 融合 + `per_path_k=max(2k,20)`;`match_service` / `resume_graph` 切 hybrid,reviewer 仍全量;评测脚本 `apps/api/scripts/retrieval_eval.py` + `evals/suites/retrieval/` 框架就位(20 条 ground-truth 推到 4-D)
-  - ⏳ **4-B Prompt cache layer**(下一步)
-  - ⏳ **4-C LLM-as-Judge harness + Cohen's kappa**
+  - ✅ **4-B Prompt cache layer**:alembic 0015 `llm_response_cache` 表 + `llm_calls.cached` 列;`llm/cache_key.py` sha256(model+system+user_augmented+response_format+thinking_mode+prompt_version_id);`llm/cache_store.py` Protocol + Noop + Postgres(独立 sessionmaker / `UPDATE ... RETURNING` 原子 get+hit_count++ / `INSERT ON CONFLICT DO NOTHING` 处理并发 miss / 全部异常吞 WARNING 降级 miss);`BaseLLMClient.complete` 入口算 key,streaming skip,hit 后仍跑 schema 校验(校验失败降级 miss),miss 成功后 put;命中态 cost=0/tokens=0/latency=真实读 cache 几 ms,`SELECT AVG(cached::int) GROUP BY feature` 直接看命中率;`JOBCOPILOT_LLM_CACHE_ENABLED` 默认 true,prompt 调试时关掉
+  - ✅ **4-C LLM-as-Judge harness + Cohen's kappa**:`evals/kappa.py` `κ=(po-pe)/(1-pe)` 任意 categorical(二分类特例)+ confusion_matrix;`evals/judge_prompts.py` 6 维 Rubric(权重 SSoT 在 Python,`weighted_total` 端算)+ evidence validity 二分类 + 锚点写死 + 先证据后打分;`evals/judge.py::JudgeClient` 留作 future automation 钩子(**当前不是默认调用路径**);**dogfood 阶段评委 = Claude Code session 里 Opus 4.7 人工评**(撤回 Anthropic API 引入方案);`scripts/judge_eval.py` CLI 留待 future provider wire 进来;`evals/suites/*` README + example.jsonl 在位
+  - 🔄 **4-D 评测数据集 6/25**:`evals/suites/resume_generate/dataset.jsonl` 6 条(resume #21/#17/#16/#11/#9/#3,Opus 4.7 人工评 + 校准 -2pp);均值 76.8 ✅ / 事实 86.7 ✅ / P10 = 62 ✅;桶分布 4 high / 2 mid / 0 low(low 缺待 multi-persona synthetic 补);报告 `evals/reports/judge-resume-2026-05-07-bootstrap.md`
   - ⏳ **4-D 评测数据集**(`retrieval` 20 顺带 + `match_analysis` 30 + `resume_generate` 25 + `resume_review_adversarial` 20)+ multi-persona synthetic fixture
   - **对抗集种子**(W8 第二轮 dogfood 收集):#18 "具备高并发架构设计能力"(M4 模糊能力陈述 / 用 chunks 间接证据)、#19 C++/Java/OpenAI/Claude/LLaMA 抄 JD(已被 v1.0.5/v1.0.6 修但应作回归 case)、#20 "12w QPS 保障 AI 服务高可用"(M1 跨 chunk 业务 context 错配,已被 hint 文案修)、#20 reviewer 凭空捏 "AWS"(reviewer 模型 noise,留给 LLM-as-Judge 评测)
 - ⏳ **#5 W7 末 DoD 复测**:review 通过率 ≥ 50% / 无 high severity 幻觉
 
-**当前 working tree**:`bde5330` STATUS.md 4 重新规划已 push;本次改动 = 子任务 4-A Hybrid Search 落地(alembic 0014 + tokenize + hybrid_retrieve + 切两个 caller + 测试 + 评测框架)+ STATUS.md 进度更新(待 commit)。
+**当前 working tree**:`0807fff` 4-A 已 push;本次改动 = 子任务 4-B + 4-C + 4-D 起步 6 条(原本是 4-B Prompt cache layer + 4-C LLM-as-Judge harness 双落地(4-B = alembic 0015 + cache_key + cache_store + BaseLLMClient cache layer + LLMResult.cached / LlmCall.cached / DBCallLogger 同步写 + settings.llm_cache_enabled + infra/llm.py 注入 PostgresCacheStore;4-C = evals/{kappa,judge_prompts,judge}.py + scripts/judge_eval.py + evals/suites/{resume_generate,match_analysis,resume_review_adversarial}/README + dataset.example.jsonl;附带 services/resume_service.py ruff 修;**追加 4-D 起步**:`evals/suites/resume_generate/dataset.jsonl` 6 条 Opus 人工评结果 + `evals/reports/judge-resume-2026-05-07-bootstrap.md`;`evals/judge_prompts.py` × 数学符号修 ruff;alembic 0014 注释把"simple 不分词"误归因改成"default parser 不识别中文词边界"(实测 PG 16 整段 CJK 当一个 word token,simple 是 dictionary 配置管 stemming 不管切词))+ STATUS.md 进度更新(待 commit)。
 
 **当前生效 prompt**(W8 第二轮 dogfood 修订后):
 - `match_analyst` = v1.1.2(4 条规则简化版,消费 `or_group_id`)
@@ -39,7 +40,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 - `jd_parser` = v1.0.6(B.1 复合句式新规)
 - `profile_parser` = v1.0.1
 
-**当前闸门**(M2 末,W7 + W8 子任务 1+2+3 + 第二轮 dogfood 修订 + 4-A 未跑闸):后端 `pytest -q` 321 passed + ruff / mypy 全过 + alembic 0012;前端 typecheck / biome / next build 全过。W7(S19/S20)+ W8(S21 子任务 1+2+3 + 第二轮修订 + **4-A**)**未跑测试**(用户手动验);dogfood 通过项:W7 端到端、drafter token 流式、monaco 编辑/版本/diff、reviewer 标记可点+滚动+采纳+黄底高亮、第二轮 dogfood 5 个 match 重生成全 ready(resume #16/#17/#21 一轮 passed,#18/#19 暴露 drafter 真问题但已被 v1.0.5/v1.0.6 修)。**4-A 待验**:跑 alembic 0014 upgrade + 跑 `pytest -q tests/unit/test_tokenize.py tests/integration/test_tokenize_consistency.py tests/integration/test_retrieval_hybrid.py tests/integration/test_migrations.py`;dogfood 用第二轮那 5 条 match 重新跑 match analyze + 简历定制看 reviewer 误报率(JD-不相关 chunks 漏召回的洞应消)。所有数字推 W8 子任务 4(扩) + W9 闸门一起跑。
+**当前闸门**(M2 末,W7 + W8 子任务 1+2+3 + 第二轮 dogfood 修订 + 4-A + **4-B** 未跑闸):后端 `pytest -q` 321 passed + ruff / mypy 全过 + alembic 0012;前端 typecheck / biome / next build 全过。W7(S19/S20)+ W8(S21 子任务 1+2+3 + 第二轮修订 + **4-A** + **4-B**)**未跑测试**(用户手动验);dogfood 通过项:W7 端到端、drafter token 流式、monaco 编辑/版本/diff、reviewer 标记可点+滚动+采纳+黄底高亮、第二轮 dogfood 5 个 match 重生成全 ready(resume #16/#17/#21 一轮 passed,#18/#19 暴露 drafter 真问题但已被 v1.0.5/v1.0.6 修)。**4-A 待验**:跑 alembic 0014 upgrade + 跑 `pytest -q tests/unit/test_tokenize.py tests/integration/test_tokenize_consistency.py tests/integration/test_retrieval_hybrid.py tests/integration/test_migrations.py`;dogfood 用第二轮那 5 条 match 重新跑 match analyze + 简历定制看 reviewer 误报率(JD-不相关 chunks 漏召回的洞应消)。**4-B 待验**:跑 alembic 0015 upgrade + 重启 API + 第一次跑 match analyze 后 `SELECT cache_key, model, feature, hit_count, last_hit_at FROM llm_response_cache ORDER BY id` 看 jd_parser/match_analyst 各 1 条 / hit_count=0;同 JD 再跑一次 match → 同 cache_key 的 hit_count=1 / 新 llm_calls 行 cached=true / cost_cny=0 / latency_ms 几 ms;drafter 跑 streaming 不写 cache(看不到 resume_drafter feature 的 cache 行,llm_calls 行 cached=false);改任一 prompt 内容(prompt_version_id 切版本号)/ schema(加字段)cache 自动失效;`JOBCOPILOT_LLM_CACHE_ENABLED=false` 重启回归无 cache 行为。**4-C 待验**:`uv run python apps/api/scripts/judge_eval.py --suite resume_generate --dataset evals/suites/resume_generate/dataset.example.jsonl --results /tmp/r.jsonl --report /tmp/r.md` 跑通 2 条 example(rg-001 mid 桶 / rg-002 high 桶),有 `human_label_bucket` → 报告底部出 kappa + confusion matrix;同 dataset 再跑一次,results 行 `cached=true cost_cny=0`(4-B cache 命中);`--suite match_analysis` 用 evidence 3 条 example 跑通 binary kappa。所有数字推 W8 子任务 4(扩) + W9 闸门一起跑。
 
 **M1 完成**:[slices/M1-summary.md](slices/M1-summary.md) — 整体经验 + 25 条永久约束 + DoD 检查 + 给 M2 的数据底座。各切片归档:`slices/{S0.5,S1..S11}-*.md`。
 
@@ -67,13 +68,51 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 **触发的真问题已根治**:W8 第二轮 dogfood reviewer Top-K 召回不全(教育 / 语言 chunks 漏召回)已被全量 chunks 临时兜住,A 之后即便 hybrid 召回不全,reviewer 全量路径仍是兜底。
 
-### 子任务 4-B:Prompt cache layer(评测降本 + 工程深度)
+### 子任务 4-B:Prompt cache layer(评测降本 + 工程深度)— ✅ 已完成
 
-`hash(model + temperature + system + user + prompt_version)` → response cache,存 Postgres jsonb(不引 Redis,P99 多 5ms 可接受 + 可观测)。LLMClient 加 cache layer,**streaming skip cache**(半截缓存复杂度不值)。dogfood 阶段命中率预期 70%+,直接降评测成本一个数量级,让 C/D 跑得起。Anthropic prompt caching 是 server-side 仅对 Claude API,DashScope 没有 → 必须客户端做。
+DashScope 没有 Anthropic 那种 server-side prompt caching;评测/dogfood 同 prompt 反复跑成本线性放大,客户端 response cache 直接降一个数量级,让 4-C/D 跑得起。
 
-### 子任务 4-C:LLM-as-Judge harness + Cohen's kappa
+实施清单:
 
-Judge 用 qwen3.6-plus(thinking on),evaluatee 是 qwen3.6-flash(防"评委即被评者"偏差,自评偏高 5-10pp)。CoT + JSON 输出 + few-shot。抽 50 条人工复核计算 Cohen's kappa(`κ = (po - pe)/(1 - pe)`,**pe 这一项是关键** — 直接用 accuracy 反映可靠性会高估),要求 ≥ 0.7;低于阈值触发 Judge prompt 改版 + 历史 Judge 结果重跑。覆盖 resume_generate 6 维 Rubric(EVAL_PLAN §7.3)+ match_analysis evidence_validity(§6.3)。
+1. **alembic 0015**:`llm_response_cache`(cache_key UNIQUE / model / feature / prompt_version_id FK / request JSONB / response JSONB / created_at / last_hit_at / hit_count)+ `llm_calls.cached BOOLEAN`(命中率可观测)
+2. **`llm/cache_key.py::compute_cache_key`** = `sha256(json.dumps({model, system, user_augmented, response_format, thinking_mode, prompt_version_id}, sort_keys=True))` hex — schema 类加字段会让 user_augmented 自动变化 → cache 自动失效,无 TTL / 无版本号迁移负担
+3. **`llm/cache_store.py`** Protocol 形 + `NoopCacheStore` + `PostgresCacheStore`(独立 sessionmaker,跟 DBCallLogger 一致;`get` 走 `UPDATE ... RETURNING` 一条 SQL 同时读 + 推 hit_count;`put` 走 `INSERT ... ON CONFLICT DO NOTHING` 处理并发 miss 撞车;任何 DB 异常 WARNING 一行 + 降级 miss)
+4. **`BaseLLMClient.complete`** 入口算 cache_key:`on_token` 非 None(streaming) → skip cache;非流式 hit → 回放 `acc.content` 后再跑 schema 校验(防写入后 schema 加 required 字段),失败降级为 miss 重跑 LLM;miss 跑完成功后 `cache_store.put` 留底
+5. **`LLMResult.cached: bool=False`** + `LlmCall.cached` 列 + `DBCallLogger._to_record` 同步写;命中态 `cost_cny=0 / tokens_in/out/cached_tokens=0 / latency_ms=` 真实读 cache 几 ms,`SELECT AVG(cached::int) FROM llm_calls GROUP BY feature` 直接看命中率
+6. **settings**:`llm_cache_enabled: bool=True`(env `JOBCOPILOT_LLM_CACHE_ENABLED`),前端 prompt 调试时关掉拿真 LLM 行为
+7. **`infra/llm.py`** 按 flag 注入 `PostgresCacheStore` / `NoopCacheStore`,共用 `get_sessionmaker()`
+
+### 子任务 4-C:LLM-as-Judge harness + Cohen's kappa — ✅ 已完成
+
+实施清单:
+
+1. **`evals/kappa.py`** Cohen's kappa = `(po - pe)/(1 - pe)`,pe 基于双方边缘分布
+   `Σ_c P_a(c) · P_b(c)`(直接用 accuracy 反映可靠性会高估,比如全样本同类时全猜该类
+   accuracy=100% 但 κ→0)。任意 hashable label;二分类是 categorical 特例;退化情形
+   `1-pe=0`(双方全押同标签)→ po=1 时返 1.0,否则 0.0。`confusion_matrix` 辅助 debug。
+2. **`evals/judge_prompts.py`** 两 Rubric。`RESUME_RUBRIC_SYSTEM` 6 维(JD 对齐 30% /
+   事实一致 30% / 结构 15% / 量化 10% / 语言 10% / 长度 5%)+ 每维 80+/60-79/<60
+   三档锚点写死 + "先列证据再打分" 强制链式推理 + 事实一致维度"profile 外内容直接
+   <50 分"。`MATCH_EVIDENCE_SYSTEM` 二分类(supports y/n + reason),同义改写 OK,
+   "宁严不放水"——recall 优先(误判错配 = 用户能看见的产品 bug)。Pydantic
+   `JudgeResumeRubric` / `JudgeEvidenceValidity` 走 LLMClient response_schema retry。
+3. **`evals/judge_prompts.py::weighted_total`** Python 端按 `RESUME_RUBRIC_WEIGHTS`
+   加权,**不让 Judge 算 total**(权重 = 产品决策 SSoT;Judge 实测 5-15% 概率算偏 1-3 分)。
+4. **`evals/judge.py::JudgeClient`** 封装 LLMClient,锁 `Tier.PREMIUM`(qwen3.6-plus
+   thinking on);被评 agent 走 flash —— **评委 ≠ 被评者**避免自评偏高 5-10pp。两个公开
+   方法 `judge_resume_rubric` / `judge_evidence`,返回 dataclass 透传 cost / latency / cached。
+5. **`scripts/judge_eval.py`** CLI 双 suite(`--suite resume_generate | match_analysis`),
+   读 jsonl → JudgeClient → 写 results jsonl + markdown 报告;有 `human_label_bucket` /
+   `human_supports` 自动算 kappa + 输出 confusion matrix。`total_to_bucket` 按 ≥ 80
+   high / 60-79 mid / < 60 low(EVAL_PLAN §6.1 同三档划分)。
+6. **`evals/suites/{resume_generate,match_analysis,resume_review_adversarial}/`** 三目录
+   README + dataset.example.jsonl 占位;实际数据集本切片不做(4-D 任务)。
+   `resume_review_adversarial` 不走 Judge(reviewer 是被评对象、不是 Judge),框架代码
+   留待 4-D 与数据集一起做。
+
+**Temperature 注**:EVAL_PLAN §6.3 写 Judge 应用 0.2,但 LLMClient 接口未暴露
+temperature(走 DashScope SDK 默认),只能用 prompt 端"严格按锚点打分"约束逼近;
+真要硬控需扩 LLMClient 契约,本切片不做。
 
 ### 子任务 4-D:评测数据集
 
@@ -122,6 +161,8 @@ LaTeX `awesome-cv` 中文化 + md → LaTeX 转换器 + `/v1/resumes/{id}/export
 - **[来自 S21 第二轮 dogfood] hint 是 LLM 视角的权威指令位,文案必须反向警告而非"补强"诱导**:`_compose_hint(match)` 把 `gap_summary + missing_skills` 拼成 drafter prompt USER 段的 hint 文本。原版"缺失关键技能(可在简历中补强相关项目/课程)"等于明确命令 drafter 把候选人不会的技能写进简历(JD 镜像),导致 #19 列 C++/Java/OpenAI/Claude/LLaMA 全编造,#20 间接 leak "AI 服务高可用"。修订后必须用反向警告语义:gap_summary 加 "**只读差距分析**(不要写入简历;gap 信息归 match 模块负责告知用户)";missing_skills 改 "**严禁列入简历的技能**(候选人 chunks 没有,JD 要 — 列了就是编造)"。drafter prompt v1.0.6 USER 段 hint 块标题也同步从 "## 历史匹配差距提示(参考,辅助强化简历对 JD 的针对性)" 改 "## 差距警示段(**只读 — 严禁成为简历内容来源**)" + 防注入指引段。**心智模型**:简历 = 候选人真实能力 ∩ JD 关心方向;凸显交集,不补缺集。Gap 信息归 match 模块,不归简历。后续如果有别处往 prompt USER 段注入"差距 / 缺失 / 待补"类信息,文案默认走反向警告,而非鼓励补漏。
 - **[来自 S21 第二轮 dogfood] Reviewer findings UI 需要区分 obsolete vs bogus 两态**:reviewer 标记的 quoted_text 在当前 markdown 找不到时分两种语义,前端必须区分:(a) **obsolete** = 在某个**历史版本**里出现过,但当前已不在(用户编辑 / 采纳掉了)→ 标"已处理"绿色;(b) **bogus** = 任何版本都没出现过(reviewer 凭空捏造 quoted_text,本会话见过 reviewer 凭空写"AWS")→ 标"标记可能有误"黄色。`obsoleteFindings` 不能只看当前 `resume.markdown`,要把所有 `versions[].markdown` 拼成"曾经出现过"全集。两态显示行为合并(都灰化 + 隐藏"采纳"按钮 + dismiss 改"从列表移除"),但用户提示语必须不同 — bogus 显示"已处理"会误导用户以为自己处理过(用户没动过)。后续如果有别处展示 LLM 引用 + 当前文档的对照 UI,默认要 (a)/(b) 区分,不要简单"是否在当前文本"二分。
 - **[来自 S21 子任务 4-A] 中文 lexical 检索走字符 n-gram,SQL 端与 Python 端镜像必须 100% 一致**:`profile_chunks.content_tsv` GENERATED 列源端是 `to_tsvector('simple', public.char_ngrams(content))`(alembic 0014),query 端 `services/tokenize.py::tokenize_ngram` / `to_tsquery_string` 必须切出与 SQL 完全相同的 token 集 — 漂移 = 文档侧 lexeme 与 query 端 ts_query 对不上,lexical 路召回率瞬间 0。`tests/integration/test_tokenize_consistency.py` 15 case 参数化跑真 PG 守护双端一致;改任一端必须同步改另一端。`zhparser` / `pg_jieba` / `jieba` 都没引入 — n-gram 思路不依赖语言学规则、对未登录词鲁棒、纯字符串操作能放进 IMMUTABLE SQL 函数让 GENERATED 列 Postgres 自动重算,工程量最小。Reviewer 仍走 `load_all_profile_chunks` 全量,与 hybrid 改进相关性召回不冲突 — hybrid 也到不了 100% 召回。后续如果给别的检索路径(JD chunks / 候选答案库等)做 lexical 索引,默认复用 `char_ngrams` SQL 函数 + `tokenize_ngram` Python 函数,不要重新发明分词器。
+- **[来自 S21 子任务 4-C / 4-D 起步修订] LLM-as-Judge 评委必须 ≠ 被评者,且 Judge 自身可靠性以 Cohen's kappa 守门(不是 accuracy)**:Judge 走**更强且训练谱系不同**的模型,被评 agent 走 qwen3.6-flash;**自评偏高 5-10pp** 是公开经验,直接让 plus 评 plus 输出会得到系统性虚高分,任何"自评模型评自己"都拒。**dogfood 阶段(2026-05 起)评委 = Claude Code session 里 Opus 4.7 人工评**(跨训练谱系彻底 → 自评偏高 ~0pp,但要警惕评者对项目历史的先验上下文形成 confirmation bias,固定 -2pp 校准);Anthropic API 引入暂不做(SDK / Provider / Tier / Key / Anthropic JSON 输出绕路 / 成本 360x 一堆负担,dogfood 量级 ≤ 50 条用人工评最快)。`JudgeClient` 代码保留作 future automation 钩子(真要 nightly 跑或量上去再决定 provider — 可能 qwen3.6-plus 廉价 Judge / 也可能 Claude API,先不预设)。Judge 自身可靠性指标必须用 **Cohen's kappa = (po - pe)/(1 - pe)**,pe 基于双方边缘分布算"碰巧一致"概率;直接用 accuracy 反映可靠性会高估(全样本同类 → 全猜该类 accuracy=100% 但 κ→0)。EVAL_PLAN §6.3 阈值 ≥ 0.7,低于阈值要 Judge prompt 改版 + 历史 Judge 结果重跑(prompt 是 SSoT,历史结果是函数值)。**Rubric 权重 SSoT 在 Python 代码,不在 prompt**:`weighted_total` 用 `RESUME_RUBRIC_WEIGHTS` 字典算,改权重不需要重提示工程;Judge 实测 5-15% 概率算偏权重(0.3+0.3+0.15+0.1+0.1+0.05=1.0 看似简单,但 Judge 不是稳定计算器)。**Rubric prompt 三件守门**:① 每维分档锚点写死(80+/60-79/<60 三档具体描述,减少 Judge 间方差);② "先列证据再打分" 强制 CoT 顺序(避免"先打分后凑理由");③ 事实一致维度"profile 外内容直接 <50 分" 写死(防 Judge 对 fabrication 心慈手软)。后续如果给别的 Agent 加 Judge 评测(interview_eval / 投递评估等)默认套这三件。
+- **[来自 S21 子任务 4-B] LLM response cache key 由 prompt 全文 + schema augmented user 决定,不靠版本号 / TTL / 手动 bust**:`compute_cache_key` 折 `(model, system, user_augmented, response_format, thinking_mode, prompt_version_id)` sha256;`user_augmented` 是 `_augment_with_schema` 之后的产物,所以 Pydantic 模型加字段 / 改约束 → schema_json 串变 → user_augmented 变 → key 变,旧 cache 自然失效,无需手动失效逻辑或 TTL。`prompt_version_id` 显式入 key 是 belt-and-suspenders(prompt 内容靠 system/user 自身决定 key,version_id 主要让 ad-hoc 小改也能强制切桶)。**Streaming(`on_token` 非 None)在 LLMClient 入口直接 skip cache** — 半截缓存复杂度(部分 token 流出后断网怎么 resume / 后端写半截 / 前端看到中断)远不值得做;drafter 简历正文场景命中率本来低(用户 profile + JD 笛卡尔积大),纯成本视角也不划算。**Cache 故障必须降级为 miss**:`PostgresCacheStore` 的 get/put 任何 DB 异常吞掉 + WARNING,绝不 raise — 缓存层挂了不能砸 LLMClient。**命中态 cost/tokens 归零**:`SELECT SUM(cost_cny)` 直接给真实花费,`SELECT AVG(cached::int) GROUP BY feature` 直接给命中率,要看"如果不缓存会花多少"从 `llm_response_cache.response` jsonb reconstruct。后续如果给别的 LLM 客户端(嵌入向量缓存 / Judge 链路 / MCP tool 调用)加 cache,默认复用此 key 模式 + Postgres jsonb 存储 + 异常降级 miss 三件;不要引入 Redis(P99 多几 ms 可接受 + 现成可观测 + 不增运维面积)。
 
 ---
 
