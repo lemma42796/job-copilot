@@ -31,12 +31,13 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 - ✅ CLAUDE.md 文件导航更新
 - ✅ docs/8-ENGINEERING.md 重写(仓库结构 / 工具链 / CI / 迁移 / 本地开发 / 部署 / Langfuse 实操)
 - ✅ 砍旧代码 v1(110 文件 / -20.7K LoC):apps/api/agents 整目录 + services v1(7 个) + routers v1 + _deps + schemas 整目录 + prompts 整目录(6 个 v1 子目录) + models v1(7 个) + infra/{upload,pdf}.py + 配套 17 个 v1 单测 + 9 个 v1 集成测试 + apps/web/{jds,matches,profiles,resumes}/ + components/list/;沿用层留:llm/(全)/ infra/{db,embedder,llm,logging,prompts,request_id} / models/{base,llm_call,llm_response_cache,prompt_version} / services/tokenize / routers/health / web/{shell,ui,lib,layout,globals.css,page.tsx 文案改 v2}
-- 🔄 新建 v2 模块骨架(详见 2-TECH §4.1):
+- ✅ 新建 v2 模块骨架(详见 2-TECH §4.1):
   - ✅ models/{note, note_chunk, question, quiz_session, session_answer, knowledge_gap, jd, jd_analysis, resume, resume_analysis} 10 张 ORM 落地;__init__.py 更新 export(alembic env.py 通过 Base.metadata 看到全部)
-  - ⏳ agents/{quiz_generator, answer_judge, jd_parser, jd_aggregator, resume_advisor, embedder, followup_orchestrator}
-  - ⏳ services/{notes_service, chunk_service, search_service, quiz_service, answer_service, jd_service, resume_service, knowledge_gap_service}
-  - ⏳ schemas/(Pydantic IO 校验 + SSE 事件 schema + agent IO)
-  - ⏳ workers/embed_worker
+  - ✅ agents/{quiz_generator, answer_judge, jd_parser, jd_aggregator, resume_advisor, embedder, followup_orchestrator} — 每个子目录 __init__ + agent.py(stub raise NotImplementedError)+ prompts.py(SYSTEM 占位);answer_judge 加 scoring.py(Python 算分 SSoT,三层权重 + fabricated 锁顶 50 抄入);jd_aggregator 加 frequency.py;resume_advisor 加 forbidden_patterns.py(具体正则落地)
+  - ✅ services/{notes_service, chunk_service, search_service, quiz_service, answer_service, jd_service, resume_service, knowledge_gap_service} — 函数签名 + docstring + raise NotImplementedError("M{n}");tokenize.py 沿用 v1
+  - ✅ schemas/{notes, quiz, jd, resume, dashboard, sse} + schemas/agents/{quiz_generator, answer_judge, jd_parser, jd_aggregator, resume_advisor, followup_orchestrator}(Pydantic Input/Output 按 5-AGENT + 3-DATA_MODEL §6 抄入字段)
+  - ✅ workers/embed_worker — asyncio.Event 退出信号 + 单批失败不打挂 + 队列空退避主循环骨架
+  - ✅ main.py lifespan 挂 embed_worker — startup `asyncio.create_task(run_forever)`,shutdown `stop_event.set()` + `wait_for(10s)` 超时 cancel
 - ✅ LLM SDK 切换:OpenAI Python SDK(走百炼 base_url)+ Langfuse OpenAI wrapper(`from langfuse.openai import AsyncOpenAI` 自动 instrument);settings 加 langfuse 三件套字段;main.py 启动镜像 LANGFUSE_*
 - ✅ 新建 alembic 0016 migration(DROP v1 表 / ENUM + CREATE v2 ENUM × 3 + v2 表 × 10 + 8 个 updated_at 触发器);test_migrations.py EXPECTED_TABLES 同步换 v2;downgrade 不实做(NotImplementedError,DATA_MODEL §10)
 - ⏳ docker-compose.yaml 加 langfuse + langfuse-db(详见 2-TECH §6.5)
@@ -45,14 +46,16 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 # 当前 working tree
 
-**待 commit**:v2 model 骨架(10 个 ORM 文件)+ models/__init__.py 重写 + alembic 0016 v2 schema + test_migrations.py 重写 + 本 STATUS.md。
+**clean**,已与 `origin/main` 同步。
 
 **M0 schema 阶段完结**,DB 层从 v1(users / files / profiles / matches / resumes 等 12 张)切到 v2(笔记 SR 6 张 + JD 2 张 + 简历 2 张 + 沿用 LLM cost 3 张)。下一步进入"agent / service / schema 骨架"+ docker-compose 加 langfuse。
 
-LLM SDK 切换 + sanity check 已落地;前面 commit 历史:
-- `390efe9` 8-ENGINEERING 文档完工 + tag `v0.1-jobcopilot-v1`
-- `82fe749` M0 砍 v1(110 删,但 5 个修改没 stage)
+近期 commit:
+- `c733a25` 9-LESSONS §7.5 git rm vs Edit/Write 工程坑沉淀
+- `6db9a61` M0 v2 schema 落地(10 ORM + alembic 0016 + test_migrations)
 - `32af0db` 补漏 + LLM SDK 切换 langfuse
+- `82fe749` M0 砍 v1(110 删)
+- `390efe9` 8-ENGINEERING 文档完工 + tag `v0.1-jobcopilot-v1`
 
 # 已锁定的关键决策(v2 起,完整版见各文档)
 
@@ -100,15 +103,8 @@ LLM SDK 切换 + sanity check 已落地;前面 commit 历史:
 
 # 下一步建议
 
-1. commit v2 model + alembic 0016 + STATUS → push
-2. 新建 v2 agent / service / schema / worker 骨架:
-   - agents/{quiz_generator, answer_judge, jd_parser, jd_aggregator, resume_advisor, embedder, followup_orchestrator}(子目录 + agent.py + prompts.py 占位)
-   - services/{notes_service, chunk_service, search_service, quiz_service, answer_service, jd_service, resume_service, knowledge_gap_service}(空函数 + 类型 stub)
-   - schemas/(Pydantic IO + SSE 事件 schema + agents/ IO schema)
-   - workers/embed_worker(后台轮询 embedding=NULL chunks 批量算)
-   - main.py lifespan 挂 embed_worker 启动钩子
-3. docker-compose.yaml 加 langfuse + langfuse-db 两服务(端口 3001 / 5433);api 服务 environment 加 JOBCOPILOT_LANGFUSE_*
-4. M0 完成 → tag `v0.2-m0-end` → 开 M1(笔记入库 + chunker + 树形导航 + Langfuse 起步)
+1. docker-compose.yaml 加 langfuse + langfuse-db 两服务(端口 3001 / 5433);api 服务 environment 加 JOBCOPILOT_LANGFUSE_*
+2. M0 完成 → tag `v0.2-m0-end` → 开 M1(笔记入库 + chunker + 树形导航 + Langfuse 起步)
 
 # v1 历史
 

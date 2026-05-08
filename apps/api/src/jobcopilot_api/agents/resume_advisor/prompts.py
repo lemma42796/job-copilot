@@ -1,0 +1,9 @@
+"""ResumeAdvisor prompts — `resume_advisor` v1.0(5-AGENT_DESIGN §7.2)。"""
+
+from __future__ import annotations
+
+SYSTEM = ""  # M3:从 5-AGENT_DESIGN §7.2 拷入
+
+
+def render_user(*args, **kwargs) -> str:
+    raise NotImplementedError("M3")

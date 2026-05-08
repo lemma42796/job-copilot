@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -17,6 +18,7 @@ from jobcopilot_api.infra.prompts import load_prompt_versions
 from jobcopilot_api.infra.request_id import RequestIDMiddleware
 from jobcopilot_api.routers import health
 from jobcopilot_api.settings import settings
+from jobcopilot_api.workers import embed_worker
 
 # Langfuse SDK 走 LANGFUSE_* 命名,本项目 settings 走 JOBCOPILOT_ 前缀;
 # 这里把字段镜像到 os.environ 让 langfuse.openai 自动读取。
@@ -34,7 +36,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ADR-0006 D6: scan prompts/, upsert prompt_versions, cache by
     # (agent_name, version) on app.state for agents to look up.
     app.state.prompt_versions = await load_prompt_versions(get_sessionmaker())
-    yield
+
+    # 后台 embed worker — 笔记入库时 embedding 留 NULL,worker 异步补
+    # (2-TECH_DESIGN §4.3 / §5.5)。stop_event 让 shutdown 干净退出。
+    stop_event = asyncio.Event()
+    worker_task = asyncio.create_task(
+        embed_worker.run_forever(stop_event), name="embed_worker"
+    )
+    app.state.embed_worker_stop = stop_event
+    app.state.embed_worker_task = worker_task
+
+    try:
+        yield
+    finally:
+        stop_event.set()
+        try:
+            await asyncio.wait_for(worker_task, timeout=10.0)
+        except asyncio.TimeoutError:
+            worker_task.cancel()
 
 
 def create_app() -> FastAPI:
