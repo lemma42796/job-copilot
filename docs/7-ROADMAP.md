@@ -39,7 +39,7 @@ M3    弱点跟踪 dashboard + SR + 多轮追问 + 简历诊断(两方锚点严�
 
 ## 范围
 
-- **笔记 .md zip 上传**:前端拖拽 → 后端 unzip + 校验 → 按文件夹层级入库
+- **笔记本地目录直读**:前端 File System Access API(showDirectoryPicker / showOpenFilePicker)→ 浏览器遍历目录读 .md → 按相对路径解析 folder_path → 分批 POST `/api/notes/batch-import` 入库
 - **Web Markdown 编辑器**(Monaco)+ 树形位置选择 + 保存入库
 - **heading-aware chunker**:按 H2 / H3 切 chunk;每 chunk 带 folder_path / heading_path 元数据
 - **embedder**(沿用 v1):text-embedding-v4
@@ -50,7 +50,7 @@ M3    弱点跟踪 dashboard + SR + 多轮追问 + 简历诊断(两方锚点严�
 
 ## 退出标准(DoD)
 
-- [ ] 上传 50+ 篇笔记的 zip,全部入库,chunk 数符合预期(每 H2 一个 chunk)
+- [ ] 选总字数 ≥ 10 万字的笔记目录(File System Access API),全部入库,chunk 数符合预期(每 H2 一个 chunk);**字数比篇数更能反映 chunker / embedding / hybrid search 真实压力**(50 篇 × 100 字与 50 篇 × 2000 字差一个数量级)
 - [ ] Web 编辑器写一篇新笔记 + 选目标 folder + 保存,3 秒内出现在树形导航 + chunks 入库
 - [ ] 编辑老笔记 → 老 chunks 删除 + 新 chunks 入库,不影响其他笔记
 - [ ] 树形导航点任意节点能拿到该节点 + 子节点的 chunks 列表

@@ -40,7 +40,26 @@ class TreeNode(BaseModel):
     children: list["TreeNode"] = Field(default_factory=list)
 
 
-class UploadZipReport(BaseModel):
+class NoteBatchImportItem(BaseModel):
+    """批量入库的单条笔记(folder_path 是相对 root_folder 的子路径)。"""
+
+    folder_path: list[str]
+    title: str
+    content_md: str
+
+
+class NoteBatchImportIn(BaseModel):
+    """批量入库请求体 — 前端走 File System Access API 读完本地 .md 后整批 POST。
+
+    items 上限 100,前端遇到大目录自行分批多次 POST。
+    """
+
+    items: list[NoteBatchImportItem] = Field(min_length=1, max_length=100)
+    root_folder: str | None = None
+    overwrite: bool = False
+
+
+class BatchImportReport(BaseModel):
     imported: int
     skipped: int
     skipped_reasons: list[dict[str, str]] = Field(default_factory=list)

@@ -14,6 +14,7 @@ from sqlalchemy import BigInteger, Integer, Numeric, String, Text, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
+from jobcopilot_api.models._enums import QUESTION_TYPE_VALUES
 from jobcopilot_api.models.base import Base, IDMixin, TimestampMixin
 
 
@@ -30,7 +31,10 @@ class Question(Base, IDMixin, TimestampMixin):
     )
 
     type: Mapped[str] = mapped_column(
-        postgresql.ENUM(name="question_type", create_type=False), nullable=False
+        postgresql.ENUM(
+            *QUESTION_TYPE_VALUES, name="question_type", create_type=False
+        ),
+        nullable=False,
     )
     prompt: Mapped[str] = mapped_column(Text(), nullable=False)
 

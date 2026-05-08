@@ -5,7 +5,7 @@ JSONB 持久化复用,后续一键分析免重 LLM。截图场景:source='image_
 raw_text 存 Qwen 多模态 OCR 后的文本(原图不存)。
 
 source ENUM `note_source` 共享:'text_paste' / 'image_upload' (jds) +
-'zip_upload' / 'web_editor' / 'yuque' (notes)— 5 值同一 ENUM。
+'local_md' / 'web_editor' / 'yuque' (notes)— 5 值同一 ENUM。
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from sqlalchemy import Integer, Numeric, String, Text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
+from jobcopilot_api.models._enums import NOTE_SOURCE_VALUES
 from jobcopilot_api.models.base import Base, IDMixin, TimestampMixin
 
 
@@ -24,7 +25,10 @@ class Jd(Base, IDMixin, TimestampMixin):
     __tablename__ = "jds"
 
     source: Mapped[str] = mapped_column(
-        postgresql.ENUM(name="note_source", create_type=False), nullable=False
+        postgresql.ENUM(
+            *NOTE_SOURCE_VALUES, name="note_source", create_type=False
+        ),
+        nullable=False,
     )
     raw_text: Mapped[str] = mapped_column(Text(), nullable=False)
     title: Mapped[str | None] = mapped_column(String(255))

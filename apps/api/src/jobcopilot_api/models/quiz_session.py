@@ -14,6 +14,7 @@ from sqlalchemy import DateTime, Numeric, Text, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
+from jobcopilot_api.models._enums import QUIZ_SESSION_STATUS_VALUES
 from jobcopilot_api.models.base import Base, IDMixin, TimestampMixin
 
 
@@ -30,7 +31,11 @@ class QuizSession(Base, IDMixin, TimestampMixin):
     )
 
     status: Mapped[str] = mapped_column(
-        postgresql.ENUM(name="quiz_session_status", create_type=False),
+        postgresql.ENUM(
+            *QUIZ_SESSION_STATUS_VALUES,
+            name="quiz_session_status",
+            create_type=False,
+        ),
         nullable=False,
         server_default="in_progress",
     )

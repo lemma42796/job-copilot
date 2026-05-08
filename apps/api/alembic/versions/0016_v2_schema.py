@@ -34,7 +34,7 @@ depends_on: str | Sequence[str] | None = None
 # v2 ENUM(详见 DATA_MODEL §4)
 NOTE_SOURCE_VALUES = (
     # notes 用:
-    "zip_upload",
+    "local_md",  # File System Access API 选目录 / 选单篇本地 .md 入库
     "web_editor",
     "yuque",
     # jds 复用同一 ENUM(DATA_MODEL §5.7):

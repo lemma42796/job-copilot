@@ -1,4 +1,4 @@
-"""笔记 CRUD + zip 入库 + 树形导航(M1,2-TECH §5.1 + 4-API_SPEC §3)。
+"""笔记 CRUD + 批量入库 + 树形导航(M1,2-TECH §5.1 + 4-API_SPEC §3)。
 
 职责(2-TECH §4.3):
 - service 层做业务编排 + 事务 + 数据库读写,调 chunk_service 切片
@@ -7,12 +7,13 @@
 唯一约束:`(folder_path, title) WHERE deleted_at IS NULL` 由 alembic 0016
 `uq_notes_folder_title` 保证;create / update / move 都靠 IntegrityError
 统一映射成 DuplicateFolderTitleError(409 duplicate_folder_title)。
+
+批量入库走前端 File System Access API:用户在浏览器选目录 / 选单篇 .md,
+前端读出 content + 相对路径后整批 POST。后端只接结构化数据,不解压。
 """
 
 from __future__ import annotations
 
-import io
-import zipfile
 from collections import defaultdict
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -22,25 +23,18 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from jobcopilot_api.errors import (
-    ConflictError,
-    JobCopilotError,
-    NotFoundError,
-    ValidationError,
-)
+from jobcopilot_api.errors import ConflictError, NotFoundError
 from jobcopilot_api.models.note import Note
 from jobcopilot_api.models.note_chunk import NoteChunk
 from jobcopilot_api.schemas.notes import (
+    BatchImportReport,
+    NoteBatchImportItem,
     NoteCreateIn,
     NoteOut,
     NoteUpdateIn,
     TreeNode,
-    UploadZipReport,
 )
 from jobcopilot_api.services import chunk_service
-
-# zip 上限 50MB(4-API_SPEC §3.1)
-MAX_ZIP_BYTES = 50 * 1024 * 1024
 
 
 # --- 业务错误 ----------------------------------------------------------
@@ -54,17 +48,6 @@ class NoteNotFoundError(NotFoundError):
 class DuplicateFolderTitleError(ConflictError):
     code = "duplicate_folder_title"
     title = "同 folder + title 已存在"
-
-
-class InvalidZipError(ValidationError):
-    code = "invalid_zip"
-    title = "zip 文件解析失败"
-
-
-class ZipTooLargeError(JobCopilotError):
-    status_code = 413
-    code = "zip_too_large"
-    title = "zip 文件过大(上限 50MB)"
 
 
 # --- ORM <-> Pydantic 转换 ---------------------------------------------
@@ -239,82 +222,43 @@ def _build_tree(notes: Iterable[Note]) -> list[TreeNode]:
     return [build_node(r) for r in roots]
 
 
-# --- zip 上传 ----------------------------------------------------------
+# --- 批量入库 ----------------------------------------------------------
 
 
-async def upload_zip(
+async def batch_import(
     session: AsyncSession,
-    file_bytes: bytes,
+    items: list[NoteBatchImportItem],
     root_folder: str | None,
     overwrite: bool,
-) -> UploadZipReport:
-    """zip 上传:解压 → 扫 .md → 按相对路径解析 folder_path → 入库。
+) -> BatchImportReport:
+    """批量入库:逐条查重 + chunk(同事务)。
 
     错误处理:
-    - 文件 > 50MB → ZipTooLargeError(413)
-    - zipfile 解析失败 → InvalidZipError(400)
     - 同 folder + title 已存在 + overwrite=False → 跳过 + reason=duplicate_folder_title
-    - 非 .md 文件 → 跳过 + reason=non_markdown_file
+    - 同 folder + title 已存在 + overwrite=True → 替换 content_md + 重切 chunks
+    - root_folder 非空时,所有 item.folder_path 前面拼上 root_folder
+    - 单条失败不影响整批(并发场景 IntegrityError 兜底)
     """
-    if len(file_bytes) > MAX_ZIP_BYTES:
-        raise ZipTooLargeError(
-            f"zip 大小 {len(file_bytes)} 超上限 {MAX_ZIP_BYTES}"
-        )
-
-    try:
-        zf = zipfile.ZipFile(io.BytesIO(file_bytes))
-    except zipfile.BadZipFile as e:
-        raise InvalidZipError(f"zip 解析失败: {e}") from e
-
     imported = 0
     skipped = 0
     skipped_reasons: list[dict[str, str]] = []
     note_ids: list[int] = []
     prefix = [root_folder] if root_folder else []
 
-    for entry in zf.infolist():
-        if entry.is_dir():
-            continue
-        if not entry.filename.lower().endswith(".md"):
-            skipped += 1
-            skipped_reasons.append(
-                {"path": entry.filename, "reason": "non_markdown_file"}
-            )
-            continue
+    for item in items:
+        folder_path = prefix + list(item.folder_path)
+        title = item.title
+        path_label = "/".join(folder_path + [f"{title}.md"])
 
-        # 解析相对路径 → folder_path + title
-        parts = [p for p in entry.filename.replace("\\", "/").split("/") if p]
-        if not parts:
-            skipped += 1
-            skipped_reasons.append(
-                {"path": entry.filename, "reason": "empty_path"}
-            )
-            continue
-
-        title = parts[-1].removesuffix(".md").removesuffix(".MD")
-        folder_path = prefix + parts[:-1]
-
-        try:
-            content_md = zf.read(entry).decode("utf-8")
-        except UnicodeDecodeError:
-            skipped += 1
-            skipped_reasons.append(
-                {"path": entry.filename, "reason": "non_utf8"}
-            )
-            continue
-
-        # 查重
-        existing = await _find_active_by_folder_title(
-            session, folder_path, title
-        )
+        existing = await _find_active_by_folder_title(session, folder_path, title)
         if existing is not None:
             if not overwrite:
                 skipped += 1
                 skipped_reasons.append(
-                    {"path": entry.filename, "reason": "duplicate_folder_title"}
+                    {"path": path_label, "reason": "duplicate_folder_title"}
                 )
                 continue
-            existing.content_md = content_md
+            existing.content_md = item.content_md
             await session.flush()
             await chunk_service.rechunk_note(session, existing.id)
             imported += 1
@@ -324,8 +268,8 @@ async def upload_zip(
         note = Note(
             folder_path=folder_path,
             title=title,
-            content_md=content_md,
-            source="zip_upload",
+            content_md=item.content_md,
+            source="local_md",
         )
         session.add(note)
         try:
@@ -335,7 +279,7 @@ async def upload_zip(
             # 并发场景理论上能命中(单用户 MVP 几乎不可能):报跳过
             skipped += 1
             skipped_reasons.append(
-                {"path": entry.filename, "reason": "duplicate_folder_title"}
+                {"path": path_label, "reason": "duplicate_folder_title"}
             )
             _ = e
             continue
@@ -344,7 +288,7 @@ async def upload_zip(
         imported += 1
         note_ids.append(note.id)
 
-    return UploadZipReport(
+    return BatchImportReport(
         imported=imported,
         skipped=skipped,
         skipped_reasons=skipped_reasons,

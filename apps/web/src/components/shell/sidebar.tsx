@@ -12,6 +12,7 @@ type NavGroup = { key: string; title?: string; items: NavItem[] };
 
 const NAV: NavGroup[] = [
   { key: 'home', items: [{ href: '/', label: '首页', icon: <HomeIcon />, match: 'exact' }] },
+  { key: 'notes', items: [{ href: '/notes', label: '笔记', icon: <NotesIcon />, match: 'prefix' }] },
 ];
 
 function isActive(item: NavItem, pathname: string, siblings: readonly NavItem[]): boolean {
@@ -76,6 +77,16 @@ function HomeIcon() {
   return (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
       <path d="M2 7.5 8 2.5l6 5V13a1 1 0 0 1-1 1h-3v-4H6v4H3a1 1 0 0 1-1-1V7.5Z" />
+    </svg>
+  );
+}
+
+function NotesIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+      <path d="M3.5 2h6.5l3 3v9a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-11a.5.5 0 0 1 .5-.5Z" />
+      <path d="M10 2v3h3" />
+      <path d="M5.5 8h5M5.5 10.5h5M5.5 6h2" />
     </svg>
   );
 }

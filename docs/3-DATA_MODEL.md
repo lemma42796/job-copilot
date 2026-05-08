@@ -69,7 +69,7 @@ M1-M3 是单用户本地 dogfood,**所有业务表均不带 `user_id`**。M4+ Sa
 
 | ENUM 名 | 值 | 用途 |
 |---------|----|----|
-| `note_source` | `zip_upload` / `web_editor` / `yuque` | notes.source;`yuque` 仅 M3 启用 |
+| `note_source` | `local_md` / `web_editor` / `yuque` | notes.source;`local_md` = File System Access API 选目录 / 选单篇;`yuque` 仅 M3 启用 |
 | `question_type` | `open_ended` / `definition` | questions.type;PRD §5.2 US-6 |
 | `quiz_session_status` | `in_progress` / `submitted` / `abandoned` | quiz_sessions.status |
 
@@ -114,7 +114,7 @@ CREATE INDEX ix_notes_external_id
 
 字段语义:
 
-- `folder_path`:笔记在树形导航中的位置。zip 上传时从相对路径解析(`Java/并发/synchronized.md` → `['Java','并发']`),编辑器场景用户在保存时点选目标 folder
+- `folder_path`:笔记在树形导航中的位置。本地目录直读时从相对路径解析(`Java/并发/synchronized.md` → `['Java','并发']`),编辑器场景用户在保存时点选目标 folder
 - `content_md`:整篇 markdown,用户编辑保存覆盖即可。**chunker 从这里取**,不依赖磁盘文件
 - `external_id`:M3 语雀同步时存 doc slug,本地编辑器笔记保持 NULL
 - `external_updated_at`:语雀 doc 上次更新时间,增量同步对比基准

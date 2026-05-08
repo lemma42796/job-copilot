@@ -175,9 +175,9 @@ apps/api/src/jobcopilot_api/
 ```
 apps/web/src/
 ├── app/                            # Next.js App Router
-│   ├── (notes)/                    # 树形导航 + 笔记编辑
+│   ├── notes/                      # 树形导航 + 笔记编辑
 │   │   ├── page.tsx                # 树 + 编辑器双栏
-│   │   └── upload/page.tsx         # zip 上传
+│   │   └── import/page.tsx         # 本地目录 / 单篇导入(File System Access API)
 │   ├── (quiz)/
 │   │   ├── new/page.tsx            # 选节点 + 启动 session
 │   │   ├── [sessionId]/page.tsx    # 答题页
@@ -216,20 +216,24 @@ apps/web/src/
 
 # 5. 五条核心数据流
 
-## 5.1 笔记 zip 上传
+## 5.1 笔记本地目录直读
 
 ```
-FE (拖拽 .zip)
-  → POST /api/notes/upload-zip (multipart)
-  → routers/notes.upload_zip
-  → services/notes_service.upload_zip()
-      ├─ infra/upload.unpack_zip → list[(rel_path, content_md)]
-      ├─ for each .md:
-      │    ├─ services/chunk_service.chunk_markdown(content_md)
+FE (showDirectoryPicker / showOpenFilePicker — Chromium 系浏览器)
+  → 浏览器递归遍历选中目录,每个 .md await file.text()
+  → 按相对路径解析 folder_path,内存里组装 NoteBatchImportItem[]
+  → 分批(默认 50/批)POST /api/notes/batch-import (application/json)
+  → routers/notes.batch_import
+  → services/notes_service.batch_import()
+      ├─ for each item:
+      │    ├─ 查重 (folder_path, title) WHERE deleted_at IS NULL
+      │    │     ├─ 已存在 + overwrite=False → 跳过 + 加 skipped_reasons
+      │    │     └─ 已存在 + overwrite=True  → 覆盖 content_md + 重切
+      │    ├─ services/chunk_service.rechunk_note(note.id)
       │    │     → list[NoteChunk](按 H2/H3 切,heading_path 元数据)
-      │    └─ INSERT notes + note_chunks(embedding=NULL)
-      └─ workers/embed_worker.notify_pending()  # 唤醒后台 worker
-  → 返回 {imported, skipped, note_ids}
+      │    └─ INSERT notes(source='local_md')+ note_chunks(embedding=NULL)
+      └─ 单事务 commit
+  → 返回 {imported, skipped, skipped_reasons, note_ids}
 ```
 
 后台 embed worker 异步算 embedding(详见 §5.5)。**API 不等**。

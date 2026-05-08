@@ -15,7 +15,7 @@ REST 走标准 JSON,慢请求(出题 / 评分 / JD 一键分析 / 简历诊断)�
 
 - 所有端点挂 `/api/` 前缀(前端 base URL = `http://localhost:8000/api`)
 - 请求 / 响应 body 一律 `application/json; charset=utf-8`,JSON 不转义中文(`ensure_ascii=False`)
-- 上传文件(`/api/notes/upload-zip`)走 `multipart/form-data`
+- 笔记入库走 application/json(`/api/notes/batch-import`),笔记内容由前端走 File System Access API 从本地读出来后整批 POST,后端不接 multipart
 - 时间戳一律 ISO-8601 UTC(`2026-05-08T03:14:00Z`)
 - ID 一律 BIGINT,JSON 里以数字传
 
@@ -74,17 +74,33 @@ data: <json>
 
 # 3. 笔记 API(M1)
 
-## 3.1 `POST /api/notes/upload-zip`
+## 3.1 `POST /api/notes/batch-import`
 
-zip 上传 → 后端 unzip + 按相对路径解析 folder_path + chunker 入库。**同步**(MVP 笔记量 < 200 篇,5s 内完成),前端显示 loading;如未来量大则切到异步 + SSE(M2 再说)。
+批量入库 → 前端走 File System Access API 在浏览器选目录 / 选单篇 .md,本地读完 content 后按相对路径解析 folder_path 整批 POST。后端逐条 chunker 入库。**同步**(MVP 笔记量 < 200 篇,5s 内完成),前端显示 loading;如未来量大则切到异步 + SSE(M2 再说)。
 
-请求:`multipart/form-data`
+**为啥不上传 zip?** 笔记本来就在用户本地,先打包再上传纯属多此一步;浏览器端的 File System Access API(Chromium 系)能直接读本地目录,免去打包/解压两端代码。Safari 仅能选单文件,Firefox 暂不支持 — 前端做特性检测,不支持时提示用 Chromium 系浏览器。
+
+请求:`application/json`
+
+```json
+{
+  "items": [
+    {"folder_path": ["Java", "并发"], "title": "synchronized", "content_md": "# ..."},
+    {"folder_path": ["Java"],         "title": "JMM",          "content_md": "# ..."}
+  ],
+  "root_folder": "archive",
+  "overwrite": false
+}
+```
 
 | field | type | 说明 |
 |-------|------|----|
-| `file` | binary | `.zip` 文件,内含若干 `.md`(目录层级保留) |
-| `root_folder` | string | (可选)入库时挂载到的 folder 前缀,如 `"Java"`;不传则直接用 zip 内顶层目录 |
-| `overwrite` | bool | (可选)同 folder + title 已存在时是否覆盖,默认 `false`(返回 409) |
+| `items` | NoteBatchImportItem[] | 单批 1-100 条;前端遇到大目录自行分批多次 POST(每批默认 50)|
+| `items[].folder_path` | string[] | 相对 `root_folder` 的子路径(如选目录时按子目录层级解析,选单文件默认 `[]`)|
+| `items[].title` | string | 文件名去 .md(浏览器端处理) |
+| `items[].content_md` | string | UTF-8 markdown 文本(浏览器端 `await file.text()` 读出)|
+| `root_folder` | string \| null | (可选)入库时挂载到的 folder 前缀,如 `"Java"` |
+| `overwrite` | bool | (可选)同 folder + title 已存在时是否覆盖 content_md,默认 `false`(跳过)|
 
 响应 200(同步入库报告):
 
@@ -93,14 +109,13 @@ zip 上传 → 后端 unzip + 按相对路径解析 folder_path + chunker 入库
   "imported": 42,
   "skipped": 3,
   "skipped_reasons": [
-    {"path": "drafts/foo.md", "reason": "non_markdown_file"},
-    {"path": "Java/dup.md",  "reason": "duplicate_folder_title"}
+    {"path": "Java/dup.md", "reason": "duplicate_folder_title"}
   ],
   "note_ids": [101, 102, ...]
 }
 ```
 
-错误:`400 invalid_zip` / `400 zip_too_large`(> 50MB)/ `409 duplicate_folder_title`(且 `overwrite=false`)
+错误:`409 duplicate_folder_title`(并发场景兜底,不再作为单独 HTTP 错误抛出 — 默认走 skipped 报告)/ `422`(items 为空 / >100 / 字段格式错)
 
 **embedder 异步**:笔记入库时只切 chunks + 落 `content` / `content_tsv`,`embedding` 字段先 NULL;后台 worker 拉队列补 embedding(URL 不感知,前端不等)。
 
@@ -900,7 +915,7 @@ data: {"ok": true}
 | 分页 | cursor(`?cursor=<id>&limit=N`)| 不用 offset(深度分页性能差) |
 | SSE 协议 | 沿用 v1:`started → progress* → result/done` | 永久约束 #21,前端走 `web/lib/sse.ts` |
 | 错误格式 | `{code, detail}`(沿用 v1 JobCopilotError) | code 给前端分支,detail 中文给用户看 |
-| zip 上传 | 同步(MVP);量大切异步 + SSE(M2 再说) | 先简单 |
+| 笔记批量导入 | 同步(MVP);前端按 50 条/批 POST,量大切异步 + SSE(M2 再说) | 走 File System Access API,免去 zip 打包 |
 | embedder | 异步后台 worker | API 端点不等 embedding 完;`embedding IS NULL` 的 chunk hybrid search 自动跳过 |
 | reference 防作弊 | session in_progress 时不返 reference_answer / reference_points | active recall 强约束 |
 | Judge 调用粒度 | MVP 单次 LLM 调用拿三层分;后续可拆 | 简化 SSE 事件;若 Judge 准确度不达标再拆 |

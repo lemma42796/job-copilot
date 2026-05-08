@@ -1,8 +1,7 @@
 """Notes REST 端点(M1,4-API_SPEC §3)。
 
 router 自身 prefix `/notes`;main.py include 时挂 `/api` 前缀,实际
-端点路径 = `/api/notes/*`。所有端点 application/json,upload-zip 走
-multipart/form-data。
+端点路径 = `/api/notes/*`。所有端点 application/json。
 
 错误统一抛 JobCopilotError 子类(notes_service 顶部定义),全局
 exception handler 转 RFC 7807 problem+json(2-TECH §7)。
@@ -16,17 +15,18 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from jobcopilot_api.infra.db import get_session
 from jobcopilot_api.schemas.notes import (
+    BatchImportReport,
+    NoteBatchImportIn,
     NoteCreateIn,
     NoteMoveIn,
     NoteOut,
     NoteUpdateIn,
     TreeNode,
-    UploadZipReport,
 )
 from jobcopilot_api.services import notes_service
 
@@ -86,19 +86,18 @@ async def move_note(
 
 
 @router.post(
-    "/upload-zip",
-    response_model=UploadZipReport,
-    summary="zip 上传 .md 笔记 — 同步入库",
+    "/batch-import",
+    response_model=BatchImportReport,
+    summary="批量入库 — 前端 File System Access API 读完本地 .md 后整批 POST",
 )
-async def upload_zip(
-    file: Annotated[UploadFile, File(description=".zip 文件,内含 .md")],
-    session: SessionDep,
-    root_folder: Annotated[str | None, Form()] = None,
-    overwrite: Annotated[bool, Form()] = False,
-) -> UploadZipReport:
-    file_bytes = await file.read()
-    report = await notes_service.upload_zip(
-        session, file_bytes, root_folder, overwrite
+async def batch_import(
+    payload: NoteBatchImportIn, session: SessionDep
+) -> BatchImportReport:
+    report = await notes_service.batch_import(
+        session,
+        items=payload.items,
+        root_folder=payload.root_folder,
+        overwrite=payload.overwrite,
     )
     await session.commit()
     return report

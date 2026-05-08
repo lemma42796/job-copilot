@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-08
+last_updated: 2026-05-08-2
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -61,7 +61,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 |----|------|------|
 | 产品形态 | 学计算机的人的"找方向 + 笔记练习 + 简历诊断"全闭环 | 见 PRD §1-4 |
 | 目标用户 | 学计算机的人(本科 / 研究生 / 1-3 年 / 5+ 年都包含,只排除非开发岗)| 见 PRD §2 |
-| 笔记输入源 | M1: .md zip 上传 + Web 编辑器 | 不做 Notion / 飞书 / Obsidian / **语雀** sync |
+| 笔记输入源 | M1: 本地目录 / 文件直读(File System Access API)+ Web 编辑器 | **不接 zip 上传**(笔记本来在本地,免打包);不做 Notion / 飞书 / Obsidian / **语雀** sync |
 | JD 输入源 | 文本粘贴 + 截图(Qwen 多模态)| 累积型,陆续上传;立即解析 |
 | JD 单次分析上限 | 200 条 / hierarchical reduce | 见 PRD §9 + 7-ROADMAP M2.5 |
 | 简历诊断 | 两方锚点严格(JD req + 简历位置);**永不输出改写文案** | 见 PRD §9 + 5-AGENT §7 |
@@ -82,6 +82,10 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 # 永久约束累积
 
 (M0 启动新内核,v1 永久约束已归档到 git history;v2 新约束在此区累积)
+
+- **[来自 M1] 笔记不接 zip 上传** — 笔记本来在用户本地,前端走 File System Access API(showDirectoryPicker / showOpenFilePicker)直接读;后端只接 application/json 批量导入端点,不接 multipart。仅支持 Chromium 系浏览器(Safari 仅单文件 / Firefox 不支持时给提示)。后续里程碑(M2.5 JD / M3 简历)如有"读本地文件"需求,沿用同模式。
+- **[来自 M1] JobCopilot 项目所有开发任务一律不写测试代码** — 用户已多次声明所有测试 / 自动化校验由用户手动跑;在此基础上明确不只是"不主动跑",而是不写 unit / integration / e2e 测试文件。已写好的测试不删,新切片不再产出。STATUS.md 列出的测试 TODO 不主动开工,问用户后再做。
+- **[来自 M1] 笔记 / 文档类负载用总字数衡量,不用篇数** — DoD、评测样本规模、压力测试目标全部按总字数(或 token 数),不按篇数。理由:50 篇 × 100 字与 50 篇 × 2000 字对 chunker / embedding / hybrid search 的压力差一个数量级,篇数是虚假指标。例外:面试题数 / quiz session 题数等"功能型计数"仍用篇数(产品规格不是负载指标)。
 
 # 文档清单
 
@@ -106,7 +110,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ✅ 已完成:
 1. ✅ alembic 索引核对 — 0016 hybrid 索引齐全(folder_path GIN / embedding HNSW / content_tsv GIN),无需补 revision
 2. ✅ chunk_service heading-aware chunker — H2 默认 + 超 MAX 拆 H3 + 段落兜底 + overlap;15 unit test(commit `04a7620`)
-3. ✅ notes_service 7 函数 — CRUD + zip 上传 + 树形导航(commit `b22df61`)
+3. ✅ notes_service 7 函数 — CRUD + 批量导入(原 zip 上传已改为前端 File System Access API + 后端 batch_import)+ 树形导航
 4. ✅ routers/notes.py 7 端点 + main.py 挂 /api 前缀(commit `8b5946e`)
 5. ✅ agents/embedder.embed_batch — 走 langfuse.openai 自动 instrument(commit `5dd4e66`)
 6. ✅ workers/embed_worker.process_batch — BATCH_SIZE=10 跟百炼 EMBED_BATCH_LIMIT 对齐
@@ -114,10 +118,10 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 ⏳ 剩余:
 
-8. **前端 Web 编辑器 + 树形导航 + zip 上传页**(M1 范围内 4 个页面):`(notes)/page.tsx` 树+编辑器双栏 / `(notes)/upload/page.tsx` zip 上传。Monaco editor + Tailwind 自己写,不引组件库(8-ENG 锁定)
+8. ✅ **前端 Web 编辑器 + 树形导航 + 本地目录直读导入页**(从原 4 页面缩到 2 页面):`notes/page.tsx` 树+Monaco 双栏 / `notes/import/page.tsx` 选目录(showDirectoryPicker) + 选单篇/多篇(showOpenFilePicker),Safari/Firefox 显示提示;Tailwind 自己写,不引组件库(8-ENG 锁定)
 9. **Langfuse 起步验证**:embed_batch 已走 langfuse.openai wrapper 自动 instrument 不需写代码;启 docker compose + 注册 + 配 PUBLIC/SECRET key 进 .env + 重启 api → 浏览器开 http://localhost:3001 看 trace 是否进。(8-ENG §11.3)
 10. **M1 DoD 验证**(7-ROADMAP §M1):
-    - 50+ 篇 zip 上传 + 全部入库,chunk 数符合预期
+    - 选总字数 ≥ 10 万字的笔记目录 + 全部入库,chunk 数符合预期(字数衡量负载,不按篇数)
     - Web 编辑器写新笔记 + 选目标 folder + 保存,3 秒内出现在树形导航
     - 编辑老笔记 → 老 chunks 删除 + 新 chunks 入库
     - hybrid search recall@5 ≥ 0.85(评测套件 6-EVAL §5)

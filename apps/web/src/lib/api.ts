@@ -392,4 +392,99 @@ export async function createResumeVersion(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Notes(M1 — 树形导航 + Monaco 编辑器 + 本地目录批量导入)
+// ---------------------------------------------------------------------------
+//
+// schema 暂时手写,后续 pnpm gen:api 之后可以替换为
+// components['schemas']['NoteOut'] 等生成版本。
+
+export type NoteOut = {
+  id: number;
+  folder_path: string[];
+  title: string;
+  content_md: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TreeNode = {
+  folder_path: string[];
+  notes: NoteOut[];
+  children: TreeNode[];
+};
+
+export type NoteCreateInput = {
+  folder_path: string[];
+  title: string;
+  content_md: string;
+};
+
+export type NoteUpdateInput = {
+  title?: string | null;
+  content_md?: string | null;
+  folder_path?: string[] | null;
+};
+
+export type NoteBatchImportItem = {
+  folder_path: string[];
+  title: string;
+  content_md: string;
+};
+
+export type NoteBatchImportInput = {
+  items: NoteBatchImportItem[];
+  root_folder?: string | null;
+  overwrite?: boolean;
+};
+
+export type BatchImportReport = {
+  imported: number;
+  skipped: number;
+  skipped_reasons: { path: string; reason: string }[];
+  note_ids: number[];
+};
+
+export async function listNotesTree(signal?: AbortSignal): Promise<TreeNode[]> {
+  return jsonFetch<TreeNode[]>('/api/notes/tree', { signal });
+}
+
+export async function getNote(id: number, signal?: AbortSignal): Promise<NoteOut> {
+  return jsonFetch<NoteOut>(`/api/notes/${id}`, { signal });
+}
+
+export async function createNote(input: NoteCreateInput): Promise<NoteOut> {
+  return jsonFetch<NoteOut>('/api/notes', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateNote(id: number, input: NoteUpdateInput): Promise<NoteOut> {
+  return jsonFetch<NoteOut>(`/api/notes/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteNote(id: number): Promise<void> {
+  await jsonFetch<void>(`/api/notes/${id}`, { method: 'DELETE' });
+}
+
+export async function moveNote(id: number, newFolderPath: string[]): Promise<NoteOut> {
+  return jsonFetch<NoteOut>(`/api/notes/${id}/move`, {
+    method: 'POST',
+    body: JSON.stringify({ new_folder_path: newFolderPath }),
+  });
+}
+
+export async function batchImportNotes(
+  input: NoteBatchImportInput,
+): Promise<BatchImportReport> {
+  return jsonFetch<BatchImportReport>('/api/notes/batch-import', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
 export { API_BASE_URL };
