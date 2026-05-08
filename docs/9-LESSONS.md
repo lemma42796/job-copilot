@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 工程踩坑录(Lessons Learned)
 owner: lemma42796
-last_updated: 2026-05-06
+last_updated: 2026-05-08
 purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因 + 解决方案,按主题分 8 类。每条字段统一为「症状 / 根因 / 修法 / 沉淀」,链接详细切片归档,作为面向外部读者(招聘 / 协作者 / 博客读者)的索引视图。
 ---
 
@@ -235,6 +235,13 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 - **根因**:文档 schema 设计先于 SSE 实现,没考虑"phase-1 INSERT 时 resource 还没数据"的两阶段模型
 - **修法**:偏离 DATA_MODEL,加 `match_status` enum(pending / scored / failed),`score` 改 nullable + check constraint(NULL OR 0..100)。migration / model docstring 写明偏离原因
 - **沉淀**:[详见 S13-S15 §设计决策](slices/S13-S15-match-mvp.md)。**教训**:文档 schema 与实现冲突时,优先 SSE 实现倒推 schema(因为 SSE 是用户体验路径,schema 可以加列)
+
+## 7.5 git rm 自动 stage 但 Edit/Write 不自动 stage,混合操作必须 git status 确认
+
+- **症状**:M0 砍 v1 commit `82fe749` 漏带 5 个文件(main.py / models/__init__.py / sidebar.tsx / titlebar.tsx / page.tsx)的 Edit/Write 修改,HEAD 处于 broken 状态:main.py 还 import 已删的 v1 routers,models/__init__.py 还 import 已删的 v1 models,sidebar 还引用已删的 v1 路由 — FastAPI 启动 ImportError,Next.js typed-routes 编译炸
+- **根因**:操作顺序是先 `git rm -rq v1_*`(自动 stage 删除)→ 再 Edit/Write 改沿用层(**不会自动 stage**)→ 最后 `git add docs/STATUS.md`(只 stage STATUS)→ `git commit`。结果只 110 个删除 + STATUS 进 commit,5 个修改留在 working tree。当时没有 commit 前跑 `git status` 确认,直接 commit message 描述了"修改 5 文件"但实际没 stage
+- **修法**:紧跟下一个 commit `32af0db` 把漏带 5 文件 + SDK 切换一起补(原本应该在新 commit 里 push,所以 fix 不影响生产);commit message 老实写明"上次漏带 + 同步落 SDK 切换",不掩饰
+- **沉淀**:工程纪律 — **commit 前永远 `git status --short` 确认每个该进的都在 staged 列(M / D / A)**;不要假设"我做了 X 操作 staged 自然带"。`git rm` 跟 `git add` 才自动 stage,Edit/Write 不会。复合操作(git rm + Edit 混跑)更要确认。**教训**:大批量操作(110 文件)一气呵成才 commit 容易漏;混合操作时把 `git rm` 跟 Edit/Write 拆成两个独立 commit 也是合理的(各自纯一种操作类型,不会混淆 stage 状态)
 
 ---
 
