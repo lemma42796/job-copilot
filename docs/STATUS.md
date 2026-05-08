@@ -31,23 +31,28 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 - ✅ CLAUDE.md 文件导航更新
 - ✅ docs/8-ENGINEERING.md 重写(仓库结构 / 工具链 / CI / 迁移 / 本地开发 / 部署 / Langfuse 实操)
 - ✅ 砍旧代码 v1(110 文件 / -20.7K LoC):apps/api/agents 整目录 + services v1(7 个) + routers v1 + _deps + schemas 整目录 + prompts 整目录(6 个 v1 子目录) + models v1(7 个) + infra/{upload,pdf}.py + 配套 17 个 v1 单测 + 9 个 v1 集成测试 + apps/web/{jds,matches,profiles,resumes}/ + components/list/;沿用层留:llm/(全)/ infra/{db,embedder,llm,logging,prompts,request_id} / models/{base,llm_call,llm_response_cache,prompt_version} / services/tokenize / routers/health / web/{shell,ui,lib,layout,globals.css,page.tsx 文案改 v2}
-- ⏳ 新建 v2 模块骨架(详见 2-TECH §4.1):
-  - agents/{quiz_generator, answer_judge, jd_parser, jd_aggregator, resume_advisor, embedder, followup_orchestrator}
-  - services/{notes_service, chunk_service, search_service, quiz_service, answer_service, jd_service, resume_service, knowledge_gap_service}
-  - models/{note, note_chunk, question, quiz_session, session_answer, knowledge_gap, jd, jd_analysis, resume, resume_analysis}
-- ⏳ LLM SDK 切换:DashScope 原生 SDK → OpenAI Python SDK(走百炼兼容接口)+ Langfuse OpenAI wrapper
-- ⏳ 新建 alembic 0016 migration(v2 表 + 砍 v1 表)
+- 🔄 新建 v2 模块骨架(详见 2-TECH §4.1):
+  - ✅ models/{note, note_chunk, question, quiz_session, session_answer, knowledge_gap, jd, jd_analysis, resume, resume_analysis} 10 张 ORM 落地;__init__.py 更新 export(alembic env.py 通过 Base.metadata 看到全部)
+  - ⏳ agents/{quiz_generator, answer_judge, jd_parser, jd_aggregator, resume_advisor, embedder, followup_orchestrator}
+  - ⏳ services/{notes_service, chunk_service, search_service, quiz_service, answer_service, jd_service, resume_service, knowledge_gap_service}
+  - ⏳ schemas/(Pydantic IO 校验 + SSE 事件 schema + agent IO)
+  - ⏳ workers/embed_worker
+- ✅ LLM SDK 切换:OpenAI Python SDK(走百炼 base_url)+ Langfuse OpenAI wrapper(`from langfuse.openai import AsyncOpenAI` 自动 instrument);settings 加 langfuse 三件套字段;main.py 启动镜像 LANGFUSE_*
+- ✅ 新建 alembic 0016 migration(DROP v1 表 / ENUM + CREATE v2 ENUM × 3 + v2 表 × 10 + 8 个 updated_at 触发器);test_migrations.py EXPECTED_TABLES 同步换 v2;downgrade 不实做(NotImplementedError,DATA_MODEL §10)
 - ⏳ docker-compose.yaml 加 langfuse + langfuse-db(详见 2-TECH §6.5)
-- ⏳ tag `v0.1-jobcopilot-v1` 锁 v1 末态
-- ⏳ M0 sanity check:curl 百炼 OpenAI 兼容接口验证 thinking 参数(extra_body)+ tool use + image_url 多模态都能跑通
+- ✅ tag `v0.1-jobcopilot-v1` 锁 v1 末态(`390efe9` HEAD,含 v2 全套设计文档)
+- ✅ M0 sanity check:百炼 OpenAI 兼容接口三件验证通过(thinking 4096 reasoning_tokens / tool_calls.function.name / 图像识别 prompt_tokens 2522)
 
 # 当前 working tree
 
-**待 commit**:M0 砍 v1 — 110 文件删除 / 5 文件改(main.py / models/__init__.py / sidebar.tsx / titlebar.tsx / page.tsx 文案换 v2) + 本 STATUS.md。
+**待 commit**:v2 model 骨架(10 个 ORM 文件)+ models/__init__.py 重写 + alembic 0016 v2 schema + test_migrations.py 重写 + 本 STATUS.md。
 
-**M0 砍 v1 阶段完结**,后端 + 前端只剩沿用层 + health + macOS shell。下一步进入"建 v2 骨架 + LLM SDK 切换 + alembic 0016 + langfuse 三件套"。
+**M0 schema 阶段完结**,DB 层从 v1(users / files / profiles / matches / resumes 等 12 张)切到 v2(笔记 SR 6 张 + JD 2 张 + 简历 2 张 + 沿用 LLM cost 3 张)。下一步进入"agent / service / schema 骨架"+ docker-compose 加 langfuse。
 
-slices/ / adr/ / docs/adr/ 早期 commit 已清,evals/suites/ 已空(只剩 README + .env*),无需额外砍。
+LLM SDK 切换 + sanity check 已落地;前面 commit 历史:
+- `390efe9` 8-ENGINEERING 文档完工 + tag `v0.1-jobcopilot-v1`
+- `82fe749` M0 砍 v1(110 删,但 5 个修改没 stage)
+- `32af0db` 补漏 + LLM SDK 切换 langfuse
 
 # 已锁定的关键决策(v2 起,完整版见各文档)
 
@@ -95,12 +100,15 @@ slices/ / adr/ / docs/adr/ 早期 commit 已清,evals/suites/ 已空(只剩 READ
 
 # 下一步建议
 
-1. commit M0 砍 v1(110 删 / 5 改)+ STATUS 刷新 → push
-2. 新建 v2 模块骨架:agents/{quiz_generator, answer_judge, jd_parser, jd_aggregator, resume_advisor, embedder, followup_orchestrator} + services/{notes_service, chunk_service, search_service, quiz_service, answer_service, jd_service, resume_service, knowledge_gap_service} + models v2 11 张 + schemas v2 + workers/embed_worker
-3. LLM SDK 切换:`from openai import OpenAI` → `from langfuse.openai import OpenAI`(走百炼 base_url 兼容接口)
-4. 新建 alembic `0016_v2_schema.py`(DROP v1 表 × 7 + CREATE v2 表 × 11);test_migrations.py 同步换 EXPECTED_TABLES 为 v2 表名
-5. docker-compose 加 langfuse + langfuse-db 两服务,端口 3001 / 5433
-6. M0 完成 → tag `v0.2-m0-end` → 开 M1
+1. commit v2 model + alembic 0016 + STATUS → push
+2. 新建 v2 agent / service / schema / worker 骨架:
+   - agents/{quiz_generator, answer_judge, jd_parser, jd_aggregator, resume_advisor, embedder, followup_orchestrator}(子目录 + agent.py + prompts.py 占位)
+   - services/{notes_service, chunk_service, search_service, quiz_service, answer_service, jd_service, resume_service, knowledge_gap_service}(空函数 + 类型 stub)
+   - schemas/(Pydantic IO + SSE 事件 schema + agents/ IO schema)
+   - workers/embed_worker(后台轮询 embedding=NULL chunks 批量算)
+   - main.py lifespan 挂 embed_worker 启动钩子
+3. docker-compose.yaml 加 langfuse + langfuse-db 两服务(端口 3001 / 5433);api 服务 environment 加 JOBCOPILOT_LANGFUSE_*
+4. M0 完成 → tag `v0.2-m0-end` → 开 M1(笔记入库 + chunker + 树形导航 + Langfuse 起步)
 
 # v1 历史
 
