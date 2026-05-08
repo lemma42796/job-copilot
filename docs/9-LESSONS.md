@@ -279,6 +279,51 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 - Router / SSE 出口层 = 把错误转 protocol 事件
 - 三层职责清晰,任意一层揉进别层职责都是后续维护痛点
 
+## 8.7 多 provider 抽象的真实成本(v2 设计阶段沉淀)
+
+- **诱惑**:面试讲 harness 时多 provider 听起来高级("LLMClient 抽象 + Qwen / Claude / GPT 可切")
+- **真实成本**:prompt **不是 portable 的**
+  - 中文标记 `【硬约束】` Qwen 适配最好,Claude / GPT 也读懂但行为漂移
+  - JSON 严格输出可靠性各家不同(Qwen ~95% / Claude 偶尔加 markdown 包装 / GPT 偶尔加前缀)
+  - 中文 token 效率差 2-3 倍(Qwen 0.6 字/token vs GPT 1.5-2 字/token),context 占用爆
+  - 中文常识广度差异显著:Judge 评 fidelity 时,Claude 可能把"javac 是 Java 编译器"标 fabricated(直接撞 [1.1](#11) 假阳性同款风险)
+  - reasoning 模式不同(Qwen `thinking on` 隐式 / Claude `extended thinking` 显式 budget / GPT o1 系列)
+- **决策**(v2 M0 设计阶段):**LLMClient 接口抽象保留**(扩展点),**只 ship Qwen**;真切 provider 是 1-2 周工作量(3-5 天 prompt 重写 / provider × 30 条 dataset 跑 kappa / 维护 N 套 prompt 版本号),**不是 1 天**
+- **教训**:harness 的设计抽象 ≠ 实际多实例。设计 portable 是 free 的,实际 portable 是 expensive 的。**别为了简历加 feature**,trade-off 论证比真做出来更值钱
+
+## 8.8 Tool use 用在反假阳性场景最直接(v2 设计阶段沉淀)
+
+- **背景**:[1.1](#11) Reviewer 把候选人**真实**教育经历标编造,根因是只看局部 chunks 不知道用户其他笔记里写过同样内容
+- **v2 修法**:AnswerJudge 在标 fabricated 前**强制**调 `lookup_in_notes_global(claim, top_k=3)` 工具(全笔记库 hybrid search),命中即降级 supported / inferred,不命中才标 fabricated
+- **设计要点**:
+  - Tool **不是放给 LLM 自由调**,是 prompt 强约束"标 fabricated 前必调一次"+ service 层 post-check(没调直接重跑)
+  - Tool 调用 ≤ 5 次/answer,防 LLM 滥调
+  - 评测路径**不禁工具** + 跑 baseline(tool=off)对照,没对照不知道工具有没有真实价值
+- **教训**:Tool use 不是为加而加,得跟具体失败模式对得上。"反幻觉强化"是工具最自然的入口 — 让 LLM 在最容易出错的判定上**有验证手段**而非纯靠 prompt 约束
+
+## 8.9 累积型资产 vs batch 型上传的设计分歧(v2 设计阶段沉淀)
+
+- **背景**:v2 加 JD 分析功能时,起初设计为 "用户一次上传 N 条 JD,系统 batch 分析" — 加了 jd_batches 表
+- **澄清**:用户场景实际是 **陆续上传(几周累积)+ 某天一键分析全部** — JD 跟笔记一样是用户长期资产
+- **修法**:
+  - 数据模型从 batches → 累积型(jds 表跨时间留)
+  - 解析时机:**上传即解析**(parsed_payload 持久化),不延迟到分析时
+  - 一键分析:走 jd_analyses 快照表,jd_ids 数组锁定本次范围
+  - 100+ 条聚合走 hierarchical map-reduce(分批 → 二次合并 → Python 重算频次),单次上限 200
+- **教训**:**不要先入为主把"批量数据处理"等同于"batch 上传"**。先问清楚用户行为(一次性 / 累积),再选数据模型 — 累积型资产对应"我的 X 库 + 一键 Y" 的工作流,比 batch 模型更符合用户真实使用 LLM 工具的方式
+- **关联**:LLM 官网做不到累积型资产管理(单 session 用完即弃),这是本产品 vs LLM 官网差异化的痛点 C(见 PRD §3.2)
+
+## 8.10 简历 / JD 类输出绝不替写文案(v2 设计阶段沉淀)
+
+- **背景**:v1 W8 实测发现"JD 同质化导致定制简历建议价值低" — 根因是 LLM 倾向于编经验("建议补充 Redis 项目经历"但用户没做过)
+- **v2 修法**:ResumeAdvisor 输出 schema 显式拆 `diagnosis`(陈述事实 — 简历缺什么)+ `suggestion_topic`(只描述"该补什么主题");**禁止替写文案**
+- **多层防御**:
+  1. **Prompt 硬约束**:SYSTEM 显式禁"建议改写为 XXX"句式
+  2. **schema 字段命名引导**:`suggestion_topic`(主题)而非 `suggestion_text`(文案)
+  3. **service 层 forbidden_pattern 拦截**:正则检测越界句式,触发即 retry + trace warning
+  4. **评测 dataset 红队样本**:专门测 prompt injection 场景,触发 = M3 DoD 不通过
+- **教训**:**对抗 LLM 默认行为(替写)需要多层防御,单靠 prompt 不够**。schema / forbidden_pattern / dataset 红队样本三层叠加才能稳住。**任何"看着像专业建议但没事实依据"的输出对用户都是负价值** — 用户分不清是真建议还是 hallucinate
+
 ---
 
 # 不在本文档范围
