@@ -1,18 +1,18 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-08-2
+last_updated: 2026-05-09
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
 # 当前阶段
 
-**M1 后端全部落地(第 1-7 步) — chunker + notes_service + routers + embedder + worker + hybrid_search;剩前端 + Langfuse 验证 + DoD**
+**M1 第 1-9 步全过(后端 7 + 前端本地目录直读 + Langfuse trace 进库);剩第 10 步 DoD 闸门**
 
 | 里程碑 | 内容 | 状态 |
 |--------|------|------|
 | M0 | 仓库改造 + 文档重写 + v2 schema + 模块骨架 | ✅ tag `v0.2-m0-end` |
-| M1 | 笔记入库 + chunker + 树形导航 + Langfuse 起步 | 🔄 后端 7/10 步完成,前端 + DoD 待开 |
+| M1 | 笔记入库 + chunker + 树形导航 + Langfuse 起步 | 🔄 第 1-9 步过,剩第 10 步 DoD 浏览器手动验 + 闸门 |
 | M2 | 出题 + 答题 + Judge 三层评分 + Judge tool use + Trace 完整化 | ⏳ |
 | M2.5 | JD 累积上传 + 一键分析 + 学习路径(独立有价值) | ⏳ |
 | M3 | 弱点跟踪 + SR + 多轮追问 + 简历诊断(两方锚点严格) | ⏳ |
@@ -38,7 +38,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
   - ✅ schemas/{notes, quiz, jd, resume, dashboard, sse} + schemas/agents/{quiz_generator, answer_judge, jd_parser, jd_aggregator, resume_advisor, followup_orchestrator}(Pydantic Input/Output 按 5-AGENT + 3-DATA_MODEL §6 抄入字段)
   - ✅ workers/embed_worker — asyncio.Event 退出信号 + 单批失败不打挂 + 队列空退避主循环骨架
   - ✅ main.py lifespan 挂 embed_worker — startup `asyncio.create_task(run_forever)`,shutdown `stop_event.set()` + `wait_for(10s)` 超时 cancel
-- ✅ LLM SDK 切换:OpenAI Python SDK(走百炼 base_url)+ Langfuse OpenAI wrapper(`from langfuse.openai import AsyncOpenAI` 自动 instrument);settings 加 langfuse 三件套字段;main.py 启动镜像 LANGFUSE_*
+- ✅ LLM SDK 切换:OpenAI Python SDK(走百炼 base_url)+ Langfuse OpenAI wrapper(`from langfuse.openai import AsyncOpenAI` 对 chat/completions/responses 自动 instrument;**embeddings.create 不在 patch 范围**,M1 第 9 步显式 `Langfuse().generation()` 包了一层);settings 加 langfuse 三件套字段;main.py 启动镜像 LANGFUSE_*(env mirror 必须早于 routers / agents / llm 的 import,见永久约束)
 - ✅ 新建 alembic 0016 migration(DROP v1 表 / ENUM + CREATE v2 ENUM × 3 + v2 表 × 10 + 8 个 updated_at 触发器);test_migrations.py EXPECTED_TABLES 同步换 v2;downgrade 不实做(NotImplementedError,DATA_MODEL §10)
 - ✅ docker-compose.yaml 加 langfuse + langfuse-db(image tag 锁 v2 — v3 拆 redis/clickhouse/minio 会把 compose 服务数从 6 撑到 9+;langfuse 端口 3001:3000,langfuse-db 端口 5433:5432;api 服务 environment 加 JOBCOPILOT_LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY,public_key 留空走 SDK noop)
 - ✅ tag `v0.1-jobcopilot-v1` 锁 v1 末态(`390efe9` HEAD,含 v2 全套设计文档)
@@ -49,11 +49,11 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 **clean**,已与 `origin/main` 同步,M0 末态 tag `v0.2-m0-end`(M1 进行中,DoD 完成后才打 `v0.3-m1-end`)。
 
 近期 commit:
+- `233bd10` M1 第 9 步 Langfuse trace 进库三处修(SDK 锁 <3.0 / main.py import 顺序 / embedders 显式 generation)
+- `76257d9` M1 第 8 步 — 笔记直读本地目录 + 前端 notes 页 + ENUM 反映射修
+- `f57ea67` M1 后端 7 步落地 STATUS 同步 + uv.lock 同步
 - `5dd4e66` M1 第 5/6/7 — embedder agent + embed_worker + hybrid_search 三件齐
 - `8b5946e` M1 routers/notes.py 7 端点 + main.py 挂 /api 前缀
-- `b22df61` M1 notes_service 7 函数填实(CRUD + zip + 树形导航)
-- `04a7620` M1 chunk_service heading-aware chunker + 15 unit test
-- `633e244` M0 完工 STATUS 标 ✅ + 修 docker compose 服务数 5→6 笔误
 
 # 已锁定的关键决策(v2 起,完整版见各文档)
 
@@ -68,7 +68,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 | 题型 | 开放式 + 八股 两类 | 不做代码 / 系统设计 / 选择题 |
 | 评分 | LLM-as-Judge 三层(Coverage / Fidelity / Depth)| 权重 SSoT 在 Python |
 | LLM 模型 | qwen3.6-flash(多模态 + 文本一把抓);thinking 按 agent | 见 5-AGENT §2.1 |
-| LLM SDK | OpenAI Python SDK 走百炼兼容接口;Langfuse 自动 instrument | 见 reference memory |
+| LLM SDK | OpenAI Python SDK 走百炼兼容接口;Langfuse OpenAI wrapper(chat 自动 instrument,embedding 手动包 generation);langfuse SDK 锁 <3.0(server v2 不支持 OTLP) | 见 reference memory + M1 第 9 步沉淀 |
 | LLM Provider | 阿里云百炼 | 沿用 v1 ADR |
 | 数据存储 | Postgres 16(pgvector + tsvector)| 沿用 v1 |
 | Tracing | Langfuse 自部署(docker compose 6 服务) | 见 2-TECH §6 |
@@ -86,6 +86,9 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 - **[来自 M1] 笔记不接 zip 上传** — 笔记本来在用户本地,前端走 File System Access API(showDirectoryPicker / showOpenFilePicker)直接读;后端只接 application/json 批量导入端点,不接 multipart。仅支持 Chromium 系浏览器(Safari 仅单文件 / Firefox 不支持时给提示)。后续里程碑(M2.5 JD / M3 简历)如有"读本地文件"需求,沿用同模式。
 - **[来自 M1] JobCopilot 项目所有开发任务一律不写测试代码** — 用户已多次声明所有测试 / 自动化校验由用户手动跑;在此基础上明确不只是"不主动跑",而是不写 unit / integration / e2e 测试文件。已写好的测试不删,新切片不再产出。STATUS.md 列出的测试 TODO 不主动开工,问用户后再做。
 - **[来自 M1] 笔记 / 文档类负载用总字数衡量,不用篇数** — DoD、评测样本规模、压力测试目标全部按总字数(或 token 数),不按篇数。理由:50 篇 × 100 字与 50 篇 × 2000 字对 chunker / embedding / hybrid search 的压力差一个数量级,篇数是虚假指标。例外:面试题数 / quiz session 题数等"功能型计数"仍用篇数(产品规格不是负载指标)。
+- **[来自 M1] langfuse Python SDK 锁 `<3.0`** — Langfuse server 锁 v2(8-ENGINEERING §13 服务数 6 锁定)。SDK 3.x 默认走 OpenTelemetry exporter(`/api/public/otel/v1/traces`),v2 server 没这个端点 → 404。锁 2.60.x 系列走 `/api/public/ingestion`。后续若升 v3 server,SDK 同步升,**不能单独升 SDK**。
+- **[来自 M1] LANGFUSE_* env mirror 必须早于 routers / agents / llm 的 import** — main.py 里 `os.environ.setdefault("LANGFUSE_PUBLIC_KEY", ...)` 块要放在 `from jobcopilot_api.routers import ...` **之前**;放后面会让 `langfuse.openai` import 时读不到 key 进 noop 模式。代价是触发 ruff E402,加 `# noqa: E402`。新模块如果 import 触发 langfuse,沿用同模式。
+- **[来自 M1] langfuse 2.x 的 `langfuse.openai` 不 patch `embeddings.create`** — auto-instrument 只覆盖 `ChatCompletion / Completions / Responses` 共 11 个方法。embedder / 任何走 embeddings 端点的调用都要**手动**用 `Langfuse().generation(name=..., model=..., input=..., metadata=...)` 显式建 trace,成功路径 `.end(output, usage, metadata=cost)` + 失败路径 `.end(level="ERROR", status_message=...)`。M2/M3 加新 LLM 调用类型(rerank、tts、image gen)前先确认 langfuse 是否支持自动 instrument,不支持就手动包。
 
 # 文档清单
 
@@ -112,14 +115,14 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 2. ✅ chunk_service heading-aware chunker — H2 默认 + 超 MAX 拆 H3 + 段落兜底 + overlap;15 unit test(commit `04a7620`)
 3. ✅ notes_service 7 函数 — CRUD + 批量导入(原 zip 上传已改为前端 File System Access API + 后端 batch_import)+ 树形导航
 4. ✅ routers/notes.py 7 端点 + main.py 挂 /api 前缀(commit `8b5946e`)
-5. ✅ agents/embedder.embed_batch — 走 langfuse.openai 自动 instrument(commit `5dd4e66`)
+5. ✅ agents/embedder.embed_batch — 走 langfuse.openai wrapper(commit `5dd4e66`);第 9 步发现 embeddings.create 不在 auto-patch 范围,显式 `Langfuse().generation()` 包了一层(commit `233bd10`)
 6. ✅ workers/embed_worker.process_batch — BATCH_SIZE=10 跟百炼 EMBED_BATCH_LIMIT 对齐
 7. ✅ search_service.hybrid_search_in_node + global_hybrid_search — 双路并发 + RRF + lex 短 query 降级
 
 ⏳ 剩余:
 
 8. ✅ **前端 Web 编辑器 + 树形导航 + 本地目录直读导入页**(从原 4 页面缩到 2 页面):`notes/page.tsx` 树+Monaco 双栏 / `notes/import/page.tsx` 选目录(showDirectoryPicker) + 选单篇/多篇(showOpenFilePicker),Safari/Firefox 显示提示;Tailwind 自己写,不引组件库(8-ENG 锁定)
-9. **Langfuse 起步验证**:embed_batch 已走 langfuse.openai wrapper 自动 instrument 不需写代码;启 docker compose + 注册 + 配 PUBLIC/SECRET key 进 .env + 重启 api → 浏览器开 http://localhost:3001 看 trace 是否进。(8-ENG §11.3)
+9. ✅ **Langfuse 起步验证**(commit `233bd10`):docker compose 起 langfuse + langfuse-db,浏览器注册 + 建 project + 拿 pk/sk 进 .env,api 重启后 POST 新笔记 → embed_worker 跑 → trace 进库,UI 能看 47 input tokens / 0.51s latency。**踩了三个坑**:① langfuse Python SDK 4.x 默认走 OTLP 端点,server v2 不支持 → 锁 `<3.0`;② main.py 里 LANGFUSE_* env mirror 原本在 routers import 之后,改成 settings + env 先;③ langfuse.openai 不 patch embeddings,要在 `_call` 里手动建 generation。三件已落代码 + 永久约束,后续不会再踩。
 10. **M1 DoD 验证**(7-ROADMAP §M1):
     - 选总字数 ≥ 10 万字的笔记目录 + 全部入库,chunk 数符合预期(字数衡量负载,不按篇数)
     - Web 编辑器写新笔记 + 选目标 folder + 保存,3 秒内出现在树形导航

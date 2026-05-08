@@ -453,7 +453,8 @@ langfuse:
 
 ```python
 # apps/api/pyproject.toml
-"langfuse>=2.50.0",   # OpenAI wrapper 走 langfuse.openai
+"langfuse>=2.50.0,<3.0.0",   # 锁 <3.0:server v2 不支持 SDK 3.x 的 OTLP 端点
+                              # OpenAI wrapper 走 langfuse.openai
 
 # llm/client.py
 from langfuse.openai import OpenAI    # 替代 from openai import OpenAI
@@ -464,7 +465,45 @@ client = OpenAI(
 )
 ```
 
-LLM call 自动收 input / output / model / tokens / cost / cache_hit / latency,**不用手动埋点**。
+`langfuse.openai` 自动 instrument **chat / completions / responses** 11 个方法 — input / output / model / tokens / cost / latency 自动收。
+
+**例外:`embeddings.create` 不在 auto-patch 范围**,要在调用处手动建 generation:
+
+```python
+from langfuse import Langfuse
+
+generation = Langfuse().generation(
+    name="embedder", model=model, input=texts,
+    metadata={"dimensions": dim, "batch_size": len(texts)},
+)
+try:
+    resp = await client.embeddings.create(...)
+except Exception as e:
+    generation.end(level="ERROR", status_message=str(e))
+    raise
+generation.end(
+    output=f"{len(resp.data)} vectors",
+    usage={"input": resp.usage.prompt_tokens, "output": 0, "unit": "TOKENS"},
+    metadata={"cost_cny": str(cost)},
+)
+```
+
+参考实现见 `apps/api/src/jobcopilot_api/llm/embedders.py:DashscopeEmbedder._call`。
+
+**main.py env mirror 必须早于 routers import**:
+
+```python
+from jobcopilot_api.settings import settings   # 先 import settings
+
+if settings.langfuse_public_key:                # 再 mirror env
+    os.environ.setdefault("LANGFUSE_HOST", ...)
+    os.environ.setdefault("LANGFUSE_PUBLIC_KEY", ...)
+    os.environ.setdefault("LANGFUSE_SECRET_KEY", ...)
+
+from jobcopilot_api.routers import ...          # 最后才 import routers(noqa: E402)
+```
+
+否则 `langfuse.openai` 在 import 时读不到 key 进 noop 模式,trace 不进。
 
 ## 11.2 trace 装饰器(业务层)
 
@@ -540,7 +579,7 @@ STATUS.md "已锁定的关键决策"表 = 不再返工的清单。如果有理�
 | eval workflow | M0-M1 manual 触发,M2 数据集到位再放开 push | 防"dataset 不稳定 + 烧钱 + kappa 没达标数字不可信"三件 |
 | model-id-lint | grep CI 防 stale 模型 ID 误用 | 永久约束 19(qwen3.6-flash 唯一)的工程化兜底 |
 | 模型版本 | qwen3.6-flash 一把抓(文本 + 图像 + tool use) | 简化模型路由(2-TECH §3) |
-| LLM SDK | OpenAI Python SDK(via 百炼兼容)+ langfuse.openai 自动 instrument | LLM 调用零额外埋点 |
+| LLM SDK | OpenAI Python SDK(via 百炼兼容)+ langfuse.openai 自动 instrument | LLM 调用零额外埋点(**例外**:embeddings 要手动包 generation,见 §11.1)|
 | commit 风格 | feat / fix / docs / refactor / chore 前缀英文,描述中文随意 | 不加 Co-Author / 不写 Generated with Claude Code |
 | tag 策略 | 里程碑末态打 `v0.X-MX-end`,切片不打 | 避免 tag 噪音 |
 | 文档 SSoT | docs/ 9 份核心 + STATUS + LESSONS | 永久约束在 STATUS.md;踩坑细节追加 LESSONS.md |

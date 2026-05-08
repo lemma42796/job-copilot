@@ -69,7 +69,7 @@ monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind
 | 迁移 | Alembic(单 head)| 沿用 v1;v2 切片 0016 砍 v1 表 + 建 v2 表 |
 | DB | Postgres 16 + pgvector 0.7 | 沿用 v1 |
 | 全文搜索 | tsvector + char_ngrams SQL 函数 | 沿用 v1 alembic 0014 |
-| LLM SDK | OpenAI Python SDK 走百炼 OpenAI 兼容接口 | base_url=`https://dashscope.aliyuncs.com/compatible-mode/v1`;`from langfuse.openai import OpenAI` 自动 instrument |
+| LLM SDK | OpenAI Python SDK 走百炼 OpenAI 兼容接口 | base_url=`https://dashscope.aliyuncs.com/compatible-mode/v1`;`from langfuse.openai import OpenAI` 自动 instrument(只覆盖 chat/completions/responses;embeddings 要手动包 generation,见 STATUS 永久约束) |
 | LLM 模型 | qwen3.6-flash(多模态:文本 + 图像 + tool use 一把抓);thinking 按 agent 决定 | 详见 5-AGENT §2.1;qwen3.6 系列整体是视觉模型 |
 | LLM cache | `llm_response_cache` 表 + 4-B cache layer | 沿用 v1 alembic 0015 |
 | Embedding | text-embedding-v4(1024 维) | 沿用 v1 |
@@ -619,7 +619,7 @@ evals/suites/
 | 部署 | docker compose 本地 | postgres / api / web / caddy / langfuse / langfuse-db 六服务 |
 | Tracing 选型 | Langfuse 自部署 | LLM-native + 数据不出本地;详见 §6 |
 | Tool use 范围 | 仅 AnswerJudge 用 `lookup_in_notes_global`;Quiz / Embedder / JdParser / JdAggregator / ResumeAdvisor 不用 | 直击 LESSONS §1.1 假阳性,精准不滥用 |
-| LLM SDK | OpenAI Python SDK(via 百炼兼容接口)| Langfuse 自动 instrument;详见 reference memory |
+| LLM SDK | OpenAI Python SDK(via 百炼兼容接口)| Langfuse OpenAI wrapper(chat 自动 instrument,embedding 手动);langfuse SDK 锁 <3.0(server v2 不支持 OTLP);env mirror 必须早于 routers import — 见 STATUS 永久约束 |
 | qwen3.6-flash 多模态 | 文本 / 图像 / tool use 一把抓,JD 截图 + 简历 PDF 共用 | 简化模型路由 |
 | thinking 按 agent | 默认 off;评分 / 综合判断类显式 on(详见 5-AGENT §2.1) | 节省 reasoning_tokens 成本 |
 | JD 累积型 | jds 表跨时间累积,parsed_payload 上传即落库 | 类比笔记;不做 batch 概念 |
