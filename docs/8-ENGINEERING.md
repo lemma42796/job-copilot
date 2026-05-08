@@ -432,6 +432,18 @@ langfuse:
 
 测试覆盖率门槛:`pyproject.toml` `fail_under = 70`,触发 `--cov-fail-under=70`。**不追求 90+** — 单测覆盖率假高有,LLM call 路径(agents/)放 70 比较诚实(走集成测 + 评测兜底)。
 
+## 10.1.5 v2 起 JobCopilot 不再写新测试代码 ⭐
+
+**永久约束(STATUS.md `[来自 M1]`)**:v2 阶段所有后续切片**一律不产出 unit / integration / e2e 测试文件**。STATUS.md 列出的测试 TODO 也不主动开工,需求由用户验完显式追加。
+
+- v1 已写好的测试**保留不删**(`tests/unit` / `tests/integration` / `evals/suites/`),CI 跑(`test-api.yml` 沿用)
+- 新切片仅产出业务代码 + 评测 dataset(评测 dataset 不算"测试代码",是 prompt 防回归资产)
+- 自动化校验(`pytest` / `mypy` / `ruff` / `pnpm typecheck` / `pnpm lint` / `pnpm build` / `playwright` / `curl localhost:* probe` 等)由用户手动跑;Claude 改完代码**不主动启动**任何自动化校验,只口头描述期望(URL / 操作步骤 / 期望看到的字段或数字),让用户在浏览器或终端自己验
+
+理由:dogfood 单用户体量,真实场景验比 mock unit 更直观;v1 W8 多次出现"测试都过但 dogfood 撞 bug"的反例(LESSONS §8.5 沉淀永久约束前必须跑过对应路径)。
+
+例外:用户明确说"跑闸门 / 跑测试 / 跑 typecheck"等指令时再跑。
+
 ## 10.2 prompt 是产品代码(LESSONS §8.2)
 
 - 改 prompt 必须 bump 版本号:`<agent>_v<X.Y.Z>.j2`(`answer_judge_v1.0.0.j2`)
@@ -489,6 +501,10 @@ generation.end(
 ```
 
 参考实现见 `apps/api/src/jobcopilot_api/llm/embedders.py:DashscopeEmbedder._call`。
+
+**Reranker(M2 起)同样不在 auto-patch 范围**(reranker 协议不在 OpenAI 标准里),`services/reranker.py` 调百炼 `qwen3-rerank` 接口要套同款 `Langfuse().generation()` 包成功 / 失败两路径。详见 5-AGENT §2.7.5 + memory `reference_aliyun_dashscope_rerank.md`。
+
+**总结**:`langfuse.openai` auto-patch 只覆盖 chat / completions / responses 共 11 个方法。任何走非这 11 个端点的调用(embeddings / rerank / future:image gen / TTS 等)都要**手动**包 generation,加新调用类型前先确认 langfuse 是否支持自动 instrument,不支持就走手动路径(参考 embedder / reranker 实现)。
 
 **main.py env mirror 必须早于 routers import**:
 
@@ -584,6 +600,9 @@ STATUS.md "已锁定的关键决策"表 = 不再返工的清单。如果有理�
 | tag 策略 | 里程碑末态打 `v0.X-MX-end`,切片不打 | 避免 tag 噪音 |
 | 文档 SSoT | docs/ 9 份核心 + STATUS + LESSONS | 永久约束在 STATUS.md;踩坑细节追加 LESSONS.md |
 | ADR 阈值 | 跨里程碑架构决策才开 ADR,下一个编号 0007 | 单切片设计走 STATUS 锁定决策表 |
+| 测试纪律(v2)| **不写新测试代码**(unit / integration / e2e 都不写);v1 已写测试保留;CI 沿用 | §10.1.5 详述;dogfood 单用户体量,真实场景验比 mock unit 更直观 |
+| 自动化校验 | Claude 改完代码**不主动启动** pytest / mypy / ruff / typecheck / lint / build / playwright / curl probe;只口头描述期望让用户验 | 用户显式说"跑闸门"等指令例外 |
+| Reranker langfuse | 同 embedder,**不在 auto-patch 范围**,要手动包 generation | 5-AGENT §2.7.5 + memory `reference_aliyun_dashscope_rerank.md` |
 
 ---
 

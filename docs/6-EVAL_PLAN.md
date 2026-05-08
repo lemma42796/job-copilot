@@ -94,6 +94,26 @@ Baseline 跟主路对照是 harness engineering 标准动作 — 没对照就不
 
 每条评测产生的 LLM 调用都进 Langfuse trace(2-TECH §6),trace tag 加 `eval_run_id` + `fixture_id`。kappa 不达标时直接 Langfuse UI 按 fixture_id 过滤,看 Judge evidence 怎么生出来的、工具调了几次、tool 返回啥 — 排查时间从"翻日志半小时"降到"点几下五分钟"。
 
+## 2.7 样本规模按字数 / token 衡量,不按篇数 ⭐
+
+**永久约束(STATUS.md `[来自 M1]`)**:dataset / dogfood 库 / 压力测试目标的"样本规模"一律按**总字数(或 token)**,不按篇数。
+
+| ✗ 不要这样 | ✓ 应该这样 |
+|---|---|
+| "dogfood 库 50 篇笔记" | "dogfood 库 ≥ 10 万字" |
+| "评测样本 30 条 JD" | "评测样本 30 条 JD,平均字数 1.5k,总 ~4.5 万字" |
+
+**理由**:50 篇 × 100 字 vs 50 篇 × 2000 字,对 chunker / embedding / hybrid search / retrieval pipeline 的真实压力**差一个数量级**。篇数是虚假指标 — DoD 写"50 篇过 chunker"可能挂在你笔记总长 8000 字的极端样本上。
+
+**例外**:**功能型计数**仍用篇数(产品规格 ≠ 负载指标),例如:
+- 一次面试 session 出 5 题(题数)
+- 一键分析 ≤ 200 条 JD(条数)
+- 简历单条记录(份数)
+
+这类是产品契约,不是工程负载,继续用篇数 / 条数 / 题数表达。
+
+**M1 dogfood 实例**:30 篇 / 258 chunks / 100% embedding / **15.7 万字**(过 10 万字 DoD 门槛)— 报告里"30 篇"只作为辅助信息,DoD 守的是字数。
+
 # 3. `answer_judge` suite(核心 / M2 DoD)
 
 ## 3.1 评什么

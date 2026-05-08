@@ -243,6 +243,36 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 - **修法**:紧跟下一个 commit `32af0db` 把漏带 5 文件 + SDK 切换一起补(原本应该在新 commit 里 push,所以 fix 不影响生产);commit message 老实写明"上次漏带 + 同步落 SDK 切换",不掩饰
 - **沉淀**:工程纪律 — **commit 前永远 `git status --short` 确认每个该进的都在 staged 列(M / D / A)**;不要假设"我做了 X 操作 staged 自然带"。`git rm` 跟 `git add` 才自动 stage,Edit/Write 不会。复合操作(git rm + Edit 混跑)更要确认。**教训**:大批量操作(110 文件)一气呵成才 commit 容易漏;混合操作时把 `git rm` 跟 Edit/Write 拆成两个独立 commit 也是合理的(各自纯一种操作类型,不会混淆 stage 状态)
 
+## 7.6 阿里云百炼 OpenAI 兼容接口集成关键事实(v2 LLM SDK 切换)
+
+详细参考:`memory/reference_aliyun_dashscope_openai_compat.md`(reference 类 memory)+ 8-ENGINEERING §11.1 + 5-AGENT §2 通用约定。
+
+- **base_url**:`https://dashscope.aliyuncs.com/compatible-mode/v1`(注意是 `compatible-mode` 不是 `compatible-api`,后者是 reranker 的)
+- **thinking 模式**:走 `extra_body={"enable_thinking": True/False}`(OpenAI 标准协议没有 thinking 参数,百炼通过 `extra_body` 透传)
+- **tools / function_call**:走 OpenAI 标准 `tools=[...]` + `tool_choice` 协议,Qwen 兼容良好(详见 5-AGENT §4.7 AnswerJudge tool use)
+- **qwen3.6 系列整体是多模态视觉模型**:同一个 model id(`qwen3.6-flash`)同时吃文本 / 图像 / tool use,不需要切 vision-only 变体
+- **流式响应**:走 OpenAI 标准 `stream=True` + delta token chunk 协议
+- **JSON 强制输出**:走 `response_format={"type": "json_object"}`,Qwen 兼容良好(~95% 合规)
+- **联网搜索**:本项目**禁用**(`extra_body={"enable_search": False}` 显式关)— Quiz / Judge 必须严格基于用户笔记 chunks,联网会引入超笔记范围内容,直接撞 §1.1 假阳性
+
+**教训**:OpenAI 兼容接口 ≠ 100% 等价于官方 OpenAI。Qwen 特有的 thinking / search 等能力走 `extra_body` 透传,**不是 OpenAI 标准参数,切换到真 OpenAI 会被忽略或报错**。多 provider 抽象的真实成本见 §8.7。
+
+## 7.7 百炼 reranker 接口与 embedding 同样需手动 instrument(M2 设计阶段沉淀)
+
+详细参考:`memory/reference_aliyun_dashscope_rerank.md`(reference 类 memory,2026-05-09 校对)+ 5-AGENT §2.7.5 + 8-ENGINEERING §11.1。
+
+- **`langfuse.openai` auto-patch 只覆盖 chat / completions / responses 共 11 个方法**,不覆盖 `embeddings.create` 也不覆盖 reranker(reranker 不在 OpenAI 协议标准里)
+- M1 第 9 步已经踩过一次:embedder 走 `langfuse.openai` 不进 trace,改成手动 `Langfuse().generation()` 包成功 / 失败两路径
+- M2 retrieval pipeline 加 reranker 时**复用同款手动 generation 模式**,不是再次踩同样的坑
+
+**坑提前防御清单**(后续每加一类新 LLM 调用类型都过一遍):
+1. `langfuse.openai` 是否自动 instrument 该端点?— **不是 chat/completions/responses 默认就不是**
+2. 接口走哪个 base path?— Qwen 系产品里 chat 走 `/compatible-mode/v1`,reranker 走 `/compatible-api/v1/reranks`,**不是同一套**
+3. langfuse SDK 锁 <3.0(server v2 不支持 OTLP),env mirror 必须早于 routers / agents / llm 的 import,见 STATUS 永久约束
+4. `relevance_score` 类得分**不可跨请求比较**(reranker 文档明确说),不要存 DB 当跨 session 指标
+
+**教训**:任何"持久化能力"都隐含序列化要求(§8.1);任何"自动 instrument 能力"都隐含**协议覆盖范围**要求,加新调用类型前先确认 langfuse 是否支持自动 instrument,不支持就走手动路径。
+
 ---
 
 # 8. 跨切片普适教训(meta-lessons)
@@ -330,6 +360,34 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
   3. **service 层 forbidden_pattern 拦截**:正则检测越界句式,触发即 retry + trace warning
   4. **评测 dataset 红队样本**:专门测 prompt injection 场景,触发 = M3 DoD 不通过
 - **教训**:**对抗 LLM 默认行为(替写)需要多层防御,单靠 prompt 不够**。schema / forbidden_pattern / dataset 红队样本三层叠加才能稳住。**任何"看着像专业建议但没事实依据"的输出对用户都是负价值** — 用户分不清是真建议还是 hallucinate
+
+## 8.11 事实核查类问题三件证据齐再下结论 ⭐(v1 §1.1 引申)
+
+§1.1 reviewer 假阳性是 v1 项目最值钱的故事。从这个 bug 提炼的方法论:
+
+**所有 reviewer / 事实核查 / 假阳性类问题,定位 root cause 必须把三件证据齐了再判**:
+
+1. **原始输入**(JD 原文 / 用户答案原文 / 简历原文 / 笔记 markdown)
+2. **LLM 输出 / 草稿**(reviewer finding / Judge evidence / Drafter 简历 markdown)
+3. **被引用的事实源**(retrieval 命中的 chunks / Profile 字段 / source_chunk_ids 反查)
+
+少一件就**不要推断**。否则极易把"镜像 JD"误判成"凭空 hallucinate",把"reviewer 没拿到 Profile 字段"误判成"prompt 不够严",修错地方。
+
+**反面教材**:v1 W6 第一次见 reviewer 假阳性时,只看 reviewer finding + 招了个 "prompt 加更狠的反向警告"的修法,一周后 dogfood 同类 bug 再现。第二次按"三件齐"重查,才发现根因不在 prompt 而在 retrieval 输入差异化(§3.1)+ Profile 字段没传(§1.1)。
+
+**教训**:LLM 类 bug 的根因往往不在 prompt(看得见的)而在数据流(隐性的)。只看 prompt 改的修法是治标。
+
+## 8.12 批量 LLM 调用前必须 dry-run 三件校验(v1/v2 多次踩坑沉淀)
+
+跑批量 LLM 调用(评测 dataset / 一键分析 / dogfood pipeline 等)**前**必须先校验:
+
+1. **模型 ID 对**:用项目锁定 ID(`qwen3.6-flash` v2 唯一),不要复制粘贴 v1 历史的 `qwen-vl-plus` / `qwen-plus`(8-ENGINEERING §6.1 model-id-lint CI 也防这条,但**本地跑评测 / 脚本绕过 CI**)
+2. **Provider 接口实际存在**:`curl /models` 或 `curl /api/v1/services/...` 验证当前可用 + 当前模型 ID 在列表里(2026-05-09 百炼 reranker 选型时差点踩 — `gte-rerank-v2` 2026-05-30 下线,印象推荐没踩 dry-run 的话上线就崩)
+3. **schema / prompt 完整跑通**:**单样本 dry-run**(只跑 dataset 第 1 条,看输出 schema / Pydantic 校验 / `[N]` 编号 / token 用量是否符合预期),**通过**了再放开全量
+
+**反面教材**:v1 跑 30 条 dataset 评测,第 5 条 prompt 占位符忘填(`{question}` 字面输入)→ LLM 把"{question}"当字面看跑出一堆乱评分,29 条 cache 命中错值。手动重跑还得清 cache。
+
+**教训**:批量调用是**可以倒车的**(单样本 dry-run 不过就停)、**不可以盲冲的**(全量跑炸 30 条不仅烧钱还污染 cache)。**模型 ID / Provider / Prompt 三件事任何一件靠记忆推断不靠 dry-run 校验**,都是踩坑入口。
 
 ---
 
