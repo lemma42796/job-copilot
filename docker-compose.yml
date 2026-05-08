@@ -40,6 +40,11 @@ services:
       JOBCOPILOT_CORS_ALLOW_ORIGINS: '["http://localhost:3000","http://localhost"]'
       JOBCOPILOT_DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       JOBCOPILOT_LLM_PROVIDER: ${LLM_PROVIDER:-dashscope}
+      # Langfuse 三件套:public_key 留空 → SDK noop(8-ENG §11.3)。
+      # api 容器内走 service name 通信,host 默认 http://langfuse:3000(容器内端口仍是 3000)
+      JOBCOPILOT_LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse:3000}
+      JOBCOPILOT_LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      JOBCOPILOT_LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     ports:
       - "8000:8000"
 
@@ -72,7 +77,48 @@ services:
       - caddy-data:/data
       - caddy-config:/config
 
+  # Langfuse v2 自部署(2-TECH §6.5 + 8-ENGINEERING §11)。
+  # image tag 锁 v2:v3 拆出 redis/clickhouse/minio 4 服务,会把
+  # compose 服务数从 6 → 9+,违反 8-ENGINEERING §13 "docker compose 服务数 6" 锁。
+  # dev 环境 LANGFUSE_PUBLIC_KEY 留空 → SDK 进 noop 模式(8-ENG §11.3),
+  # langfuse 服务仍正常起,仅作为可选 trace 后端;首次启动后用户在
+  # http://localhost:3001 注册 + 建 project + 把 PUBLIC/SECRET key 填进 .env。
+  langfuse-db:
+    image: postgres:16
+    container_name: jobcopilot-langfuse-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: langfuse
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD:-langfuse}
+    volumes:
+      - langfuse-data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse -d langfuse"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  langfuse:
+    image: langfuse/langfuse:2
+    container_name: jobcopilot-langfuse
+    restart: unless-stopped
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD:-langfuse}@langfuse-db:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3001
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-dev-nextauth-secret-change-in-prod}
+      SALT: ${LANGFUSE_SALT:-dev-salt-change-in-prod}
+      TELEMETRY_ENABLED: "false"
+    ports:
+      - "3001:3000"
+
 volumes:
   postgres-data:
   caddy-data:
   caddy-config:
+  langfuse-data:

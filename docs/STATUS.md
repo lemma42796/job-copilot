@@ -40,7 +40,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
   - ✅ main.py lifespan 挂 embed_worker — startup `asyncio.create_task(run_forever)`,shutdown `stop_event.set()` + `wait_for(10s)` 超时 cancel
 - ✅ LLM SDK 切换:OpenAI Python SDK(走百炼 base_url)+ Langfuse OpenAI wrapper(`from langfuse.openai import AsyncOpenAI` 自动 instrument);settings 加 langfuse 三件套字段;main.py 启动镜像 LANGFUSE_*
 - ✅ 新建 alembic 0016 migration(DROP v1 表 / ENUM + CREATE v2 ENUM × 3 + v2 表 × 10 + 8 个 updated_at 触发器);test_migrations.py EXPECTED_TABLES 同步换 v2;downgrade 不实做(NotImplementedError,DATA_MODEL §10)
-- ⏳ docker-compose.yaml 加 langfuse + langfuse-db(详见 2-TECH §6.5)
+- ✅ docker-compose.yaml 加 langfuse + langfuse-db(image tag 锁 v2 — v3 拆 redis/clickhouse/minio 会把 compose 服务数从 6 撑到 9+;langfuse 端口 3001:3000,langfuse-db 端口 5433:5432;api 服务 environment 加 JOBCOPILOT_LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY,public_key 留空走 SDK noop)
 - ✅ tag `v0.1-jobcopilot-v1` 锁 v1 末态(`390efe9` HEAD,含 v2 全套设计文档)
 - ✅ M0 sanity check:百炼 OpenAI 兼容接口三件验证通过(thinking 4096 reasoning_tokens / tool_calls.function.name / 图像识别 prompt_tokens 2522)
 
@@ -103,8 +103,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 # 下一步建议
 
-1. docker-compose.yaml 加 langfuse + langfuse-db 两服务(端口 3001 / 5433);api 服务 environment 加 JOBCOPILOT_LANGFUSE_*
-2. M0 完成 → tag `v0.2-m0-end` → 开 M1(笔记入库 + chunker + 树形导航 + Langfuse 起步)
+1. M0 完成 → tag `v0.2-m0-end` → 开 M1(笔记入库 + chunker + 树形导航 + Langfuse 起步)
 
 # v1 历史
 
