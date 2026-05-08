@@ -16,7 +16,7 @@ from jobcopilot_api.infra.db import get_sessionmaker
 from jobcopilot_api.infra.logging import setup_logging
 from jobcopilot_api.infra.prompts import load_prompt_versions
 from jobcopilot_api.infra.request_id import RequestIDMiddleware
-from jobcopilot_api.routers import health
+from jobcopilot_api.routers import health, notes
 from jobcopilot_api.settings import settings
 from jobcopilot_api.workers import embed_worker
 
@@ -82,7 +82,11 @@ def create_app() -> FastAPI:
 
     install_exception_handlers(app)
 
+    # health 暂留 /v1(docker/api.Dockerfile healthcheck 引用 /v1/health,
+    # 切换到 /api 是单独切片,避免 M1 改部署链路)。新业务模块按 4-API_SPEC §2.1
+    # 统一挂 /api。
     app.include_router(health.router, prefix="/v1")
+    app.include_router(notes.router, prefix="/api")
 
     return app
 
