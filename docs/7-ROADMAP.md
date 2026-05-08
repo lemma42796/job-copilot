@@ -54,7 +54,7 @@ M3    弱点跟踪 dashboard + SR + 多轮追问 + 简历诊断(两方锚点严�
 - [ ] Web 编辑器写一篇新笔记 + 选目标 folder + 保存,3 秒内出现在树形导航 + chunks 入库
 - [ ] 编辑老笔记 → 老 chunks 删除 + 新 chunks 入库,不影响其他笔记
 - [ ] 树形导航点任意节点能拿到该节点 + 子节点的 chunks 列表
-- [ ] hybrid search 能跑通:`SELECT ... ORDER BY rrf` 返回 Top-K chunks,recall@5 ≥ 0.85(评测套件 6-EVAL §5)
+- [ ] hybrid search service 能跑通:`hybrid_search_in_node` / `global_hybrid_search` 双路并发 + RRF 返回 Top-K,vector / lex 任一路异常不挂(烟测,不上指标卡)。**recall@5 / mrr 等指标评测挂账 M2**——M1 hybrid search service 已就绪,但未接入任何用户操作(出题剪枝 + Judge 防假阳性都是 M2),query 来源也来自 M2 真场景,M1 阶段评测就是凭空造数据集测纯契约(见 STATUS.md 永久约束"评测指标必须挂在真正用到该能力的里程碑")
 - [ ] Langfuse UI(localhost:3001)能看到每条 embedder 调用的 trace + token + cost
 - [ ] alembic 全过 + ruff / mypy / typecheck / next build 全过
 
@@ -84,6 +84,7 @@ M3    弱点跟踪 dashboard + SR + 多轮追问 + 简历诊断(两方锚点严�
 - [ ] `evals/suites/answer_judge/dataset.jsonl` 收 30 条人工标注样本
 - [ ] `scripts/eval_answer_judge.py` 跑通,Coverage / Fidelity kappa ≥ 0.7,Depth accuracy ≥ 0.75
 - [ ] `scripts/eval_quiz_generator.py` 跑通,结构合规率 ≥ 0.95
+- [ ] `scripts/eval_hybrid_search.py` 跑通,**ablation 三路**(vector-only / lex-only / hybrid)各自 recall@5 / recall@10 / mrr 都出数,**hybrid recall@5 ≥ 0.85 / recall@10 ≥ 0.95 / mrr ≥ 0.6**(从 M1 挂账继承,详见 6-EVAL §7);数据集 30 条 (query, expected_chunk_ids),query 来源:① quiz 剪枝场景的节点路径拼接 query ② Judge tool use 场景的"学生答案 claim"风格 query 各 15 条
 - [ ] Langfuse 按 session_id 过滤能看到完整 trace 树(出题 → 工具 → 评分嵌套)
 
 # M2.5:JD 累积上传 + 一键分析 + 学习路径

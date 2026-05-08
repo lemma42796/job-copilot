@@ -7,12 +7,12 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 # 当前阶段
 
-**M1 第 1-9 步全过(后端 7 + 前端本地目录直读 + Langfuse trace 进库);剩第 10 步 DoD 闸门**
+**M1 收口(笔记入库 + chunker + Web 编辑器 + 本地目录直读 + Langfuse trace 全过);hybrid search recall@5 评测挂账 M2(M1 hybrid_search service 已就绪但未接入任何产品功能,M2 quiz 剪枝 + Judge tool use 真用上时再做评测)**
 
 | 里程碑 | 内容 | 状态 |
 |--------|------|------|
 | M0 | 仓库改造 + 文档重写 + v2 schema + 模块骨架 | ✅ tag `v0.2-m0-end` |
-| M1 | 笔记入库 + chunker + 树形导航 + Langfuse 起步 | 🔄 第 1-9 步过,剩第 10 步 DoD 浏览器手动验 + 闸门 |
+| M1 | 笔记入库 + chunker + 树形导航 + Langfuse 起步 | ✅ tag `v0.3-m1-end` |
 | M2 | 出题 + 答题 + Judge 三层评分 + Judge tool use + Trace 完整化 | ⏳ |
 | M2.5 | JD 累积上传 + 一键分析 + 学习路径(独立有价值) | ⏳ |
 | M3 | 弱点跟踪 + SR + 多轮追问 + 简历诊断(两方锚点严格) | ⏳ |
@@ -46,7 +46,9 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 # 当前 working tree
 
-**clean**,已与 `origin/main` 同步,M0 末态 tag `v0.2-m0-end`(M1 进行中,DoD 完成后才打 `v0.3-m1-end`)。
+**M1 收口本次 commit 含 STATUS / 7-ROADMAP 同步 + recall@5 挂账 M2**;commit 后 working tree clean,与 `origin/main` 同步,打 `v0.3-m1-end`。
+
+dogfood DB 现状(查 PG `2026-05-09`):30 篇笔记 / 258 chunks / 100% embedding(0 pending)/ 总字数 ~15.7 万字,过 DoD 10 万字门槛(永久约束按字数衡量负载)。
 
 近期 commit:
 - `233bd10` M1 第 9 步 Langfuse trace 进库三处修(SDK 锁 <3.0 / main.py import 顺序 / embedders 显式 generation)
@@ -90,6 +92,8 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 - **[来自 M1] LANGFUSE_* env mirror 必须早于 routers / agents / llm 的 import** — main.py 里 `os.environ.setdefault("LANGFUSE_PUBLIC_KEY", ...)` 块要放在 `from jobcopilot_api.routers import ...` **之前**;放后面会让 `langfuse.openai` import 时读不到 key 进 noop 模式。代价是触发 ruff E402,加 `# noqa: E402`。新模块如果 import 触发 langfuse,沿用同模式。
 - **[来自 M1] langfuse 2.x 的 `langfuse.openai` 不 patch `embeddings.create`** — auto-instrument 只覆盖 `ChatCompletion / Completions / Responses` 共 11 个方法。embedder / 任何走 embeddings 端点的调用都要**手动**用 `Langfuse().generation(name=..., model=..., input=..., metadata=...)` 显式建 trace,成功路径 `.end(output, usage, metadata=cost)` + 失败路径 `.end(level="ERROR", status_message=...)`。M2/M3 加新 LLM 调用类型(rerank、tts、image gen)前先确认 langfuse 是否支持自动 instrument,不支持就手动包。
 
+- **[来自 M1] 评测指标(recall / kappa / accuracy 等)必须挂在真正用到该能力的里程碑 DoD,不挂在"实现该能力"的里程碑** — M1 原 DoD 写 "hybrid search recall@5 ≥ 0.85",但 M1 阶段 hybrid search 只是 service 层就绪(`hybrid_search_in_node` / `global_hybrid_search`),没接入任何用户操作:出题剪枝(M2 quiz_generator)+ Judge 防假阳性(M2 lookup_in_notes_global tool)才是真正消费方,query 也来自这俩场景。M1 阶段做评测就是凭空造 query 测纯契约,数字过了证明不了产品 ready,数据集到 M2 还得重做。规矩:**评测指标排到该能力首次接入产品功能的那个里程碑**;实现里程碑只验"service 函数对外契约不崩"(烟测,不上指标卡)。后续 M2 / M2.5 / M3 设计 DoD 时同样原则:Judge kappa 排在 M2(M2 才真用 Judge),resume_advisor forbidden_pattern 排在 M3(M3 才真出简历诊断输出)等。
+
 # 文档清单
 
 | 文件 | 用途 |
@@ -108,32 +112,31 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 # 下一步建议
 
-**M1 后端全部落地**(7-ROADMAP §M1),剩前端 + Langfuse 验证 + DoD:
+**M1 收口,DoD 全部 ✅**(recall@5 那条挂账 M2,见永久约束"评测指标必须挂在真正用到该能力的里程碑"):
+- ≥10 万字入库 ✅(实际 15.7 万 / 30 篇 / 258 chunks / 100% embedding)
+- Web 编辑器 3 秒出现树形 ✅
+- rechunk(老删新建)✅
+- Langfuse UI 看 embedder trace + token + cost ✅
+- 闸门(alembic / ruff / mypy / typecheck / next build)✅(用户手动验)
+- ~~hybrid search recall@5 ≥ 0.85~~ → **挂账 M2**(M1 service 就绪未接产品)
 
-✅ 已完成:
-1. ✅ alembic 索引核对 — 0016 hybrid 索引齐全(folder_path GIN / embedding HNSW / content_tsv GIN),无需补 revision
-2. ✅ chunk_service heading-aware chunker — H2 默认 + 超 MAX 拆 H3 + 段落兜底 + overlap;15 unit test(commit `04a7620`)
-3. ✅ notes_service 7 函数 — CRUD + 批量导入(原 zip 上传已改为前端 File System Access API + 后端 batch_import)+ 树形导航
-4. ✅ routers/notes.py 7 端点 + main.py 挂 /api 前缀(commit `8b5946e`)
-5. ✅ agents/embedder.embed_batch — 走 langfuse.openai wrapper(commit `5dd4e66`);第 9 步发现 embeddings.create 不在 auto-patch 范围,显式 `Langfuse().generation()` 包了一层(commit `233bd10`)
-6. ✅ workers/embed_worker.process_batch — BATCH_SIZE=10 跟百炼 EMBED_BATCH_LIMIT 对齐
-7. ✅ search_service.hybrid_search_in_node + global_hybrid_search — 双路并发 + RRF + lex 短 query 降级
+**开 M2:出题 + 答题 + Judge 三层评分 + Judge tool use + Trace 完整化**(范围/DoD 详见 7-ROADMAP §M2)。粗子任务清单(开工前再细拆):
 
-⏳ 剩余:
+1. **chunk_service.find_chunks_by_node 真接 hybrid search 剪枝**(目前裸 LIMIT 30,补 hybrid_search_in_node 调用,query 用节点 heading_path 末段拼)
+2. **agents/quiz_generator 实现**:输入节点 chunks(≤30,5-AGENT §3 Input/Output schema 已就绪),输出 N 道开放/八股题 + source_chunk_ids 反幻觉
+3. **services/quiz_service + routers/quiz** SSE 端点(create_session / 出题 / 题题流式)— 见 2-TECH §5.2 + 4-API §4
+4. **agents/answer_judge 实现 + Coverage / Fidelity / Depth 三层** — Python 算分 SSoT(`scoring.py` 已抄入)
+5. **AnswerJudge tool use(`lookup_in_notes_global`)** 走百炼 function_call API,Judge 标 fabricated 前必调,直接消费 `global_hybrid_search`
+6. **answer_service + session 沉淀**(自动写 `notes/_recall/{session_id}.md`)
+7. **前端 quiz session UI**:出题 → 答 → 评分 view(笔记面板答题时隐藏)
+8. **Langfuse trace 完整化**:agent / service 层装 `@observe`,SSE session 维度 root trace
+9. **M2 评测套件**(三件,DoD 卡死):
+   - `evals/suites/hybrid_search/`(从 M1 挂账继承)— 真 dogfood 库 + 30 条 (query, expected_chunk) + ablation(vector / lex / hybrid)recall@5 ≥ 0.85
+   - `evals/suites/quiz_generator/` — 结构合规率 ≥ 0.95(Pydantic 校验 + reference_chunk_ids ⊆ source_chunk_ids)
+   - `evals/suites/answer_judge/` — 30 条人工标注 + Cohen's kappa ≥ 0.7(Coverage / Fidelity)+ Depth accuracy ≥ 0.75
+10. **M2 DoD 验证 + 闸门**
 
-8. ✅ **前端 Web 编辑器 + 树形导航 + 本地目录直读导入页**(从原 4 页面缩到 2 页面):`notes/page.tsx` 树+Monaco 双栏 / `notes/import/page.tsx` 选目录(showDirectoryPicker) + 选单篇/多篇(showOpenFilePicker),Safari/Firefox 显示提示;Tailwind 自己写,不引组件库(8-ENG 锁定)
-9. ✅ **Langfuse 起步验证**(commit `233bd10`):docker compose 起 langfuse + langfuse-db,浏览器注册 + 建 project + 拿 pk/sk 进 .env,api 重启后 POST 新笔记 → embed_worker 跑 → trace 进库,UI 能看 47 input tokens / 0.51s latency。**踩了三个坑**:① langfuse Python SDK 4.x 默认走 OTLP 端点,server v2 不支持 → 锁 `<3.0`;② main.py 里 LANGFUSE_* env mirror 原本在 routers import 之后,改成 settings + env 先;③ langfuse.openai 不 patch embeddings,要在 `_call` 里手动建 generation。三件已落代码 + 永久约束,后续不会再踩。
-10. **M1 DoD 验证**(7-ROADMAP §M1):
-    - 选总字数 ≥ 10 万字的笔记目录 + 全部入库,chunk 数符合预期(字数衡量负载,不按篇数)
-    - Web 编辑器写新笔记 + 选目标 folder + 保存,3 秒内出现在树形导航
-    - 编辑老笔记 → 老 chunks 删除 + 新 chunks 入库
-    - hybrid search recall@5 ≥ 0.85(评测套件 6-EVAL §5)
-    - Langfuse UI 能看到每条 embedder 调用的 trace + token + cost
-    - alembic 全过 + ruff / mypy / typecheck / next build 全过
-
-集成测(testcontainers 真 PG)与 M1 后端代码同步缺失:rechunk_note / get_chunks_for_node / hybrid_search / notes_service 全 7 函数 / routers 7 端点 — 都是 unit 不连 DB,要靠集成测兜底。建议在第 8 步前后挑一个时间点写一组 `tests/integration/test_notes_*.py`。
-
-M1 DoD 全部达成 → tag `v0.3-m1-end` → 开 M2(出题 + 评分)。
+M2 DoD 全部达成 → tag `v0.4-m2-end` → 开 M2.5(JD 累积上传 + 一键分析)。
 
 # v1 历史
 
