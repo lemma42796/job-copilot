@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Protocol
 
+from langfuse import Langfuse
 from langfuse.openai import AsyncOpenAI
 from openai import (
     APIConnectionError,
@@ -219,6 +220,15 @@ class DashscopeEmbedder:
         return result
 
     async def _call(self, texts: list[str]) -> EmbeddingResult:
+        # Langfuse 2.x 的 OpenAI auto-instrument 只 patch chat/completions/responses,
+        # 不覆盖 embeddings.create — 这里手动建 generation 让 trace 进 langfuse。
+        # noop 模式(无 PUBLIC_KEY)下 generation() 是 no-op,不影响业务。
+        generation = Langfuse().generation(
+            name="embedder",
+            model=self._model,
+            input=texts,
+            metadata={"dimensions": self._dim, "batch_size": len(texts)},
+        )
         try:
             resp = await self._client.embeddings.create(
                 model=self._model,
@@ -228,10 +238,13 @@ class DashscopeEmbedder:
                 timeout=self._timeout_s,
             )
         except (APITimeoutError, APIConnectionError) as e:
+            generation.end(level="ERROR", status_message=f"timeout: {e}")
             raise LLMTimeoutError(str(e)) from e
         except RateLimitError as e:
+            generation.end(level="ERROR", status_message=f"rate_limit: {e}")
             raise LLMUpstreamError(str(e), status_code=429) from e
         except InternalServerError as e:
+            generation.end(level="ERROR", status_message=f"upstream_5xx: {e}")
             raise LLMUpstreamError(str(e), status_code=e.status_code or 500) from e
         except (
             AuthenticationError,
@@ -240,8 +253,10 @@ class DashscopeEmbedder:
             NotFoundError,
             UnprocessableEntityError,
         ) as e:
+            generation.end(level="ERROR", status_message=f"auth: {e}")
             raise LLMAuthError(str(e)) from e
         except APIStatusError as e:
+            generation.end(level="ERROR", status_message=f"status_{e.status_code}: {e}")
             status = e.status_code or 0
             if status >= 500 or status == 429:
                 raise LLMUpstreamError(str(e), status_code=status) from e
@@ -249,11 +264,17 @@ class DashscopeEmbedder:
 
         vectors = [list(d.embedding) for d in resp.data]
         tokens_in = _read_prompt_tokens(resp.usage)
+        cost = embed_cost_for(model=self._model, tokens_in=tokens_in)
+        generation.end(
+            output=f"{len(vectors)} vectors × {self._dim}d",
+            usage={"input": tokens_in, "output": 0, "total": tokens_in, "unit": "TOKENS"},
+            metadata={"cost_cny": str(cost)},
+        )
         return EmbeddingResult(
             vectors=vectors,
             tokens_in=tokens_in,
             model=self._model,
-            cost_cny=embed_cost_for(model=self._model, tokens_in=tokens_in),
+            cost_cny=cost,
         )
 
 

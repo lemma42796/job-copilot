@@ -11,17 +11,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from jobcopilot_api import __version__
-from jobcopilot_api.errors import install_exception_handlers
-from jobcopilot_api.infra.db import get_sessionmaker
-from jobcopilot_api.infra.logging import setup_logging
-from jobcopilot_api.infra.prompts import load_prompt_versions
-from jobcopilot_api.infra.request_id import RequestIDMiddleware
-from jobcopilot_api.routers import health, notes
 from jobcopilot_api.settings import settings
-from jobcopilot_api.workers import embed_worker
 
 # Langfuse SDK 走 LANGFUSE_* 命名,本项目 settings 走 JOBCOPILOT_ 前缀;
 # 这里把字段镜像到 os.environ 让 langfuse.openai 自动读取。
+# **必须在 routers / agents / llm 这些会 import langfuse.openai 的模块之前执行**:
+# langfuse.openai 在 import 时读环境变量,读不到 PUBLIC_KEY 就进 noop 模式,trace 不进。
 # public_key 留空 → SDK 走 noop(8-ENGINEERING §11.3)。
 if settings.langfuse_public_key:
     os.environ.setdefault(
@@ -29,6 +24,14 @@ if settings.langfuse_public_key:
     )
     os.environ.setdefault("LANGFUSE_PUBLIC_KEY", settings.langfuse_public_key)
     os.environ.setdefault("LANGFUSE_SECRET_KEY", settings.langfuse_secret_key)
+
+from jobcopilot_api.errors import install_exception_handlers  # noqa: E402
+from jobcopilot_api.infra.db import get_sessionmaker  # noqa: E402
+from jobcopilot_api.infra.logging import setup_logging  # noqa: E402
+from jobcopilot_api.infra.prompts import load_prompt_versions  # noqa: E402
+from jobcopilot_api.infra.request_id import RequestIDMiddleware  # noqa: E402
+from jobcopilot_api.routers import health, notes  # noqa: E402
+from jobcopilot_api.workers import embed_worker  # noqa: E402
 
 
 @asynccontextmanager
