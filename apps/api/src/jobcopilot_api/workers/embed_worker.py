@@ -3,12 +3,14 @@
 数据流(2-TECH_DESIGN §5.5):
 1. 笔记入库时 chunk_service 只切 chunks + 落 content / content_tsv,embedding 留 NULL
 2. 本 worker 周期性扫 note_chunks WHERE embedding IS NULL ORDER BY id LIMIT BATCH_SIZE
-3. 调 agents/embedder/agent.embed_batch(content_list) 拿 1024 维 vector list
-4. UPDATE note_chunks SET embedding = ... WHERE id = ANY(:ids)(同事务)
+3. 调 agents/embedder.embed_batch(content_list) 拿 1024 维 vector list
+4. UPDATE note_chunks SET embedding / embed_model / embed_version 同事务
 
 启动 / 关停由 main.py lifespan 钩子负责(2-TECH §4.3)。worker 不直接走 router。
 
-骨架阶段(M0):函数 stub。M1 落地时填具体 SQL + embedder 调用。
+错误恢复:单批失败 logger.exception + 退避一轮 POLL_INTERVAL,不让一次失败把
+worker 整体打挂(笔记入库链路对 worker 是 fire-and-forget)。空 dashscope key 时
+get_embedder 抛 ValueError,被同一个 except 吞,worker 静默退避等待 key 配置。
 """
 
 from __future__ import annotations
@@ -16,15 +18,47 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from sqlalchemy import select
+
+from jobcopilot_api.agents.embedder.agent import EMBED_VERSION, embed_batch
+from jobcopilot_api.infra.db import get_sessionmaker
+from jobcopilot_api.models.note_chunk import NoteChunk
+
 logger = logging.getLogger(__name__)
 
-BATCH_SIZE = 64
+# 跟百炼 EMBED_BATCH_LIMIT(10)对齐 — 单 batch 上限。需要更高吞吐就一轮多调
+# 几次 batch,M1 简化为一轮一 batch(队列空才退避,所以连续清空很快)。
+BATCH_SIZE = 10
 POLL_INTERVAL_SECONDS = 5.0
 
 
 async def process_batch() -> int:
-    """处理一批 embedding=NULL 的 chunks,返回处理数。0 表示当前队列已空。"""
-    raise NotImplementedError("M1")
+    """处理一批 embedding=NULL 的 chunks,返回处理数。0 表示当前队列已空。
+
+    embed 调用走 agents/embedder.embed_batch(已 langfuse instrument)。
+    """
+    sm = get_sessionmaker()
+    async with sm() as session:
+        stmt = (
+            select(NoteChunk)
+            .where(NoteChunk.embedding.is_(None))
+            .order_by(NoteChunk.id)
+            .limit(BATCH_SIZE)
+        )
+        chunks = list((await session.execute(stmt)).scalars().all())
+        if not chunks:
+            return 0
+
+        texts = [c.content for c in chunks]
+        result = await embed_batch(texts)
+
+        for chunk, vec in zip(chunks, result.vectors, strict=True):
+            chunk.embedding = vec
+            chunk.embed_model = result.model
+            chunk.embed_version = EMBED_VERSION
+
+        await session.commit()
+        return len(chunks)
 
 
 async def run_forever(stop_event: asyncio.Event) -> None:
@@ -38,10 +72,7 @@ async def run_forever(stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
             try:
                 processed = await process_batch()
-            except NotImplementedError:
-                # 骨架阶段;M1 移除此分支
-                processed = 0
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("embed_worker batch failed")
                 processed = 0
 
