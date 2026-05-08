@@ -40,5 +40,12 @@ class Settings(BaseSettings):
     # 成本。需要每次都走真 LLM(prompt 调试 / token 流式)时设 false 关掉。
     llm_cache_enabled: bool = Field(default=True)
 
+    # Langfuse 三件套(M0 v2)— SDK 走 LANGFUSE_* 命名,本项目走 JOBCOPILOT_ 前缀,
+    # main.py 启动时把字段镜像到 os.environ 给 SDK 用。public_key 留空 = noop 模式
+    # (dev 不污染主 trace project,详见 8-ENGINEERING §11.3)。
+    langfuse_host: str = Field(default="")
+    langfuse_public_key: str = Field(default="")
+    langfuse_secret_key: str = Field(default="")
+
 
 settings = Settings()

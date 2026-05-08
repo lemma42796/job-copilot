@@ -4,10 +4,6 @@ import { usePathname } from 'next/navigation';
 
 function resolveTitle(pathname: string): string {
   if (pathname === '/') return 'JobCopilot';
-  if (pathname === '/jds/new') return '新建 JD';
-  if (pathname.startsWith('/jds/')) return 'JD 详情';
-  if (pathname === '/profiles/new') return '新建简历';
-  if (pathname.startsWith('/profiles/')) return '简历详情';
   return 'JobCopilot';
 }
 

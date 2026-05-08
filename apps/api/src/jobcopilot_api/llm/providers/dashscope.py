@@ -1,7 +1,8 @@
 """DashscopeProvider — DashScope OpenAI-compatible endpoint (ADR-0003).
 
 Endpoint: `https://dashscope.aliyuncs.com/compatible-mode/v1`
-SDK:      `openai` AsyncOpenAI (`base_url` + `api_key` swap, no DashScope SDK)
+SDK:      `langfuse.openai.AsyncOpenAI`(自动 Langfuse instrument;走百炼 base_url + api_key)。
+          错误类仍从 `openai` 导(langfuse 只 wrap 客户端类,不 wrap 错误)。
 
 Error mapping (ADR-0004 D3):
 
@@ -21,11 +22,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from langfuse.openai import AsyncOpenAI
 from openai import (
     APIConnectionError,
     APIStatusError,
     APITimeoutError,
-    AsyncOpenAI,
     AuthenticationError,
     BadRequestError,
     InternalServerError,

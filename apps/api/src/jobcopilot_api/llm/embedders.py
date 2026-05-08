@@ -20,11 +20,11 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Protocol
 
+from langfuse.openai import AsyncOpenAI
 from openai import (
     APIConnectionError,
     APIStatusError,
     APITimeoutError,
-    AsyncOpenAI,
     AuthenticationError,
     BadRequestError,
     InternalServerError,

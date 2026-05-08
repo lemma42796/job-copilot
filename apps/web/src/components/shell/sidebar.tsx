@@ -12,39 +12,12 @@ type NavGroup = { key: string; title?: string; items: NavItem[] };
 
 const NAV: NavGroup[] = [
   { key: 'home', items: [{ href: '/', label: '首页', icon: <HomeIcon />, match: 'exact' }] },
-  {
-    key: 'jobs',
-    title: '工作',
-    items: [
-      { href: '/jds', label: '全部 JD', icon: <ListIcon />, match: 'prefix' },
-      { href: '/jds/new', label: '新建 JD', icon: <DocIcon />, match: 'exact' },
-    ],
-  },
-  {
-    key: 'profiles',
-    title: '简历',
-    items: [
-      { href: '/profiles', label: '全部简历', icon: <ListIcon />, match: 'prefix' },
-      { href: '/profiles/new', label: '新建简历', icon: <UserIcon />, match: 'exact' },
-    ],
-  },
-  {
-    key: 'matches',
-    title: '匹配',
-    items: [{ href: '/matches', label: '全部匹配', icon: <SparkIcon />, match: 'prefix' }],
-  },
-  {
-    key: 'resumes',
-    title: '简历定制',
-    items: [{ href: '/resumes', label: '全部定制简历', icon: <PenIcon />, match: 'prefix' }],
-  },
 ];
 
 function isActive(item: NavItem, pathname: string, siblings: readonly NavItem[]): boolean {
   if (item.match === 'exact') return pathname === item.href;
   if (pathname === item.href) return true;
   if (!pathname.startsWith(`${item.href}/`)) return false;
-  // prefix match — yield to sibling whose exact href is a longer prefix (e.g. /jds/new under /jds)
   return !siblings.some(
     (s) => s !== item && (pathname === s.href || pathname.startsWith(`${s.href}/`)),
   );
@@ -103,55 +76,6 @@ function HomeIcon() {
   return (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
       <path d="M2 7.5 8 2.5l6 5V13a1 1 0 0 1-1 1h-3v-4H6v4H3a1 1 0 0 1-1-1V7.5Z" />
-    </svg>
-  );
-}
-
-function DocIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-      <path d="M3.5 2h6L13 5.5V14a.5.5 0 0 1-.5.5h-9A.5.5 0 0 1 3 14V2.5a.5.5 0 0 1 .5-.5Z" />
-      <path d="M9.5 2v3.5H13" />
-    </svg>
-  );
-}
-
-function UserIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-      <circle cx="8" cy="6" r="2.5" />
-      <path d="M3 13.5c.8-2.4 2.8-3.5 5-3.5s4.2 1.1 5 3.5" />
-    </svg>
-  );
-}
-
-function ListIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-      <path d="M5 4h8M5 8h8M5 12h8" strokeLinecap="round" />
-      <circle cx="2.75" cy="4" r="0.6" fill="currentColor" stroke="none" />
-      <circle cx="2.75" cy="8" r="0.6" fill="currentColor" stroke="none" />
-      <circle cx="2.75" cy="12" r="0.6" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
-function SparkIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-      <path
-        d="M8 2 L9.5 6.5 L14 8 L9.5 9.5 L8 14 L6.5 9.5 L2 8 L6.5 6.5 Z"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function PenIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-      <path d="M11.5 2.5 13.5 4.5 5 13H3v-2L11.5 2.5Z" strokeLinejoin="round" />
-      <path d="M10 4 12 6" strokeLinecap="round" />
     </svg>
   );
 }
