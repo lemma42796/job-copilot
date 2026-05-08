@@ -612,7 +612,7 @@ evals/suites/
 | 错误码命名 | snake_case + 出处明确 | 同 v1 JobCopilotError |
 | SSE 实现 | sse-starlette + 前端 lib/sse.ts | 永久约束 #21 |
 | LLM cache | 全 agent 经过 llm_response_cache | 评测路径不禁(EVAL_PLAN §2.4)|
-| 部署 | docker compose 本地 | apps/api / apps/web / postgres / langfuse / langfuse-db 五服务 |
+| 部署 | docker compose 本地 | postgres / api / web / caddy / langfuse / langfuse-db 六服务 |
 | Tracing 选型 | Langfuse 自部署 | LLM-native + 数据不出本地;详见 §6 |
 | Tool use 范围 | 仅 AnswerJudge 用 `lookup_in_notes_global`;Quiz / Embedder / JdParser / JdAggregator / ResumeAdvisor 不用 | 直击 LESSONS §1.1 假阳性,精准不滥用 |
 | LLM SDK | OpenAI Python SDK(via 百炼兼容接口)| Langfuse 自动 instrument;详见 reference memory |

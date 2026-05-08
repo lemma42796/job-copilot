@@ -534,7 +534,7 @@ STATUS.md "已锁定的关键决策"表 = 不再返工的清单。如果有理�
 | 覆盖率门槛 | `fail_under = 70` | LLM 路径放宽,走集成测 + 评测兜底 |
 | Alembic | 单 head + 升序数字 revision id | 分叉手动 merge;v2 schema 切换走 0016 |
 | migration 纪律 | model 改必有 revision;集成测跑真 alembic upgrade(不 create_all)| 防 model / migration 漂移 |
-| docker compose 服务数 | 5(postgres / api / web / caddy / langfuse / langfuse-db) | 业务 PG 跟 Langfuse PG 分实例 |
+| docker compose 服务数 | 6(postgres / api / web / caddy / langfuse / langfuse-db) | 业务 PG 跟 Langfuse PG 分实例 |
 | Langfuse 部署 | 自部署不上 LangSmith(数据不出本地) | 详见 2-TECH §6 |
 | CI 触发策略 | 6 条独立 workflow + paths 过滤 + concurrency cancel | 改文档不烧 CI |
 | eval workflow | M0-M1 manual 触发,M2 数据集到位再放开 push | 防"dataset 不稳定 + 烧钱 + kappa 没达标数字不可信"三件 |
