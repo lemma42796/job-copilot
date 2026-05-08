@@ -7,12 +7,12 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 # 当前阶段
 
-**M0 完工 — 文档群 + v2 schema + 模块骨架 + langfuse compose 全部落地;tag `v0.2-m0-end`**
+**M1 后端全部落地(第 1-7 步) — chunker + notes_service + routers + embedder + worker + hybrid_search;剩前端 + Langfuse 验证 + DoD**
 
 | 里程碑 | 内容 | 状态 |
 |--------|------|------|
 | M0 | 仓库改造 + 文档重写 + v2 schema + 模块骨架 | ✅ tag `v0.2-m0-end` |
-| M1 | 笔记入库 + chunker + 树形导航 + Langfuse 起步 | ⏳ |
+| M1 | 笔记入库 + chunker + 树形导航 + Langfuse 起步 | 🔄 后端 7/10 步完成,前端 + DoD 待开 |
 | M2 | 出题 + 答题 + Judge 三层评分 + Judge tool use + Trace 完整化 | ⏳ |
 | M2.5 | JD 累积上传 + 一键分析 + 学习路径(独立有价值) | ⏳ |
 | M3 | 弱点跟踪 + SR + 多轮追问 + 简历诊断(两方锚点严格) | ⏳ |
@@ -46,14 +46,14 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 # 当前 working tree
 
-**clean**,已与 `origin/main` 同步,M0 末态 tag `v0.2-m0-end`。
+**clean**,已与 `origin/main` 同步,M0 末态 tag `v0.2-m0-end`(M1 进行中,DoD 完成后才打 `v0.3-m1-end`)。
 
 近期 commit:
-- `756a7da` docker-compose 加 langfuse + langfuse-db(image 锁 v2 防服务数膨胀)
-- `f75cfa4` M0 v2 模块骨架 — 7 agents + 8 services + 14 schemas + embed_worker + main lifespan
-- `c733a25` 9-LESSONS §7.5 git rm vs Edit/Write 工程坑沉淀
-- `6db9a61` M0 v2 schema 落地(10 ORM + alembic 0016 + test_migrations)
-- `32af0db` 补漏 + LLM SDK 切换 langfuse
+- `5dd4e66` M1 第 5/6/7 — embedder agent + embed_worker + hybrid_search 三件齐
+- `8b5946e` M1 routers/notes.py 7 端点 + main.py 挂 /api 前缀
+- `b22df61` M1 notes_service 7 函数填实(CRUD + zip + 树形导航)
+- `04a7620` M1 chunk_service heading-aware chunker + 15 unit test
+- `633e244` M0 完工 STATUS 标 ✅ + 修 docker compose 服务数 5→6 笔误
 
 # 已锁定的关键决策(v2 起,完整版见各文档)
 
@@ -101,18 +101,32 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 # 下一步建议
 
-进入 **M1:笔记入库 + chunker + 树形导航 + Langfuse 起步**(7-ROADMAP §M1)。子任务:
+**M1 后端全部落地**(7-ROADMAP §M1),剩前端 + Langfuse 验证 + DoD:
 
-1. **alembic 索引**:确认 alembic 0016 v2 schema 里 hybrid search 索引齐全(pgvector HNSW + tsvector char_ngrams 沿用 v1 0014 风格);如缺再补一条 revision
-2. **chunk_service.rechunk_note + heading-aware chunker**(填 services/chunk_service.py 占位):按 H2 / H3 切片,每 chunk 带 folder_path / heading_path,落 content + content_tsv,embedding 留 NULL
-3. **notes_service** 8 个函数填实:CRUD + zip unpack + 树形导航
-4. **routers/notes.py**:挂 8 个端点(POST/GET/PUT/DELETE / move / upload-zip / tree / chunks)
-5. **agents/embedder.embed_batch** 填实(infra/embedder.py 已沿用 v1)
-6. **workers/embed_worker.process_batch** 填实(轮询 embedding=NULL → 批量 embed → UPDATE)
-7. **search_service.hybrid_search_in_node** 填实(沿用 v1 RRF;global_hybrid_search 留 M2)
-8. **前端 Web 编辑器(Monaco)+ 树形导航 sidebar + zip 上传页**:M1 范围内 4 个页面(`(notes)/page.tsx` + `upload/page.tsx`)
-9. **Langfuse 起步**:llm/client 装 `@observe`(8-ENG §11.1 已写,llm.openai wrapper 自动 instrument 已就位,核对每条 embedder 调用 trace 能进 Langfuse UI)
-10. **M1 DoD 验证**(7-ROADMAP §M1):50+ 篇 zip 上传 + 编辑器 + recall@5 ≥ 0.85 hybrid search 评测 + Langfuse trace 可见
+✅ 已完成:
+1. ✅ alembic 索引核对 — 0016 hybrid 索引齐全(folder_path GIN / embedding HNSW / content_tsv GIN),无需补 revision
+2. ✅ chunk_service heading-aware chunker — H2 默认 + 超 MAX 拆 H3 + 段落兜底 + overlap;15 unit test(commit `04a7620`)
+3. ✅ notes_service 7 函数 — CRUD + zip 上传 + 树形导航(commit `b22df61`)
+4. ✅ routers/notes.py 7 端点 + main.py 挂 /api 前缀(commit `8b5946e`)
+5. ✅ agents/embedder.embed_batch — 走 langfuse.openai 自动 instrument(commit `5dd4e66`)
+6. ✅ workers/embed_worker.process_batch — BATCH_SIZE=10 跟百炼 EMBED_BATCH_LIMIT 对齐
+7. ✅ search_service.hybrid_search_in_node + global_hybrid_search — 双路并发 + RRF + lex 短 query 降级
+
+⏳ 剩余:
+
+8. **前端 Web 编辑器 + 树形导航 + zip 上传页**(M1 范围内 4 个页面):`(notes)/page.tsx` 树+编辑器双栏 / `(notes)/upload/page.tsx` zip 上传。Monaco editor + Tailwind 自己写,不引组件库(8-ENG 锁定)
+9. **Langfuse 起步验证**:embed_batch 已走 langfuse.openai wrapper 自动 instrument 不需写代码;启 docker compose + 注册 + 配 PUBLIC/SECRET key 进 .env + 重启 api → 浏览器开 http://localhost:3001 看 trace 是否进。(8-ENG §11.3)
+10. **M1 DoD 验证**(7-ROADMAP §M1):
+    - 50+ 篇 zip 上传 + 全部入库,chunk 数符合预期
+    - Web 编辑器写新笔记 + 选目标 folder + 保存,3 秒内出现在树形导航
+    - 编辑老笔记 → 老 chunks 删除 + 新 chunks 入库
+    - hybrid search recall@5 ≥ 0.85(评测套件 6-EVAL §5)
+    - Langfuse UI 能看到每条 embedder 调用的 trace + token + cost
+    - alembic 全过 + ruff / mypy / typecheck / next build 全过
+
+集成测(testcontainers 真 PG)与 M1 后端代码同步缺失:rechunk_note / get_chunks_for_node / hybrid_search / notes_service 全 7 函数 / routers 7 端点 — 都是 unit 不连 DB,要靠集成测兜底。建议在第 8 步前后挑一个时间点写一组 `tests/integration/test_notes_*.py`。
+
+M1 DoD 全部达成 → tag `v0.3-m1-end` → 开 M2(出题 + 评分)。
 
 # v1 历史
 
