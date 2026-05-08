@@ -1,16 +1,18 @@
 ---
-title: AGENT DESIGN - JobCopilot v2(QuizGenerator + AnswerJudge prompt 全文 + 输出 schema)
+title: AGENT DESIGN - JobCopilot v2(QuizGenerator + AnswerJudge + QueryRewriter prompt 全文 + 输出 schema)
 owner: lemma42796
-last_updated: 2026-05-08
-purpose: 锁两个核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / 模型路由 / 版本号策略
+last_updated: 2026-05-09
+purpose: 锁核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / 模型路由 / 版本号策略
 ---
 
 # 1. 一句话总览
 
-两个 Agent + 一个 M3 编排器:
+核心 Agent + M3 编排器:
 
-- **QuizGenerator**:吃节点 chunks → 出 N 道题(open_ended + definition 自动配比)+ reference_answer + reference_points
+- **QueryRewriter(M2)**:吃用户聊天框 query → 扩成同义/相邻概念集,喂给全库 hybrid search(retrieval pipeline 第一段)
+- **QuizGenerator**:吃 query + retrieved chunks(retrieval pipeline 输出)→ 出 N 道题(open_ended + definition 自动配比)+ reference_answer + reference_points
 - **AnswerJudge**:吃(题, reference, chunks, 用户答案)→ 输出三层 evidence(coverage / fidelity / depth)
+- **JdParser / JdAggregator(M2.5)** + **ResumeAdvisor(M3)**:JD / 简历相关
 - **FollowupOrchestrator (M3)**:LangGraph 多轮追问,基于第一轮 evidence 的薄弱处生 1-2 轮追问
 
 # 2. 通用约定
@@ -23,6 +25,7 @@ purpose: 锁两个核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / 模
 
 | Agent / 调用 | thinking | 理由 |
 |-------------|---------|------|
+| QueryRewriter(M2)| **off** | 短词 → 同义/相邻概念扩展,模板化,LLM 模式调用 |
 | QuizGenerator | **off** | 出题靠 chunks 内容重组,不需要复杂推理 |
 | AnswerJudge | **on** | 三层评分涉及 reasoning(语义判断 / 同义识别 / fabricated 边界)|
 | AnswerJudge.lookup tool 触发的主体 LLM | **on** | 同上 |
@@ -42,7 +45,7 @@ purpose: 锁两个核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / 模
 
 OpenAI 兼容接口标准支持 `temperature` 参数(可直接传)。各 agent 默认值:
 
-- **QuizGenerator** / **JdParser** / **JdAggregator**:`0.3`(降随机性,要稳定结构)
+- **QueryRewriter** / **QuizGenerator** / **JdParser** / **JdAggregator**:`0.3`(降随机性,要稳定结构)
 - **AnswerJudge** / **ResumeAdvisor**:`0.2`(评分 / 诊断要可复现)
 - **学习路径生成** / **截图 OCR**:`0.5`(内容生成允许少许多样性)
 
@@ -54,6 +57,7 @@ OpenAI 兼容接口标准支持 `temperature` 参数(可直接传)。各 agent �
 
 | name | version | system_text | user_template |
 |------|---------|-------------|---------------|
+| `query_rewriter` | `v1.0` | (见 §2.7) | (见 §2.7) |
 | `quiz_generator` | `v1.0` | (见 §3.3) | (见 §3.4) |
 | `answer_judge` | `v1.0` | (见 §4.3) | (见 §4.4) |
 
@@ -75,6 +79,83 @@ Quiz / Judge 调用都走 `llm_response_cache`(v1 alembic 0015)。cache_key 用 
 - JSON parse 失败:retry 1 次(prompt 不变)
 - 仍失败 → 抛 `JobCopilotError(code='llm_call_failed')`,SSE 端点 emit `error → done(ok=false)`
 
+## 2.7 QueryRewriter + Retrieval Pipeline(M2)
+
+QuizGenerator 上游是一条 retrieval pipeline,**M2 主战场**:
+
+```
+用户 query("考考我多线程")
+  ↓ QueryRewriter (LLM)
+扩展 queries (["并发", "多线程", "锁", "死锁", "synchronized"])
+  ↓ services/search_service.global_hybrid_search (vector + lex + RRF)
+top 50 chunks
+  ↓ services/reranker.rerank (cross-encoder)
+top 10 chunks
+  ↓ services/retrieval_pipeline.expand_to_parent
+喂给 QuizGenerator 的最终 chunks(含 heading_path 元数据)
+```
+
+**0 命中守门**:命中 chunks < 阈值(PRD Q-10) → service 层抛 `no_chunks_for_query`,不走到 QuizGenerator。
+
+### 2.7.1 QueryRewriter 输入 / 输出
+
+```python
+@dataclass
+class QueryRewriteInput:
+    user_query: str               # 原 query,例 "考考我多线程"
+
+@dataclass
+class QueryRewriteOutput:
+    expanded_queries: list[str]   # ≤ 5 项,首项必为原 query
+    rationale: str                # 为什么扩出这些(中文一句,trace 可见)
+```
+
+### 2.7.2 SYSTEM prompt(`query_rewriter` v1.0)
+
+```
+你是 RAG 检索 query 改写 Agent。任务:把用户的短 query 扩成同义 / 相邻概念集,以提高
+笔记库 hybrid search 的召回。
+
+【硬约束】
+1. 扩展项 ≤ 5 个,首项必须是原 query 不变
+2. 只扩"同义词 / 强相邻概念 / 常见同领域术语",不扩"行业常识 / 上位概念 / 不相关概念"
+3. 中英混合保留:笔记里可能有"synchronized"也可能有"同步锁",两者都列
+4. 不解释 / 不评论 / 不输出原 query 的复述
+5. 严格 JSON,无前后散文
+
+【输出格式】
+{
+  "expanded_queries": ["<原 query>", "<同义/相邻 1>", ...],
+  "rationale": "<中文一句话>"
+}
+```
+
+### 2.7.3 USER 模板
+
+```
+用户 query:{user_query}
+```
+
+### 2.7.4 失败处理
+
+- LLM 失败 / JSON parse 失败:**回退原 query**(只 expanded_queries=[user_query]),trace 打 warning,**不阻塞流程**
+- 错误码:`query_rewrite_failed`(trace warning,不抛错)— 见 2-TECH §7
+
+### 2.7.5 Reranker(LLM 不参与)
+
+非 LLM 调用,无 prompt 本文档不展开。**失败回退 hybrid top-K**(`rerank_failed` warning),不阻塞。
+
+**M2 选型**:百炼 **`qwen3-rerank`**(详见 reference memory `reference_aliyun_dashscope_rerank.md`)
+- 接口:`POST https://dashscope.aliyuncs.com/compatible-api/v1/reranks`(注意是 `compatible-api`,跟 chat 走的 `compatible-mode` 不同)
+- 价格:¥0.0005/千 token,500 doc 上限,远高于我们 hybrid 后 top 50 用量
+- 计费公式:`Query Tokens × Document 数量 + Document Tokens 总和`
+- 实测一次出题成本估算 ~¥0.01(20k token);LLM cache 命中后均摊更低
+- **langfuse.openai 不自动 instrument rerank**:同 embedder,要在 `services/reranker.py` 手动 `Langfuse().generation()` 包成功 / 失败两路径(参考 STATUS 永久约束 "langfuse 2.x 不 patch embeddings.create")
+- **relevance_score 不可跨请求比较**:只是本次请求内相对值,不写到 DB 当跨 session 指标;quiz_sessions.retrieved_chunk_ids 仅存 ids 不存 score
+- 本地 `bge-reranker-v2-m3`(BAAI,~568M params,fp16 ~1.1GB)作 fallback,M2 不做,有真问题再加 adapter
+
+**默认 instruct(qwen3-rerank 参数)**:`"Given a web search query, retrieve relevant passages that answer the query."`(默认问答检索任务,贴我们"用户 query → 找最相关笔记"场景)
+
 # 3. QuizGenerator
 
 ## 3.1 输入
@@ -82,17 +163,24 @@ Quiz / Judge 调用都走 `llm_response_cache`(v1 alembic 0015)。cache_key 用 
 ```python
 @dataclass
 class QuizGenInput:
-    node_folder_path: list[str]      # ['Java', '并发']
-    node_heading_path: list[str]     # ['synchronized'] 或 []
-    chunks: list[NoteChunk]          # 节点 prefix 命中的全部 chunks
+    query: str                       # 用户聊天框输入,例 "考考我多线程"
+    chunks: list[RetrievedChunk]     # retrieval pipeline 输出(top 10 + parent-doc 扩展)
     question_count: int              # 3 ≤ N ≤ 10
+
+@dataclass
+class RetrievedChunk:
+    chunk: NoteChunk                 # 笔记 chunk 实体(content / DB id 等)
+    heading_path: list[str]          # 例 ['Java', '并发', 'synchronized', '锁升级']
+    folder_path: list[str]           # 例 ['Java', '并发']
+    note_title: str                  # 所在笔记标题
+    rerank_score: float              # cross-encoder 给的相关性分(LLM 可参考但不强制)
 ```
 
-`chunks` 由 service 层按路径 prefix 查询取来,**已剪枝**:
+`chunks` 由 retrieval pipeline 产出(详见 §2.7):**已经过 query_rewrite + hybrid + RRF + reranker + parent-doc 扩展**。
 
-- **下限 5**:节点底下 chunks < 5 时直接抛 `insufficient_chunks`(对应 4-API_SPEC §4.1 错误码),不调 LLM
-- **上限 30**:超 30 个时按 hybrid search 取 Top-30(语义召回),避免 prompt 爆 token;出题语义仍是"这个节点底下的内容"
-- 单 chunk ≈ 200-500 tokens,30 chunks ≈ 6k-15k tokens,加 prompt 模板后落在 qwen3.6-flash 32k context 安全区
+- **0 命中守门由 retrieval pipeline 负责**:command 走到 QuizGenerator 时 `len(chunks) ≥ 阈值`(PRD Q-10),不需 QuizGenerator 自己再判
+- **上限 ≈ 10 + parent-doc 扩展**:reranker 后 top 10 + parent-doc 扩展,通常 ~10-20 chunks 喂 LLM。单 chunk ≈ 200-500 tokens,落 qwen3.6-flash 大 context 安全区
+- **chunks 含 heading_path / note_title 元数据**:USER 段渲染时一并传给 LLM,反幻觉锚点(LLM 知道每段出自笔记的什么位置)+ 出题时可在题干提示主题上下文
 
 ## 3.2 输出
 
@@ -117,18 +205,20 @@ reference_points 的 schema 见 3-DATA_MODEL §6.1。
 ## 3.3 SYSTEM prompt(`quiz_generator` v1.0)
 
 ```
-你是为程序员设计技术面试题的 Agent。任务:基于用户提供的笔记片段(chunks)出 N 道题。
+你是为程序员设计技术面试题的 Agent。任务:基于用户的查询主题 + 笔记片段(chunks),
+出 N 道题。chunks 是 RAG retrieval pipeline 从用户全笔记库检索出的最相关片段。
 
 【硬约束】
 
 1. 题目必须能用提供的 chunks 回答 — 任何超出 chunks 的内容不允许出现在题干 / reference 里
-2. 每道题必须给 source_chunk_ids:出题用到的 chunks 编号(对应 USER 段 [N] 标号),数组里的顺序就是被引用的语义顺序
-3. reference_chunk_ids ⊆ source_chunk_ids,且 reference_answer 文本里**必须用 [N] 引用每个 reference_chunk_id**
-4. 题型仅两类:
+2. 题目主题必须贴用户 query — 跑题(如用户问"多线程"你出题问"垃圾回收")算严重错误
+3. 每道题必须给 source_chunk_ids:出题用到的 chunks 编号(对应 USER 段 [N] 标号),数组里的顺序就是被引用的语义顺序
+4. reference_chunk_ids ⊆ source_chunk_ids,且 reference_answer 文本里**必须用 [N] 引用每个 reference_chunk_id**
+5. 题型仅两类:
    - open_ended:开放式 — 讲过程 / 原理 / trade-off / 对比
    - definition:八股 — 定义 / 命名 / 是什么
    不出代码题、不出系统设计题、不出选择题
-5. 每道题配 reference_points(2-5 个):
+6. 每道题配 reference_points(2-5 个):
    - text:答这题应该覆盖的"采分点"短句
    - weight:本题内 ∑weight = 1.0(浮点,2 位小数)
    - evidence_chunk_ids:支撑这个 point 的 chunks 编号(⊆ source_chunk_ids)
@@ -147,6 +237,7 @@ reference_points 的 schema 见 3-DATA_MODEL §6.1。
 - 不要基于"行业常识"出题(比如 chunks 没提 ConcurrentHashMap 你就不能出它)
 - 不要把 chunk 里的字面错误(如笔记记错了)修正后出题 — 我们要的是"测用户记没记住笔记里的内容",不是"测对错"
 - reference_answer 不能比 chunks 内容更多 — 即使你知道更多
+- 如果 chunks 跟 query 主题确实不太搭(retrieval 命中边缘),宁可让题贴 chunks 不贴 query — chunks 是事实锚点
 
 【输出格式】
 
@@ -176,40 +267,41 @@ reference_points 的 schema 见 3-DATA_MODEL §6.1。
 ## 3.4 USER 模板(`quiz_generator` v1.0)
 
 ```
-节点路径:{node_folder_path_str} / {node_heading_path_str}
+查询主题:{user_query}
 
-chunks(共 {chunk_count} 个):
+retrieval pipeline 产出的 chunks(共 {chunk_count} 个,已按相关性排序):
 
-[1] folder: {folder_path_1} | heading: {heading_path_1} (level {level_1})
+[1] note: {note_title_1} | folder: {folder_path_1} | heading: {heading_path_1}
 {content_1}
 
-[2] folder: {folder_path_2} | heading: {heading_path_2} (level {level_2})
+[2] note: {note_title_2} | folder: {folder_path_2} | heading: {heading_path_2}
 {content_2}
 
 ...
 
-要求出 {question_count} 道题。
+要求出 {question_count} 道题,主题贴查询主题,内容锚定上述 chunks。
 ```
 
-渲染示例(节点 = Java/并发/synchronized,出 5 题):
+渲染示例(query = "考考我多线程",出 5 题):
 
 ```
-节点路径:Java / 并发 / synchronized
+查询主题:考考我多线程
 
-chunks(共 4 个):
+retrieval pipeline 产出的 chunks(共 8 个,已按相关性排序):
 
-[1] folder: Java/并发 | heading: synchronized > 锁升级 (level 2)
+[1] note: Java 并发深入 | folder: Java/并发 | heading: synchronized > 锁升级
 ## 锁升级
 synchronized 在 JDK 1.6 后引入了锁升级:无锁 → 偏向锁 → 轻量级锁 → 重量级锁。
 偏向锁假设只有一个线程会进入同步块,通过 mark word 记录线程 id...
 
-[2] folder: Java/并发 | heading: synchronized > 实现 (level 2)
-## 实现
-HotSpot 中通过 ObjectMonitor 实现重量级锁...
+[2] note: Java 并发深入 | folder: Java/并发 | heading: ReentrantLock > AQS
+## AQS
+AbstractQueuedSynchronizer 提供模板方法 + state 字段...
 
-[3] ...
+[3] note: 操作系统笔记 | folder: 操作系统 | heading: 进程调度 > 死锁
+...
 
-要求出 5 道题。
+要求出 5 道题,主题贴查询主题,内容锚定上述 chunks。
 ```
 
 ## 3.5 service 层后处理
@@ -722,7 +814,12 @@ generate_question → wait_user_answer → judge_layer1
 |----|------|------|
 | 模型 | qwen3.6-flash thinking on,Quiz / Judge 同模型,全程不变 | 评委是 LLM、被评者是人,v1 §7.1 自评偏差不适用 |
 | Judge kappa 守门 | M2 DoD `κ ≥ 0.7`;不达标改 prompt(bump version)+ 重跑历史评测,**不切模型** | 守 Judge 输出可靠性,跟自评无关 |
-| Quiz chunks 数 | 下限 5(`insufficient_chunks`),上限 30(hybrid search Top-30) | 30 chunks ≈ 6k-15k tokens,落 32k context 安全区 |
+| Quiz chunks 数 | M2 起 chunks 由 retrieval pipeline 产出(top 10 + parent-doc 扩展);0 命中守门由 pipeline 负责,QuizGenerator 不再自判 | retrieval pipeline 端阈值见 PRD Q-10;sourceChunks 上限 ~20 落 qwen3.6-flash 大 context 安全区 |
+| QuizGenerator 输入 | **query + retrieved chunks**(含 heading_path / note_title 元数据);M2 出题入口由"节点点击"改为"聊天框 query" | 见 §3.1 + 2-TECH §5.2 数据流 |
+| QueryRewriter | M2 retrieval pipeline 第一段;扩 ≤5 项,首项必为原 query;失败回退原 query 不阻塞 | 见 §2.7 |
+| Reranker | cross-encoder(本地 / 百炼 reranker 接口),非 LLM 调用,不进 prompt_versions | 见 §2.7.5 + PRD Q-07 |
+| query 形态 | M2 仅主题类;M3 加岗位类(三源融合)+ 空 query(SR 系统自选) | 见 PRD §5.2 + 7-ROADMAP M3 |
+| 简历存储 | 单条记录(全库一行 resumes),无"简历库 / 多份切换";岗位类 query 拼"这一份 + 选定 JD 子集" | 一个人就一份简历;PRD §6 锁定 |
 | 多轮追问触发(M3) | `coverage < 60 AND ≥1 depth 维度 covered=false`,最多 1 轮 | 两条同时满足才追问;预期触发率 30-50% |
 | Temperature | DashScope 默认,不暴露 | prompt 端约束逼近低温度 |
 | Prompt 版本号 | DB `prompt_versions` 表,改一次 bump | questions / session_answers 留旧 version |

@@ -1,8 +1,8 @@
 ---
 title: PRD - JobCopilot v2(给学计算机的人的全流程工具)
 owner: lemma42796
-last_updated: 2026-05-08
-status: M0(文档就绪,代码改造未起)
+last_updated: 2026-05-09
+status: M2(M0/M1 收口,出题入口由"节点点击"改为"聊天框 query")
 purpose: 锁产品边界、目标用户、用户故事、NSM、不在范围
 ---
 
@@ -112,10 +112,18 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 │  写笔记(Web 编辑器 / 本地目录直读)                             │
 │     ↓ chunker(heading-aware)+ embedder                          │
 │  笔记 chunks(folder_path / heading_path 元数据)                │
-│     ↓ 用户选节点 + 触发出题                                      │
+│     ↓ 用户在聊天框输 query                                       │
+│       · M2:主题类("考考我多线程")                              │
+│       · M3:岗位类("模拟一面 Java 后端")/ 空("来模拟面试吧") │
+│  Retrieval pipeline                                                │
+│   M2 单源(笔记):query rewrite → hybrid + RRF → reranker →    │
+│                  parent-doc 扩展;0 命中报"笔记里没这主题"       │
+│   M3 三源:笔记 RAG + 简历单条全文 + JD 子集职责/要求,合并喂题  │
+│   M3 空 query:SR 弱点排行选 heading_path → 复用单源 pipeline    │
+│     ↓ 命中 chunks + 元数据                                       │
 │  QuizGenerator(thinking off,反幻觉 source_chunk_ids)           │
 │     ↓ 3-10 道题(开放式 + 八股,LLM 自动配比)                  │
-│  用户答(笔记面板隐藏)                                           │
+│  用户答(笔记面板隐藏 — active recall 强约束;答完恢复)         │
 │     ↓ AnswerJudge(thinking on,三层评分 + lookup tool)          │
 │  Coverage / Fidelity / Depth + 加权总分                          │
 │     ↓                                                              │
@@ -149,9 +157,11 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 
 ## 5.2 出题与答题
 
-- **US-5**:作为用户,我可以点树形导航某个节点("Java / 并发 / synchronized"),系统从该节点 + 子节点关联的 chunks 出 3-10 道题
-- **US-6**:作为用户,题型分两类:**开放式**("解释 synchronized 的锁升级过程")+ **八股**("synchronized 的轻量级锁是怎么实现的?")。MVP 不做代码题 / 系统设计题
-- **US-7**:作为用户,答题时**笔记面板隐藏**(active recall 强约束),只能看题干 + 输入框
+- **US-5(M2,主题类 query)**:作为用户,我可以在聊天框输入一个主题("考考我多线程" / "缓存一致性"),系统从全笔记库 RAG 找最相关 chunks(query rewriting → hybrid + RRF → reranker → parent-doc 扩展),出 3-10 道题。**0 命中(笔记里没这主题)直接报错,不兜底放宽**
+- **US-5b(M3,岗位类 query)**:作为用户,我可以输入岗位描述("模拟一面 Java 后端" / "应聘字节后端实习"),系统拼**三源**(笔记 RAG + 我那一份简历全文 + 我选定的 JD 子集职责/要求)出题,**重点考"简历写了 JD 也要"的交集 + "JD 强要求简历没写"的缺口**(直击"自己不会的也往简历上写,问到答不出"问题)
+- **US-5c(M3,空 query / 系统自选)**:作为用户,我可以输入"来模拟面试吧"或留空,系统按 SR 弱点排行自选一个主题,然后走主题类 RAG 流程出题
+- **US-6**:作为用户,题型分两类:**开放式**("解释 synchronized 的锁升级过程")+ **八股**("synchronized 的轻量级锁是怎么实现的?")。MVP 不做代码题 / 系统设计题。M3 岗位类多一种 "**项目深挖题**"(基于简历项目段落,问技术选型 / 难点 / 量化数据)
+- **US-7**:作为用户,**答题阶段**笔记面板隐藏(active recall 强约束),只能看题干 + 输入框;答完评分阶段笔记面板恢复(可对照 reference)。笔记面板始终是查看 / 编辑 / 上传入口,但**不再触发出题**
 - **US-8**:作为用户,我可以中途退出 session,草稿自动保存,下次进入续写
 
 ## 5.3 评分与沉淀
@@ -183,7 +193,9 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 
 ## MVP(M1 + M2,本地单用户 dogfood)
 
-- US-1 ~ US-11 全做
+- US-1 ~ US-4(笔记输入)
+- **US-5(M2 主题类 query)** + US-6 / US-7 / US-8(出题答题)
+- US-9 / US-10 / US-11(评分沉淀)
 - US-12 / 13 / 14 简化版(不做美观 dashboard,只做 SQL 查询 + 列表)
 
 ## M2.5(独立小里程碑)
@@ -192,6 +204,7 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 
 ## M3 加强
 
+- **US-5b(岗位类 query)+ US-5c(空 query 系统自选)**
 - 完整弱点 dashboard UI
 - session 历史回看
 - LangGraph 多轮追问 Agent(基于第一轮答案出追问)
@@ -207,6 +220,8 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 - 语音输入 / 语音答题
 - 笔记 PDF / 图片导入(简历 PDF 是要做的,但**笔记**只接 markdown)
 - **替用户写简历改写文案**(永不做 — 直接撞 v1 失败模式;系统只做诊断,真实经验用户自己写)
+- **按岗位定制多份简历(简历库)**(永不做 — 一个人就一份简历;岗位类 query 拼"那一份简历 + 用户选定 JD 子集"已足够,多份切换增加复杂度无价值)
+- **笔记面板节点点击触发出题**(永不做 — 出题入口统一走聊天框 query,笔记面板降级为查看 / 编辑 / 导航树)
 - **投递追踪**(v1 残留,确认死)
 - 语雀 / Notion / 飞书 / Obsidian sync(三方笔记应用各自做得比本产品好)
 - 跨 batch 跨时间增量聚合 JD(M3+ 才考虑;MVP 单次上限 200 条已够覆盖)
@@ -255,7 +270,11 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 | JD 输入源 | 文本粘贴 + 截图(Qwen 多模态)| 累积型,陆续上传;立即解析 |
 | 简历输入源 | markdown / PDF(Qwen 多模态 OCR)| M3 |
 | JD 单次分析上限 | **200 条**(hierarchical reduce)| 超过提示拆分;M3+ 才考虑跨批增量聚合 |
-| 题型 | 开放式 + 八股 两类 | 不做代码 / 系统设计 / 选择题 |
+| 出题入口 | **聊天框 query**(三类:主题 / 岗位 / 空 → 系统自选);**笔记面板不再触发出题** | M2 主题 / M3 岗位 + 空 |
+| M2 retrieval pipeline | **query rewriting → hybrid + RRF → reranker → parent-doc 扩展** 四件 | RAG 主战场;每段独立可观测进 Langfuse trace |
+| 0 命中策略 | retrieval < 阈值 chunks → **直接报"笔记里没这主题"**,不兜底放宽 | 守住"笔记是主角"边界,LLM 不凭训练数据补 |
+| 简历存储 | **单条记录**,不做"简历库 / 多份切换" | 一个人就一份简历;岗位类 query 拼"这一份 + 选定 JD 子集"已够 |
+| 题型 | 开放式 + 八股 两类(M3 岗位类多 "**项目深挖题**") | 不做代码 / 系统设计 / 选择题 |
 | 评分 | LLM-as-Judge 三层(Coverage / Fidelity / Depth) | 权重在 Python,不让 Judge 算 |
 | 简历诊断锚点 | 两方严格(JD req + 简历位置),**永不输出改写文案** | 避开 v1 失败模式;只做诊断让用户自己写 |
 | LLM 模型 | qwen3.6-flash(多模态 + 文本一把抓) | Quiz / Judge / 截图 / JD 解析 / 简历诊断 共用 |
@@ -277,6 +296,10 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 - **Q-04** JD title 标签:用户手填 vs LLM 自动从 JD 抽 — M2.5 启动前决策(我倾向 LLM 自动抽 + 用户可改)
 - **Q-05** 简历 PDF 上传:走 Qwen 多模态 vs 上独立 PDF→markdown 工具(如 marker)?— M3 启动前(MVP 倾向 Qwen 多模态,简单)
 - **Q-06** 简历诊断 anchored 阈值:多方都齐才 anchored,还是允许部分(如"JD req 命中 + 简历位置 null"是否算 anchored 但 coverage=missing)?— M3 启动前细化
+- **Q-07 [已定 2026-05-09]** Reranker 走百炼 `qwen3-rerank`(`/compatible-api/v1/reranks`,¥0.0005/千 token,500 doc 上限);本地 `bge-reranker-v2-m3` 作 fallback,M2 不做,有真问题再加 adapter。**坑见 memory `reference_aliyun_dashscope_rerank.md`**:接口路径跟其他 rerank 模型不通用;langfuse.openai 不自动 instrument(同 embedder 要手动包 generation);relevance_score 不可跨请求比较
+- **Q-08 [已定 2026-05-09]** Parent-doc **自适应**:命中段长(≥ 阈值)少扩 / 命中段短(< 阈值)多扩到父段;具体阈值 + 父段层级(H2 / H3)在 M2 实施时调,初值倾向"命中段 < 200 字 → 扩到同 H2;≥ 200 字 → 不扩"
+- **Q-09** 岗位类 query 的 JD 子集选择 UX:每次用户手动多选 / 系统按 query 关键词从 jds 表匹配候选 / 默认用全部 + 让用户排除 — M3 启动前
+- **Q-10 [已定 2026-05-09]** 0 命中阈值起步 **< 3**(retrieval 命中 chunks < 3 → 报"笔记里没这主题");dogfood 跑一段看真实分布再调
 
 ---
 

@@ -1,7 +1,7 @@
 ---
 title: API SPEC - JobCopilot v2(REST + SSE 端点契约)
 owner: lemma42796
-last_updated: 2026-05-08
+last_updated: 2026-05-09
 purpose: 锁前后端接口契约;每个端点的 path / method / 请求 / 响应 / SSE 事件序列
 ---
 
@@ -279,30 +279,73 @@ web 编辑器创建单篇笔记。
 
 ## 4.1 `POST /api/quiz/sessions`(**SSE**)
 
-选节点出题。
+聊天框 query 出题(M2 主题类;M3 加岗位类 + 空 query 自选)。
 
-请求:
+请求(M2 主题类):
 
 ```json
 {
-  "node_folder_path": ["Java", "并发"],
-  "node_heading_path": ["synchronized"],
+  "query": "考考我多线程",
+  "question_count": 5,
+  "mode": "topic"
+}
+```
+
+请求(M3 岗位类 — 三源融合):
+
+```json
+{
+  "query": "模拟一面 Java 后端",
+  "mode": "job",
+  "jd_ids": [101, 102, 105],
   "question_count": 5
 }
 ```
 
-约束:`question_count` ∈ [3, 10]。
+请求(M3 空 query / 系统自选 — SR 调度):
 
-**题型比例由后端按 chunks 内容自动决定**(开放式 vs 八股),具体推荐逻辑见 5-AGENT_DESIGN。前端不传 `type_mix`,但后端在 `progress` 事件里把决定好的比例推回给前端展示("本次出 3 开放 + 2 八股")。
+```json
+{
+  "query": "",
+  "mode": "auto",
+  "question_count": 5
+}
+```
 
-SSE 事件序列:
+| field | type | 说明 |
+|-------|------|----|
+| `query` | string | 用户聊天框输入(`mode=auto` 时可空)|
+| `mode` | enum `topic` \| `job` \| `auto` | 默认 `topic`(M2 仅支持此值;`job`/`auto` 在 M3 启用)|
+| `jd_ids` | int[] | (`mode=job` 必填)用户从 JD 库选定的 JD 子集 id 数组 |
+| `question_count` | int | 3 ≤ N ≤ 10 |
+
+**约束**:
+- `mode=topic` 时 `query` 不能空(违反 → 422 `query_required`);query 长度 ≤ 200 字符(否则 422 `query_too_long`)
+- `mode=auto` 在 M3 才启用,M2 阶段返 422 `mode_not_implemented`
+- `mode=job` 在 M3 才启用,M2 阶段同上;启用时 `jd_ids` 至少 1 个
+
+**题型比例由后端按 chunks 内容自动决定**(开放式 vs 八股),具体推荐逻辑见 5-AGENT_DESIGN。
+
+SSE 事件序列(M2 主题类):
 
 ```
 event: started
-data: {"job_id": "01HX...", "resource_id": 789, "total_questions": 5}
+data: {"job_id": "01HX...", "resource_id": 789, "query": "考考我多线程", "mode": "topic"}
 
 event: progress
-data: {"phase": "retrieving_chunks", "chunk_count": 18}
+data: {"phase": "query_rewriting"}
+
+event: progress
+data: {"phase": "query_rewriting_done", "expanded_queries": ["考考我多线程", "并发", "锁", "synchronized"]}
+
+event: progress
+data: {"phase": "hybrid_searching", "candidate_count": 50}
+
+event: progress
+data: {"phase": "reranking"}
+
+event: progress
+data: {"phase": "parent_doc_expanding", "chunk_count": 12}
 
 event: progress
 data: {"phase": "type_mix_decided", "type_mix": {"open_ended": 3, "definition": 2}}
@@ -324,11 +367,11 @@ event: done
 data: {"ok": true}
 ```
 
-失败示例(节点 chunks 不足):
+失败示例(笔记里没这主题):
 
 ```
 event: error
-data: {"code": "insufficient_chunks", "detail": "节点下只找到 2 个 chunks,出题至少需要 5 个"}
+data: {"code": "no_chunks_for_query", "detail": "笔记里没找到跟"考考我 React"相关的内容,试试别的主题或先写一些笔记"}
 
 event: done
 data: {"ok": false}
@@ -336,23 +379,26 @@ data: {"ok": false}
 
 错误码:
 
-| code | 说明 |
-|------|----|
-| `insufficient_chunks` | 节点关联 chunks 数 < 出题最低要求 |
-| `node_not_found` | folder_path / heading_path 不存在 |
-| `llm_call_failed` | 出题 LLM 调用失败(已重试) |
+| code | HTTP / SSE | 说明 |
+|------|----|----|
+| `query_required` | 422 | `mode=topic` 但 query 为空 |
+| `query_too_long` | 422 | query 超长(> 200 字符)|
+| `mode_not_implemented` | 422 | M2 阶段传 `mode=job` 或 `mode=auto` |
+| `no_chunks_for_query` | SSE error | retrieval pipeline 命中 chunks < 阈值(PRD Q-10);**直接报"笔记里没这主题",不兜底放宽** |
+| `query_rewrite_failed` | trace warning(回退原 query,不抛错) | 详见 2-TECH §7 |
+| `rerank_failed` | trace warning(回退 hybrid top-K) | 同上 |
+| `llm_call_failed` | SSE error | quiz_generator LLM 调用失败(已重试) |
 
-**后端落库时机**:`started` 之前 INSERT `quiz_sessions`(status=`in_progress`)+ N 行占位 `session_answers`(question_id 还没拿到,先用 NULL `question_id`)— 不,等等,`session_answers.question_id NOT NULL` 是 FK 约束。让我重定一下:
-
-→ 实际落库顺序:
-1. 收到请求,LLM 出 N 题
-2. INSERT `questions` × N 拿到 ids
-3. INSERT `quiz_sessions`(拿到 session_id),emit `started`
-4. INSERT `session_answers`(session_id, question_id, order_index, user_answer=NULL)× N
-5. emit `question_ready` × N(顺序按 order_index)
-6. emit `done`
-
-注:这意味着 LLM 调用出完题之前不发 `started` — 用户看到几秒静默后才有进度。如要更早反馈,可在步骤 1 前 INSERT 占位 session 然后 emit `started` + 后续 `progress` 报 LLM 阶段。**MVP 选后者**(早 `started` + `progress` 推阶段),用户体感好。详见 4.6 的最终事件序列。
+**后端落库顺序(M2 主题类)**:
+1. 收到请求,validate query / mode / question_count
+2. INSERT `quiz_sessions`(status=`in_progress`, query, mode)拿到 session_id,emit `started`
+3. retrieval pipeline:query rewrite → hybrid search → rerank → parent-doc 扩展(每段 emit `progress`)
+4. 0 命中守门:命中 chunks < 阈值 → emit `error{no_chunks_for_query}` + `done(false)` + UPDATE quiz_sessions.status=abandoned
+5. quiz_generator LLM 出 N 题(emit `progress{type_mix_decided}`)
+6. INSERT `questions` × N 拿到 ids
+7. INSERT `session_answers`(session_id, question_id, order_index, user_answer=NULL)× N
+8. emit `question_ready` × N(顺序按 order_index)
+9. emit `done(true)`
 
 ## 4.2 `GET /api/quiz/sessions/{id}`
 
@@ -363,8 +409,9 @@ session 详情(载入历史 / 续答用)。
 ```json
 {
   "id": 789,
-  "node_folder_path": ["Java", "并发"],
-  "node_heading_path": ["synchronized"],
+  "query": "考考我多线程",
+  "mode": "topic",
+  "jd_ids": null,
   "status": "in_progress",
   "started_at": "2026-05-08T03:00:00Z",
   "submitted_at": null,
@@ -386,6 +433,8 @@ session 详情(载入历史 / 续答用)。
   ]
 }
 ```
+
+`mode='job'` 时 `jd_ids` 数组非空(M3 岗位类);`mode='auto'` 时 `query` 为后端 SR 调度自选的 heading_path 末段(M3 系统自选)。
 
 `status='submitted'` 时 `scores` 字段填充三层 + 总分,且每题带 `evidence`(coverage_evidence / fidelity_evidence / depth_evidence)。
 
@@ -484,17 +533,27 @@ data: {"ok": true}
 
 把 §4.1 / §4.4 的 SSE 序列汇总给前端实现参考。
 
-**出题(`POST /api/quiz/sessions`)完整事件流**:
+**出题(`POST /api/quiz/sessions`)完整事件流(M2 主题类)**:
 
 ```
-1. started        立即(预占 session 行,status=in_progress)
-2. progress       phase=retrieving_chunks  附 chunk_count
-3. progress       phase=generating         附 model="qwen3.6-flash"
-4. question_ready × N  按 order_index 升序
-5. done           ok=true
+1. started        立即(预占 session 行,status=in_progress,带 query / mode)
+2. progress       phase=query_rewriting
+3. progress       phase=query_rewriting_done       附 expanded_queries[]
+4. progress       phase=hybrid_searching           附 candidate_count
+5. progress       phase=reranking
+6. progress       phase=parent_doc_expanding       附 chunk_count
+7. (0 命中守门)   chunk_count < 阈值 → emit error{no_chunks_for_query} + done(false) + 标 abandoned
+8. progress       phase=generating                 附 model="qwen3.6-flash"
+9. progress       phase=type_mix_decided           附 type_mix
+10. question_ready × N  按 order_index 升序
+11. done          ok=true
 ```
 
 异常:任一阶段炸 → `error` + `done(ok=false)`,session 行标 `abandoned_at`。
+
+**M3 扩展事件**:
+- `mode=job`:在 `query_rewriting_done` 之后并入 `phase=jd_subset_aggregating` + `phase=resume_loading` 两步,然后才到 `hybrid_searching`(三源融合)
+- `mode=auto`:在 `started` 之后插 `phase=sr_picking_topic` + `phase=sr_topic_picked{heading_path}` 两步,后续走主题类 pipeline
 
 **评分(`POST /api/quiz/sessions/{id}/submit`)完整事件流**:
 
@@ -521,8 +580,8 @@ data: {"ok": true}
   "items": [
     {
       "id": 789,
-      "node_folder_path": ["Java", "并发"],
-      "node_heading_path": ["synchronized"],
+      "query": "考考我多线程",
+      "mode": "topic",
       "status": "submitted",
       "started_at": "...",
       "submitted_at": "...",
@@ -592,7 +651,7 @@ data: {"ok": true}
 
 ## 5.3 `POST /api/quiz/sessions/from-review`(**SSE**)
 
-从今日复习队列拉一个节点开 session。
+从今日复习队列拉一个节点开 session。**M3 端点**;后端把 heading_path 末段当 query,转走 §4.1 主题类 pipeline。
 
 请求:
 
@@ -604,7 +663,9 @@ data: {"ok": true}
 }
 ```
 
-SSE 序列同 §4.1。session 落库时记 `trigger='sr_review'`(M3 启用 trigger 字段时一并 ALTER ADD COLUMN — 见 3-DATA_MODEL §5.4 设计要点)。
+后端等价于调用 `POST /api/quiz/sessions` `{query: "HashMap", mode: "topic", question_count: 5}`,但 session 落库时额外标 `trigger='sr_review'` + `gap_folder_path` / `gap_heading_path`(用于 dashboard 关联回该 gap)。
+
+SSE 序列同 §4.1(M2 主题类完整流程)。
 
 # 6. JD 分析 API(M2.5)
 
@@ -922,6 +983,11 @@ data: {"ok": true}
 | 题型比例 | 后端按 chunks 内容自动决定(B);前端不传 type_mix | 推荐逻辑见 5-AGENT_DESIGN;后端在 `progress.type_mix_decided` 事件回推决策 |
 | 答题草稿保存 | 边打边存(typing 防抖 1s 后 PUT) | 开放题答题长,断电一字不丢 > 省 PUT 请求 |
 | recall 文件语义 | 存档下载,不是评分展示 | 评分 evidence 走 SSE;recall 给用户存进 Obsidian / 语雀留档 |
+| 出题入口 | `POST /api/quiz/sessions` 入参 `{query, mode, question_count}`(M3 加 `jd_ids`)| 不再用 `node_folder_path` / `node_heading_path`;笔记面板不触发出题 |
+| query 模式三态 | `topic`(M2 主题类)/ `job`(M3 岗位类三源)/ `auto`(M3 SR 自选)| M2 仅 topic;`job`/`auto` M2 阶段返 `mode_not_implemented` |
+| 0 命中守门 | retrieval 命中 chunks < 阈值 → SSE error `no_chunks_for_query` + done(false),不兜底放宽 | 阈值见 PRD Q-10 |
+| retrieval pipeline 事件 | 出题 SSE 推 5 段独立 phase(`query_rewriting` / `hybrid_searching` / `reranking` / `parent_doc_expanding` / `generating`)| 前端可显示进度;Langfuse trace 同步可见 |
+| 简历存储 | 单条记录(全库一行 resumes),无"简历库"端点 | 一个人就一份简历;PUT 覆盖语义,不做"切换简历"端点 |
 
 ---
 

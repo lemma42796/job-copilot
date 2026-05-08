@@ -7,7 +7,11 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 # 当前阶段
 
-**M1 收口(笔记入库 + chunker + Web 编辑器 + 本地目录直读 + Langfuse trace 全过);hybrid search recall@5 评测挂账 M2(M1 hybrid_search service 已就绪但未接入任何产品功能,M2 quiz 剪枝 + Judge tool use 真用上时再做评测)**
+**M2 启动:聊天框 query → 全库 RAG → 出题 + Judge 三层评分 + Judge tool use + Trace 完整化。**
+
+M1 已收口(tag `v0.3-m1-end`);hybrid search recall@5 评测挂账 M2 真消费场景(主题类 query → quiz 剪枝 + Judge tool use)。
+
+**M2 启动前产品方向调整(2026-05-09)**:出题入口由"笔记面板点节点"改为"**聊天框 query**",笔记面板降级为查看 / 编辑 / 导航树,不再触发出题。RAG 由 M1 阶段的"节点内可选筛"升级为"**全库必做**",pipeline 四件:`query_rewriter → hybrid + RRF → reranker → parent-doc 扩展` + 0 命中守门(笔记里没这主题 → 直接报错不兜底)。query 三类形态:**M2 主题类 query("考考我多线程")** / **M3 岗位类("模拟一面 Java 后端" — 笔记 + 那一份简历 + 用户选定 JD 子集 三源融合)** / **M3 空 query("来模拟面试吧" — SR 系统自选)**。简历是单条记录(全库一行),**不做"简历库 / 多份切换"**(一个人就一份简历)。详情同步在 7-ROADMAP / 1-PRD / 2-TECH_DESIGN / 3-DATA_MODEL / 4-API_SPEC / 5-AGENT_DESIGN 七份文档。
 
 | 里程碑 | 内容 | 状态 |
 |--------|------|------|
@@ -46,7 +50,7 @@ purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 
 # 当前 working tree
 
-**M1 收口本次 commit 含 STATUS / 7-ROADMAP 同步 + recall@5 挂账 M2**;commit 后 working tree clean,与 `origin/main` 同步,打 `v0.3-m1-end`。
+**M1 收口 commit 含 STATUS / 7-ROADMAP 同步 + recall@5 挂账 M2**(`0bd166f` HEAD,tag `v0.3-m1-end`)。**M2 启动前产品方向调整(2026-05-09)** 已落 7 份文档:`docs/{1-PRD, 2-TECH_DESIGN, 3-DATA_MODEL, 4-API_SPEC, 5-AGENT_DESIGN, 7-ROADMAP, STATUS}.md`(详情见上文"当前阶段"段)。配套工程规范 / 评测规范 / 教训沉淀同步在 `docs/{8-ENGINEERING, 6-EVAL_PLAN, 9-LESSONS}.md`(memory 项目信息搬运)。
 
 dogfood DB 现状(查 PG `2026-05-09`):30 篇笔记 / 258 chunks / 100% embedding(0 pending)/ 总字数 ~15.7 万字,过 DoD 10 万字门槛(永久约束按字数衡量负载)。
 
@@ -63,6 +67,13 @@ dogfood DB 现状(查 PG `2026-05-09`):30 篇笔记 / 258 chunks / 100% embeddin
 |----|------|------|
 | 产品形态 | 学计算机的人的"找方向 + 笔记练习 + 简历诊断"全闭环 | 见 PRD §1-4 |
 | 目标用户 | 学计算机的人(本科 / 研究生 / 1-3 年 / 5+ 年都包含,只排除非开发岗)| 见 PRD §2 |
+| 出题入口 | **聊天框 query**(M2 主题 / M3 岗位 + 空);笔记面板不再触发出题 | 笔记面板降级查看/编辑/上传/导航;PRD §6 "明确不做"锁定 |
+| RAG pipeline | **query_rewriter → hybrid + RRF → reranker → parent-doc 扩展** 四件 + 0 命中守门 | M2 主战场;每段独立可观测进 Langfuse |
+| Reranker 模型 | 百炼 **`qwen3-rerank`**(`/compatible-api/v1/reranks`,¥0.0005/k token);本地 bge-reranker-v2-m3 fallback 不实施 | memory `reference_aliyun_dashscope_rerank.md` 校对 2026-05-09;接口路径跟其他 rerank 不通用 / langfuse 不自动 instrument |
+| Parent-doc 扩展 | 自适应(命中段 < 200 字扩同 H2,≥ 200 字不扩) | 阈值 M2 实施时按命中分布调 |
+| 0 命中阈值 | 起步 < 3 chunks → 报"笔记里没这主题" | dogfood 跑一段看真实分布再调 |
+| query 三态 | M2 仅 `topic`;M3 加 `job`(三源融合)+ `auto`(SR 自选) | quiz_session_mode ENUM;详见 7-ROADMAP M3 |
+| 简历存储 | **单条记录**(全库 1 行,`uq_resumes_singleton` partial unique);**永不做"简历库 / 多份切换"** | 一个人就一份简历;岗位类拼"这一份 + 选定 JD 子集"已够 |
 | 笔记输入源 | M1: 本地目录 / 文件直读(File System Access API)+ Web 编辑器 | **不接 zip 上传**(笔记本来在本地,免打包);不做 Notion / 飞书 / Obsidian / **语雀** sync |
 | JD 输入源 | 文本粘贴 + 截图(Qwen 多模态)| 累积型,陆续上传;立即解析 |
 | JD 单次分析上限 | 200 条 / hierarchical reduce | 见 PRD §9 + 7-ROADMAP M2.5 |
@@ -94,6 +105,12 @@ dogfood DB 现状(查 PG `2026-05-09`):30 篇笔记 / 258 chunks / 100% embeddin
 
 - **[来自 M1] 评测指标(recall / kappa / accuracy 等)必须挂在真正用到该能力的里程碑 DoD,不挂在"实现该能力"的里程碑** — M1 原 DoD 写 "hybrid search recall@5 ≥ 0.85",但 M1 阶段 hybrid search 只是 service 层就绪(`hybrid_search_in_node` / `global_hybrid_search`),没接入任何用户操作:出题剪枝(M2 quiz_generator)+ Judge 防假阳性(M2 lookup_in_notes_global tool)才是真正消费方,query 也来自这俩场景。M1 阶段做评测就是凭空造 query 测纯契约,数字过了证明不了产品 ready,数据集到 M2 还得重做。规矩:**评测指标排到该能力首次接入产品功能的那个里程碑**;实现里程碑只验"service 函数对外契约不崩"(烟测,不上指标卡)。后续 M2 / M2.5 / M3 设计 DoD 时同样原则:Judge kappa 排在 M2(M2 才真用 Judge),resume_advisor forbidden_pattern 排在 M3(M3 才真出简历诊断输出)等。
 
+- **[M2 设计 2026-05-09] 出题入口走聊天框 query,不走笔记面板节点点击** — 笔记面板降级为查看 / 编辑 / 上传 / 导航树,**永不复用节点点击触发出题**。RAG 由"节点内可选筛"升级为"全库必做",pipeline 四件锁定(`query_rewriter → hybrid + RRF → reranker → parent-doc 扩展`)+ 0 命中守门(笔记里没这主题 → 直接报错不兜底)。query 三类形态 + 各自里程碑:M2 主题类("考考我多线程")/ M3 岗位类("模拟一面 Java 后端" — 三源融合,见下条)/ M3 空 query("来模拟面试吧" — SR 系统自选)。后续切片若想恢复"节点点击触发出题"需先回查这条约束(常见于"产品体验更直观"的诱惑)。
+
+- **[M2 设计 2026-05-09] 简历是单条记录,不做"简历库 / 多份切换"** — 一个人就一份简历,不按岗位定制多份。`resumes` 表加 `uq_resumes_singleton` partial unique(WHERE deleted_at IS NULL),全库至多 1 行未删除记录;新上传 = UPDATE 现有行(覆盖 content_md / parsed_chunks),老版本用户自己 git 留档。**M3 岗位类 query 拼"那一份简历 + 用户选定 JD 子集"已足够**;不再设计"用户选哪份简历"的 UX 或端点。这条不可被 M3+ 推翻(产品复杂度无价值,直接撞 v1 失败模式之一)。
+
+- **[M2 设计 2026-05-09] M3 岗位类 query 是三源融合检索而非单源** — 笔记 RAG(query_rewriter → hybrid → rerank → parent-doc)+ 那一份简历全文(直喂,不进 hybrid 索引)+ 用户选定 JD 子集职责/要求聚合,合并喂 quiz_generator。**重点考"简历写了 JD 也要"交集 + "JD 强要 简历没写"缺口**(直击"自己不会的也往简历上写,问到答不出"问题 + "只看 JD 要求不看职责,职责上的东西没复习就挂了"问题)。M3 切片设计 retrieval_pipeline 时多走两路并入,不要把岗位类降级为主题类近似处理。
+
 # 文档清单
 
 | 文件 | 用途 |
@@ -120,23 +137,24 @@ dogfood DB 现状(查 PG `2026-05-09`):30 篇笔记 / 258 chunks / 100% embeddin
 - 闸门(alembic / ruff / mypy / typecheck / next build)✅(用户手动验)
 - ~~hybrid search recall@5 ≥ 0.85~~ → **挂账 M2**(M1 service 就绪未接产品)
 
-**开 M2:出题 + 答题 + Judge 三层评分 + Judge tool use + Trace 完整化**(范围/DoD 详见 7-ROADMAP §M2)。粗子任务清单(开工前再细拆):
+**开 M2:聊天框主题类 query → 全库 RAG → 出题 + Judge 三层评分 + Judge tool use + Trace 完整化**(范围/DoD 详见 7-ROADMAP §M2;产品方向调整见上文"当前阶段")。粗子任务清单(开工前再细拆):
 
-1. **chunk_service.find_chunks_by_node 真接 hybrid search 剪枝**(目前裸 LIMIT 30,补 hybrid_search_in_node 调用,query 用节点 heading_path 末段拼)
-2. **agents/quiz_generator 实现**:输入节点 chunks(≤30,5-AGENT §3 Input/Output schema 已就绪),输出 N 道开放/八股题 + source_chunk_ids 反幻觉
-3. **services/quiz_service + routers/quiz** SSE 端点(create_session / 出题 / 题题流式)— 见 2-TECH §5.2 + 4-API §4
-4. **agents/answer_judge 实现 + Coverage / Fidelity / Depth 三层** — Python 算分 SSoT(`scoring.py` 已抄入)
-5. **AnswerJudge tool use(`lookup_in_notes_global`)** 走百炼 function_call API,Judge 标 fabricated 前必调,直接消费 `global_hybrid_search`
-6. **answer_service + session 沉淀**(自动写 `notes/_recall/{session_id}.md`)
-7. **前端 quiz session UI**:出题 → 答 → 评分 view(笔记面板答题时隐藏)
-8. **Langfuse trace 完整化**:agent / service 层装 `@observe`,SSE session 维度 root trace
-9. **M2 评测套件**(三件,DoD 卡死):
-   - `evals/suites/hybrid_search/`(从 M1 挂账继承)— 真 dogfood 库 + 30 条 (query, expected_chunk) + ablation(vector / lex / hybrid)recall@5 ≥ 0.85
-   - `evals/suites/quiz_generator/` — 结构合规率 ≥ 0.95(Pydantic 校验 + reference_chunk_ids ⊆ source_chunk_ids)
-   - `evals/suites/answer_judge/` — 30 条人工标注 + Cohen's kappa ≥ 0.7(Coverage / Fidelity)+ Depth accuracy ≥ 0.75
-10. **M2 DoD 验证 + 闸门**
+1. **alembic 0017 schema 调整**:加 `quiz_session_mode` ENUM;`quiz_sessions` 删 `node_folder_path` / `node_heading_path`,加 `query` / `mode` / `jd_ids` / `trigger` / `gap_*` / `expanded_queries` / `retrieved_chunk_ids`;`questions` 删 `node_*`,加 `originated_query` / `originated_mode`;索引同步;`resumes` 加 `uq_resumes_singleton` partial unique(M3 表 schema 在 M2 一并预建,避免 M3 切片再动 quiz 表)
+2. **retrieval pipeline 三件齐**:`services/query_rewriter.py`(LLM 改写,失败回退原 query 不阻塞)+ `services/reranker.py`(cross-encoder 选型见 PRD Q-07)+ `services/retrieval_pipeline.py`(query_rewrite → hybrid → rerank → parent-doc 编排 + 0 命中守门)
+3. **agents/quiz_generator 实现**:输入 query + retrieved_chunks(含 heading_path / note_title 元数据);prompt 见 5-AGENT §3.3/3.4;输出 N 道开放/八股题 + source_chunk_ids 反幻觉
+4. **services/quiz_service + routers/quiz** SSE 端点:入参 `{query, mode, question_count, jd_ids?}`(M2 仅 mode=topic;`mode=job`/`auto` 返 422 mode_not_implemented);SSE 5 段独立 phase(query_rewriting / hybrid / rerank / parent_doc / generating);0 命中报 `no_chunks_for_query` 不出题
+5. **agents/answer_judge 实现 + Coverage / Fidelity / Depth 三层** — Python 算分 SSoT(`scoring.py` 已抄入)
+6. **AnswerJudge tool use(`lookup_in_notes_global`)** 走百炼 function_call API,Judge 标 fabricated 前必调,直接消费 `global_hybrid_search`(M1 service 就绪)
+7. **answer_service + session 沉淀**(自动写 `notes/_recall/{session_id}.md`)
+8. **前端 quiz session UI**:聊天框入口(主页边栏笔记面板 + 中央聊天框)→ retrieval 进度条 → 出题 → 答(笔记面板答题阶段隐藏,active recall 强约束)→ 评分恢复笔记面板
+9. **Langfuse trace 完整化**:agent / service 层装 `@observe`,SSE session 维度 root trace,retrieval pipeline 5 段独立可观测
+10. **M2 评测套件**(三件,DoD 卡死):
+    - `evals/suites/hybrid_search/`(从 M1 挂账继承)— 真 dogfood 库 + 30 条 (query, expected_chunk),query 来源**全部为主题类真实场景**(例 "考考我多线程" / "缓存一致性" 等),不再用"节点路径拼接"假 query;ablation(vector / lex / hybrid)recall@5 ≥ 0.85
+    - `evals/suites/quiz_generator/` — 结构合规率 ≥ 0.95(Pydantic 校验 + reference_chunk_ids ⊆ source_chunk_ids)
+    - `evals/suites/answer_judge/` — 30 条人工标注 + Cohen's kappa ≥ 0.7(Coverage / Fidelity)+ Depth accuracy ≥ 0.75
+11. **M2 DoD 验证 + 闸门**
 
-M2 DoD 全部达成 → tag `v0.4-m2-end` → 开 M2.5(JD 累积上传 + 一键分析)。
+M2 DoD 全部达成 → tag `v0.4-m2-end` → 开 M2.5(JD 累积上传 + 一键分析)→ M3(岗位类三源融合 + SR 自选 + 简历诊断)。
 
 # v1 历史
 

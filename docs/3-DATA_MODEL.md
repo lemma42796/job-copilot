@@ -1,7 +1,7 @@
 ---
 title: DATA MODEL - JobCopilot v2(笔记 / 题 / 答 / 弱点 schema)
 owner: lemma42796
-last_updated: 2026-05-08
+last_updated: 2026-05-09
 purpose: 锁所有表 schema、字段语义、JSONB 子结构、索引、迁移路径
 ---
 
@@ -72,6 +72,7 @@ M1-M3 是单用户本地 dogfood,**所有业务表均不带 `user_id`**。M4+ Sa
 | `note_source` | `local_md` / `web_editor` / `yuque` | notes.source;`local_md` = File System Access API 选目录 / 选单篇;`yuque` 仅 M3 启用 |
 | `question_type` | `open_ended` / `definition` | questions.type;PRD §5.2 US-6 |
 | `quiz_session_status` | `in_progress` / `submitted` / `abandoned` | quiz_sessions.status |
+| `quiz_session_mode` | `topic` / `job` / `auto` | quiz_sessions.mode;`topic`=M2 主题类 query / `job`=M3 岗位类三源 / `auto`=M3 SR 系统自选(空 query)|
 
 JSONB 内的标签字段(`coverage_label` / `fidelity_label`)不用 ENUM,在应用层 Pydantic 校验。
 
@@ -178,9 +179,9 @@ CREATE INDEX ix_note_chunks_content_tsv
 CREATE TABLE questions (
   id                  BIGSERIAL PRIMARY KEY,
 
-  -- 出题时锁定的树节点(可能比 chunk 的 path 更"上层"):
-  node_folder_path    TEXT[] NOT NULL,
-  node_heading_path   TEXT[] NOT NULL DEFAULT '{}',    -- 节点选到 heading 级时填,否则空
+  -- 出题时的来源 query(替代旧 node_folder_path / node_heading_path):
+  originated_query    TEXT NOT NULL,                   -- 出题时用户输入的 query(mode=auto 时为 SR 自选的 heading_path 末段)
+  originated_mode     quiz_session_mode NOT NULL DEFAULT 'topic',
 
   type                question_type NOT NULL,
   prompt              TEXT NOT NULL,                   -- 题干
@@ -206,16 +207,18 @@ CREATE TABLE questions (
   deleted_at          TIMESTAMPTZ
 );
 
-CREATE INDEX ix_questions_node_folder
-  ON questions USING GIN (node_folder_path);
-
 -- M2 题质评测 / SR 复用题:按 source_chunk_ids 反查
 CREATE INDEX ix_questions_source_chunks
   ON questions USING GIN (source_chunk_ids);
+
+-- 按出题 query 模式过滤(audit / 评测 / 复用):
+CREATE INDEX ix_questions_originated_mode
+  ON questions (originated_mode);
 ```
 
 设计要点:
 
+- **出题来源是 query 不是节点**:M2 起出题入口改聊天框 query → 全库 RAG,不再有"节点"概念。`originated_query` 留作 audit / 复用判断 / 评测 query 多样性
 - **`source_chunk_ids` 是 SSoT 数组**:出题 prompt 里以 `[1] ... [2] ...` 编号的 chunk,顺序必须跟数组顺序一致。Judge 用同一份顺序对照
 - **`reference_chunk_ids ⊆ source_chunk_ids`**:LLM 生 reference 时被强约束只能引出题用过的 chunk,且必须在 reference 文本里 `[N]` 引用
 - **chunk 失效兜底**:笔记编辑会让 source_chunk_ids 里的部分 id 失效。复用旧题时(M3 SR)在 service 层 `SELECT id FROM note_chunks WHERE id = ANY(source_chunk_ids)`,丢失 ≥30% 视为题失效,标 `deleted_at`
@@ -228,8 +231,19 @@ CREATE INDEX ix_questions_source_chunks
 CREATE TABLE quiz_sessions (
   id              BIGSERIAL PRIMARY KEY,
 
-  node_folder_path  TEXT[] NOT NULL,
-  node_heading_path TEXT[] NOT NULL DEFAULT '{}',
+  -- 出题入口:聊天框 query(M2 起,替代旧 node_folder_path / node_heading_path)
+  query           TEXT NOT NULL,                       -- 用户输入(mode=auto 时为 SR 自选的 heading_path 末段)
+  mode            quiz_session_mode NOT NULL DEFAULT 'topic',
+  jd_ids          BIGINT[],                            -- M3 mode=job 时:用户从 JD 库选定的 JD 子集
+
+  -- M3 SR 自动推送审计字段(M3 启用时一并 ALTER ADD;M2 阶段保留以方便 from-review 端点):
+  trigger         VARCHAR(20) NOT NULL DEFAULT 'manual',  -- 'manual' / 'sr_review'
+  gap_folder_path TEXT[],                              -- trigger='sr_review' 时记 gap 锚点
+  gap_heading_path TEXT[],
+
+  -- retrieval pipeline 审计快照(audit / 评测 / debug 用):
+  expanded_queries     TEXT[],                         -- query_rewriter 输出
+  retrieved_chunk_ids  BIGINT[],                       -- pipeline 最终喂给 quiz_generator 的 chunks
 
   status          quiz_session_status NOT NULL DEFAULT 'in_progress',
 
@@ -254,13 +268,19 @@ CREATE TABLE quiz_sessions (
 CREATE INDEX ix_quiz_sessions_status_started
   ON quiz_sessions (status, started_at DESC)
   WHERE deleted_at IS NULL;
+
+-- 按 mode 过滤(评测 / dashboard 分桶):
+CREATE INDEX ix_quiz_sessions_mode ON quiz_sessions (mode) WHERE deleted_at IS NULL;
 ```
 
 设计要点:
 
+- **出题入口 = query**:M2 起聊天框 query 替代节点点击,字段从 `node_folder_path` / `node_heading_path` 改成 `query` + `mode`。`query` 一律必填(`mode=auto` 时由后端 SR 调度填入 heading_path 末段,**不允许空字符串**入库)
+- **`mode` 三态**:`topic`(M2 唯一可用)/ `job`(M3 岗位类,需 `jd_ids`)/ `auto`(M3 SR 自选,需 `trigger='sr_review'`)
+- **`expanded_queries` / `retrieved_chunk_ids` audit 字段**:retrieval pipeline 每段输出落库,evals/suites/hybrid_search/ 和 dogfood debug 直接读这两列,不必走 Langfuse trace 抽数据
 - **三层分数 + total_score 都存**:Python 算的加权总分写回 DB 是 audit 需要;权重 SSoT 在代码(`0.5 / 0.4 / 0.1`),不让 Judge 算总分(防 LLM 算术错误)
-- **`abandoned_at` 字段而非状态**:用户中途退出 → `status='abandoned'` + `abandoned_at=now()`;后续再进入草稿恢复时 service 层判断要不要新开 session
-- **不加 `trigger` 字段**:MVP 只有"用户手点出题"这一种来源;M3 上 SR 自动推送时再 `ALTER TABLE ADD COLUMN trigger VARCHAR(20) DEFAULT 'manual'`
+- **`abandoned_at` 字段而非状态**:用户中途退出 → `status='abandoned'` + `abandoned_at=now()`;0 命中守门时后端也用同一字段标 abandoned
+- **`trigger` 字段直接落地不延后**:M2 起就有 from-review 端点(M3 才接 SR 队列),trigger 字段 M2 就建好;M2 阶段全部值 = `'manual'`,M3 SR 启用时新增 `'sr_review'`
 
 ## 5.5 `session_answers`(单题答 + 评分)
 
@@ -430,7 +450,7 @@ CREATE INDEX ix_jd_analyses_started ON jd_analyses (started_at DESC);
 
 ## 5.9 `resumes`(简历,M3)
 
-一行 = 一份简历 markdown。**用户可有多份**(不同岗位定制不同简历的需求 — 但实际操作里通常一份就够)。
+一行 = 那一份简历 markdown。**全库一条记录**(单用户本地工具 + 一个人就一份简历)— 用户上传新版直接覆盖(更新 content_md + 新切 parsed_chunks),要保留旧版自己 git 留档。**不做"简历库 / 多份切换"**(永不,见 PRD §6 + 7-ROADMAP "不在路线图")。
 
 ```sql
 CREATE TABLE resumes (
@@ -451,15 +471,18 @@ CREATE TABLE resumes (
   deleted_at          TIMESTAMPTZ
 );
 
-CREATE INDEX ix_resumes_created
-  ON resumes (created_at DESC) WHERE deleted_at IS NULL;
+-- 单条记录约束:全库 deleted_at IS NULL 的 resumes 至多 1 行
+CREATE UNIQUE INDEX uq_resumes_singleton
+  ON resumes ((true)) WHERE deleted_at IS NULL;
 ```
 
 设计要点:
 
+- **单条记录(全库 1 行)**:M3 上传新简历 = `UPDATE resumes SET content_md=?, parsed_chunks=? WHERE deleted_at IS NULL`(若已有);首次上传 = `INSERT`。**不做用户切换 / 选择简历的端点**。
+- 老版本要留档?用户自己 git commit 简历 markdown,不在产品里维护历史(简历不是高频改动资产,不值得加 history 表;诊断历史靠 resume_analyses 快照)
 - **简历 chunks 不进 hybrid search 索引**(对照笔记 chunks):简历短(通常 < 5KB),诊断时直接整 content_md 喂 LLM 即可,不需要 retrieval
 - **parsed_chunks 用 JSONB**:不用关系表,因为简历段落不需要跨简历检索;每段记 position(`§3` / `§4.2 项目经历`)+ type(`基础经历` / `技能列表` / `项目经历` / `教育` / `自我评价`)+ content
-- **支持多份简历**:用户可上传 v1 / v2 不同版本对比
+- **M3 岗位类 query 路 2 数据源**:聊天框输"模拟一面 Java 后端"时,resume_service 直接 `SELECT * FROM resumes WHERE deleted_at IS NULL LIMIT 1` 取唯一行,把 content_md / parsed_chunks 送进 retrieval_pipeline 三源融合分支
 
 ## 5.10 `resume_analyses`(简历诊断报告,M3)
 
@@ -757,9 +780,11 @@ LLM 一次调用基于 aggregated_requirements 输出的 markdown,**不约束严
 | `note_chunks` | `gin (folder_path)` | 树节点 prefix 匹配 |
 | `note_chunks` | `hnsw (embedding vector_cosine_ops)` | 语义召回 |
 | `note_chunks` | `gin (content_tsv)` | char_ngram 全文召回 |
-| `questions` | `gin (node_folder_path)` | 题质评测 / 复习 |
+| `questions` | `(originated_mode)` | 评测 / 复用按模式过滤 |
 | `questions` | `gin (source_chunk_ids)` | chunk 失效反查 |
 | `quiz_sessions` | `(status, started_at DESC) WHERE deleted_at IS NULL` | 历史 session 列表 |
+| `quiz_sessions` | `(mode) WHERE deleted_at IS NULL` | 评测 / dashboard 按 mode 分桶 |
+| `resumes` | `unique ((true)) WHERE deleted_at IS NULL` | 全库 1 行单条记录约束 |
 | `session_answers` | `(session_id, order_index)` | 拉一个 session 的所有题 |
 | `session_answers` | `uq_session_question (session_id, question_id)` | 每题最多答一次 |
 | `knowledge_gaps` | `uq_kg_path (folder_path, heading_path)` | upsert 主键 |
@@ -826,7 +851,10 @@ DROP TYPE IF EXISTS chunk_granularity;
 | JD 一键分析 | jd_analyses 快照表,jd_ids 数组锁定本次范围 | 历史报告可对比 |
 | JD 单次分析上限 | 200 条 | hierarchical reduce(map 上传完成 → reduce 分批 + 二次合并 + Python 重算频次)|
 | 频次计算位置 | Python(SSoT),不信 LLM 算术 | 同 5-AGENT §4.5 算分原则 |
-| 简历存储 | resumes 表 + parsed_chunks JSONB,**不进 hybrid search 索引** | 简历短,直接全文喂 LLM |
+| 简历存储 | resumes 表 + parsed_chunks JSONB,**不进 hybrid search 索引**;**全库一条记录**(`uq_resumes_singleton`)| 简历短,直接全文喂 LLM;一个人就一份简历,不做"库" |
+| 出题入口字段 | quiz_sessions 用 `query` + `mode` + `jd_ids` 替代 `node_folder_path` / `node_heading_path`;questions 加 `originated_query` + `originated_mode` | M2 起聊天框 query 出题;笔记面板不再触发出题 |
+| retrieval pipeline 审计 | quiz_sessions 加 `expanded_queries` + `retrieved_chunk_ids` 字段 | evals/suites/hybrid_search/ 直接读这两列;不必走 Langfuse trace |
+| `quiz_session_mode` ENUM | `topic` / `job` / `auto` | M2 仅 `topic`;`job` / `auto` M3 启用 |
 | 简历诊断 | resume_analyses 快照,两方锚点严格(req_id + resume_position 双非空 = anchored)| 永不输出改写文案 |
 | 截图入库 | jds.raw_text 存 OCR 文本(不存原图)| Qwen 多模态 OCR 后即扔 |
 

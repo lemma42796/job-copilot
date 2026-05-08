@@ -1,18 +1,18 @@
 ---
 title: ROADMAP - JobCopilot v2
 owner: lemma42796
-last_updated: 2026-05-08
+last_updated: 2026-05-09
 purpose: 5 个里程碑 + 退出标准 + 下一刀
 ---
 
 # 节奏总览
 
 ```
-M0    仓库改造 + 文档重写            ← 当前
-M1    笔记入库 + chunker + 树形导航 + Langfuse 起步
-M2    出题 + 答题 + Judge 三层评分 + Judge tool use + Trace 完整化
+M0    仓库改造 + 文档重写                                                    ✅
+M1    笔记入库 + chunker + 树形导航 + Langfuse 起步                          ✅
+M2    聊天框主题类 query → 全库 RAG → 出题 + Judge 三层评分 + Judge tool use ← 当前
 M2.5  JD 累积上传 + 一键分析 + 学习路径(独立有价值)
-M3    弱点跟踪 dashboard + SR + 多轮追问 + 简历诊断(两方锚点严格)
+M3    弱点跟踪 + SR(空 query 系统自选)+ 多轮追问 + 岗位类出题(三源融合)+ 简历诊断
 ```
 
 不估工时,只讲依赖顺序与最佳实践。每个 M 完成 → DoD 跑通 → 提交 commit + 推 GitHub release tag。
@@ -58,12 +58,21 @@ M3    弱点跟踪 dashboard + SR + 多轮追问 + 简历诊断(两方锚点严�
 - [ ] Langfuse UI(localhost:3001)能看到每条 embedder 调用的 trace + token + cost
 - [ ] alembic 全过 + ruff / mypy / typecheck / next build 全过
 
-# M2:出题 + 答题 + Judge 三层评分
+# M2:聊天框主题类 query → 全库 RAG → 出题 + Judge 三层评分
 
 ## 范围
 
-- **QuizGenerator agent**:输入 (节点 chunks),输出 N 道题(开放式 + 八股,题型比例 LLM 自动决策),每题带 source_chunk_ids 反幻觉
-- **session UI**:出题 → 显示 → 输入答案 → 提交;答题时笔记面板隐藏
+**产品入口大变**:出题不再走"笔记面板点节点",改走聊天框输 query。M2 只做**主题类 query**(例:"考考我多线程"),岗位类 / 空 query 挂账 M3。笔记面板降级,只剩查看 / 编辑 / 导航树,**不再触发出题**。
+
+- **聊天框出题入口**:用户输入 topic query → 系统跨笔记 RAG → 出题(单一数据源 = 笔记库)
+- **Retrieval pipeline(RAG 主战场)**:
+  - **Query rewriting / expansion**:LLM 把短 query 扩成同义/相邻概念集(例:"并发" → "并发 / 多线程 / 锁 / 死锁")— 提召回
+  - **Hybrid search + RRF**:M1 已就绪 `global_hybrid_search`(BM25 tsvector + pgvector HNSW 双路 + RRF 融合)
+  - **Reranker(cross-encoder)**:初筛 top 50 → rerank top 10 — 二段式精排
+  - **Parent-doc retriever**:小 chunk 命中 → 扩展回父节点(heading_path 同段)拿更完整上下文喂给 LLM,召回粒度与上下文粒度解耦
+- **0 命中处理**:retrieval 命中数 < 阈值(例如 < 3 chunks)→ 直接返回"笔记里没这主题",不兜底放宽,不出题
+- **QuizGenerator agent**:输入 (query + retrieved chunks + 命中元数据 heading_path / 笔记标题),输出 N 道题(开放式 + 八股,题型比例 LLM 自动决策),每题带 source_chunk_ids 反幻觉
+- **session UI**:聊天框输入 → 出题 → 显示 → 输入答案 → 提交 → 评分;笔记面板始终在边栏(只是不点击触发出题)
 - **AnswerJudge agent**:三层评分
   - Coverage:从 reference + chunks 抽 N 个 points,逐 point 判 hit/partial/miss(允许同义改写)
   - Fidelity:用户答案逐句对照 chunks,标 supported/inferred/fabricated
@@ -77,15 +86,17 @@ M3    弱点跟踪 dashboard + SR + 多轮追问 + 简历诊断(两方锚点严�
 
 ## 退出标准(DoD)
 
-- [ ] dogfood 跑 1 个 session(选 "Java 集合" 节点 → 5 题 → 答 → 评分)端到端通过
+- [ ] dogfood 跑 1 个 session(聊天框输 "考考我 Java 集合" → 全库 RAG → 5 题 → 答 → 评分)端到端通过
+- [ ] 0 命中场景跑通:输入笔记里没有的主题(例 "考考我 React")→ 系统返回"笔记里没这主题",不出题
+- [ ] retrieval pipeline 每段独立可观测:query rewriting 改写后的 query 列表 / hybrid 双路 + RRF 命中 / reranker 前后排序变化 / parent-doc 扩展后的最终 chunks 都进 Langfuse trace
 - [ ] Judge 三层证据完整(每层都给 evidence_chunk_ids / reasoning)
 - [ ] Judge tool use 跑通:dataset 11-15 那批(用户讲常识)样本 Fidelity kappa 显著优于不带 tool 的 baseline
 - [ ] session 沉淀文件生成,内容完整(题 / 答 / 评 / reference)
 - [ ] `evals/suites/answer_judge/dataset.jsonl` 收 30 条人工标注样本
 - [ ] `scripts/eval_answer_judge.py` 跑通,Coverage / Fidelity kappa ≥ 0.7,Depth accuracy ≥ 0.75
 - [ ] `scripts/eval_quiz_generator.py` 跑通,结构合规率 ≥ 0.95
-- [ ] `scripts/eval_hybrid_search.py` 跑通,**ablation 三路**(vector-only / lex-only / hybrid)各自 recall@5 / recall@10 / mrr 都出数,**hybrid recall@5 ≥ 0.85 / recall@10 ≥ 0.95 / mrr ≥ 0.6**(从 M1 挂账继承,详见 6-EVAL §7);数据集 30 条 (query, expected_chunk_ids),query 来源:① quiz 剪枝场景的节点路径拼接 query ② Judge tool use 场景的"学生答案 claim"风格 query 各 15 条
-- [ ] Langfuse 按 session_id 过滤能看到完整 trace 树(出题 → 工具 → 评分嵌套)
+- [ ] `scripts/eval_hybrid_search.py` 跑通,**ablation 三路**(vector-only / lex-only / hybrid)各自 recall@5 / recall@10 / mrr 都出数,**hybrid recall@5 ≥ 0.85 / recall@10 ≥ 0.95 / mrr ≥ 0.6**(从 M1 挂账继承,详见 6-EVAL §7);数据集 30 条 (query, expected_chunk_ids),query 来源全部为**主题类 query 真实场景**(例 "考考我多线程" / "缓存一致性" / "Java 集合 ArrayList vs LinkedList" 等 30 条),不再用"节点路径拼接"假 query
+- [ ] Langfuse 按 session_id 过滤能看到完整 trace 树(query rewriting → hybrid → rerank → parent-doc → 出题 → 工具 → 评分嵌套)
 
 # M2.5:JD 累积上传 + 一键分析 + 学习路径
 
@@ -113,11 +124,11 @@ M3    弱点跟踪 dashboard + SR + 多轮追问 + 简历诊断(两方锚点严�
 - [ ] 200 条 JD 一键分析总成本 ≤ ¥1.0,LLM cache 命中率 ≥ 50%(重跑场景)
 - [ ] Langfuse 按 jd_analysis_id 过滤能看完整 map-reduce trace
 
-# M3:弱点跟踪 + SR + 多轮追问 + 简历诊断
+# M3:弱点跟踪 + SR + 多轮追问 + 岗位类出题(三源融合)+ 简历诊断
 
 ## 范围
 
-### 笔记主线加强
+### 笔记复习增强(SR + dashboard + 多轮追问 + 空 query 系统自选)
 
 - **knowledge_gap 表**:`(folder_path, heading_path, error_count, last_score, next_review_at)`,每次 session 评分后 upsert
 - **SR 简化算法**:
@@ -125,15 +136,29 @@ M3    弱点跟踪 dashboard + SR + 多轮追问 + 简历诊断(两方锚点严�
   - 60-79 → next_review_at = today + prev_interval
   - < 60 → next_review_at = today + 1d
 - **dashboard UI**:首页显示 "今日复习" + 知识点弱点排行 + 历史 session 列表
+- **空 query → 系统自选**:用户在聊天框输入"来模拟面试吧" / 留空 → SR 调度从 knowledge_gap 弱点排行选 1 个 heading_path 末段当 query → 走 M2 主题类 RAG 流程出题(复用 M2 pipeline,仅 query 来源从用户改成系统)
 - **多轮追问 Agent**(LangGraph):
   - State:`current_question / user_answers[] / interviewer_followups[] / score`
   - Nodes:出题 → 等答 → 判断要不要追问(`coverage < 60 AND ≥1 depth 维度 covered=false`)→ 追问 → 等答 → 评分
   - 最多 1 轮追问
 
+### 岗位类 query 出题(三源融合检索)
+
+用户在聊天框输"模拟一面 Java 后端" / "应聘字节后端实习" 这类岗位类 query → 系统拼**三源**出题:**笔记 + 那一份简历 + 用户选定的 JD 子集**(从 M2.5 jds 表选)。这是 RAG 主战场升级形态:多源、多类型、多 query。
+
+- **简历单条记录**(不是"简历库"):全库就一条 resumes 行(本地单用户工具)。简历不按岗位定制 — "一个人就一份简历",岗位类 query 拼的就是这一份简历 + 选定的 JD 子集
+- **岗位类 query 解析**:LLM 从 query 抽 (job_title, target_companies?, JD 候选范围?);用户也可在 UI 显式选 JD 库子集(全部 / 最近 N 条 / 某 title)
+- **三源检索 pipeline**:
+  - **路 1 笔记库 RAG**:query → query rewriting → hybrid search + rerank + parent-doc(复用 M2 pipeline)→ 命中 chunks
+  - **路 2 简历内容**:那一份简历全文(简历短,直接喂 LLM,不进 hybrid search 索引)+ 重点段落(项目 / 技能写了什么)— **重点考用户简历上写的东西**(直击"自己不会的也往简历上写,问到答不出"问题)
+  - **路 3 JD 子集聚合**:用户选定的 JD 候选 → 从 jds 表读 parsed_payload(M2.5 已 map 完成)→ 抽**职责 + 要求两方面**(LESSONS:"有的人只看要求不看职责,职责上的东西没复习就挂了"),按频次聚合
+- **三源结果合并**:三路 chunks / 内容片段并入 quiz_generator,prompt 明确告诉 LLM:"基于这份简历(用户写了什么)+ 这些 JD(岗位要什么)+ 这些笔记(用户复习了什么)出 N 道题,优先考'简历写了但 JD 也要'的交集 + '简历没写但 JD 强要求'的缺口"
+- **题型扩展**:岗位类多出"项目深挖题"(基于简历项目段落,问技术选型 / 难点 / 量化数据 — 模拟面试官追问简历)
+
 ### 简历诊断(求职流)
 
-- **简历上传**:markdown 直接 / PDF 走 Qwen 多模态 OCR 转 markdown(Q-05 倾向方案)
-- **简历段落 chunker**:按段落切(基础经历 / 技能 / 项目 / 教育 等),resume_chunks 入库;**不进 hybrid search 索引**(简历短,直接全文喂 LLM)
+- **简历上传**:markdown 直接 / PDF 走 Qwen 多模态 OCR 转 markdown;**全库就一条 resumes 行**,新上传覆盖旧的(留 history 表存历次诊断快照),无"多份简历切换"概念
+- **简历段落 chunker**:按段落切(基础经历 / 技能 / 项目 / 教育 等),resume_chunks 入库供岗位类 query 路 2 复用;**不进 hybrid search 索引**(简历短,直接全文喂 LLM)
 - **ResumeAdvisor agent**(thinking on):输入(JD 分析报告 + 简历)→ 输出诊断
   - 两方锚点严格:每条建议必须有 `req_id` + `resume_position`(可空,空标 unanchored)
   - **永不输出改写文案** — 只说"该补什么主题",不替用户编经验
@@ -142,11 +167,18 @@ M3    弱点跟踪 dashboard + SR + 多轮追问 + 简历诊断(两方锚点严�
 
 ## 退出标准(DoD)
 
-### 笔记主线
+### 笔记复习增强
 
 - [ ] dogfood 1 个月,每周 3+ session,弱点排行收敛(同一知识点 3 次后正确率 +30pp)
+- [ ] 空 query → SR 自选跑通:聊天框输"来模拟面试吧" → 系统从弱点排行选主题 → 出题,Langfuse trace 能看到 SR 选中的 heading_path
 - [ ] 多轮追问跑通:第一轮答漏 trade-off → 系统追问 → 用户补充 → 评分
 - [ ] dashboard 数据准确(SR 推送的题确实是到期的)
+
+### 岗位类 query 出题
+
+- [ ] 输入"模拟一面 Java 后端" → 三源检索全过(笔记路 hybrid 命中 + 简历段落注入 + JD 子集职责/要求两方面均覆盖)→ 出 5 题
+- [ ] 出题质量主观:5 题里至少 2 题"直击简历写了但用户答不出"(LESSONS §"自己不会的也往简历上写"反向验证)
+- [ ] Langfuse trace 能看到三源各自命中(三路并列 + 合并节点)
 
 ### 简历诊断
 
@@ -172,6 +204,8 @@ M3    弱点跟踪 dashboard + SR + 多轮追问 + 简历诊断(两方锚点严�
 | Notion / 飞书 / Obsidian / 语雀 sync | 三方笔记应用各自做得比本产品好;不竞争 |
 | 笔记 PDF / 图片导入 | OCR 链路长,markdown 已够(简历 PDF 是要做的) |
 | 替用户写简历改写文案 | 直接撞 v1 失败模式;系统只做诊断,真实经验用户自己写 |
+| 按岗位定制多份简历(简历库)| 一个人就一份简历;岗位类 query 拼"那一份简历 + 用户选定 JD 子集"已足够,多份切换增加产品复杂度无价值 |
+| 笔记面板节点点击触发出题 | 出题入口改为聊天框 query;笔记面板降级为查看 / 编辑 / 导航树,不再是出题入口 |
 | 投递追踪(v1 残留)| 已确认产品价值站不住,全砍 |
 | 跨 batch 跨时间增量聚合 JD | M3+ 才考虑;MVP 单次上限 200 条够用 |
 

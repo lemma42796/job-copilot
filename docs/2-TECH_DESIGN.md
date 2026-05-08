@@ -1,8 +1,8 @@
 ---
 title: TECH DESIGN - JobCopilot v2(架构 / 模块分层 / 数据流 / 错误处理)
 owner: lemma42796
-last_updated: 2026-05-08
-purpose: 锁系统架构、技术栈、模块边界、五条核心数据流、错误处理分层、v1 沿用 / 砍除清单
+last_updated: 2026-05-09
+purpose: 锁系统架构、技术栈、模块边界、核心数据流、错误处理分层、v1 沿用 / 砍除清单
 ---
 
 # 1. 一句话总览
@@ -103,7 +103,10 @@ apps/api/src/jobcopilot_api/
 │   ├── notes_service.py            # CRUD + zip unpack
 │   ├── chunk_service.py            # heading-aware markdown chunker(v1 改造)
 │   ├── tokenize.py                 # char_ngrams Python 实现(沿用 v1)
-│   ├── search_service.py           # hybrid search RRF(沿用 v1) + global_hybrid_search(M2 lookup tool)
+│   ├── search_service.py           # 全库 hybrid search RRF(沿用 v1) + global_hybrid_search(M2 lookup tool)
+│   ├── retrieval_pipeline.py       # M2:出题前 retrieval 编排(query_rewrite → hybrid → rerank → parent-doc 扩展);0 命中守门
+│   ├── query_rewriter.py           # M2:LLM 改写 query(短词 → 同义/相邻概念集),走 llm.client + cache
+│   ├── reranker.py                 # M2:cross-encoder rerank(top 50 → top 10),选型见 PRD Q-07
 │   ├── quiz_service.py             # 出题编排(调 quiz_generator agent + 落库)
 │   ├── answer_service.py           # 答题落库 + 算分 + finalize session
 │   ├── jd_service.py               # M2.5:JD 上传(立即调 jd_parser)+ 一键分析编排(map-reduce + Python 重算频次)
@@ -179,9 +182,9 @@ apps/web/src/
 │   │   ├── page.tsx                # 树 + 编辑器双栏
 │   │   └── import/page.tsx         # 本地目录 / 单篇导入(File System Access API)
 │   ├── (quiz)/
-│   │   ├── new/page.tsx            # 选节点 + 启动 session
-│   │   ├── [sessionId]/page.tsx    # 答题页
-│   │   └── [sessionId]/score/page.tsx   # 评分页
+│   │   ├── new/page.tsx            # **聊天框输 query** + 启动 session(M3 加岗位类多源 / 空 query SR 自选)
+│   │   ├── [sessionId]/page.tsx    # 答题页(笔记面板隐藏)
+│   │   └── [sessionId]/score/page.tsx   # 评分页(笔记面板恢复)
 │   ├── (jd)/                       # M2.5:JD 上传 + 我的 JD 库 + 一键分析
 │   │   ├── upload/page.tsx
 │   │   ├── library/page.tsx        # 列表 + 筛选 + 选范围一键分析按钮
@@ -238,18 +241,40 @@ FE (showDirectoryPicker / showOpenFilePicker — Chromium 系浏览器)
 
 后台 embed worker 异步算 embedding(详见 §5.5)。**API 不等**。
 
-## 5.2 出题 SSE
+## 5.2 出题 SSE(M2 主题类 query → 全库 RAG)
 
 ```
-FE → POST /api/quiz/sessions {node_path, count}
+FE → POST /api/quiz/sessions {query, count}        # query 例:"考考我多线程"
   → routers/quiz.create_session (EventSourceResponse)
-  → services/search_service.find_chunks_by_node(node_path)
-      ├─ if count < 5: error insufficient_chunks → done(false)
-      └─ if count > 30: hybrid search Top-30
-  → INSERT quiz_sessions(status=in_progress) → emit started{session_id}
-  → emit progress{phase=retrieving_chunks, chunk_count}
-  → agents/quiz_generator.run(chunks, count)
-      ├─ render USER (chunks 用 [N] 编号)
+  → 校验:query 非空且长度合理(否则 query_required / query_too_long)
+  → INSERT quiz_sessions(status=in_progress, query=...) → emit started{session_id}
+
+  → emit progress{phase=query_rewriting}
+      └─ services/query_rewriter.rewrite(query)
+            → list[expanded_query]  例:["并发", "多线程", "锁", "死锁"]
+            (LLM 调用,小温度,走 llm.client + cache;失败回退原 query)
+
+  → emit progress{phase=hybrid_searching}
+      └─ services/search_service.global_hybrid_search(expanded_queries, top_k=50)
+            ├─ vector 路:pgvector HNSW(WHERE embedding IS NOT NULL)
+            ├─ lex 路:tsvector char_ngrams
+            ├─ RRF 融合 → top 50 chunks
+            └─ 任一路异常另一路兜底(沿用 M1 service 契约)
+
+  → emit progress{phase=reranking}
+      └─ services/reranker.rerank(query, chunks_50) → top 10
+            (cross-encoder 模型,本地或百炼 reranker 接口,见 PRD Q-07)
+
+  → emit progress{phase=parent_doc_expanding}
+      └─ services/retrieval_pipeline.expand_to_parent(top_10_chunks)
+            → 命中 chunk 扩展回同 H2/H3 父段全文(粒度见 PRD Q-08)
+
+  → 0 命中守门:expanded chunks < 阈值(PRD Q-10) → emit error{code='no_chunks_for_query'} + done(false)
+                                                  + 标 quiz_sessions.status=abandoned
+
+  → emit progress{phase=generating, chunk_count=N}
+  → agents/quiz_generator.run(query, chunks, metadata=heading_paths, count)
+      ├─ render USER(chunks 用 [N] 编号 + query 当 hint + heading_path 当主题锚点)
       ├─ llm.client.complete(SYSTEM + USER) [+ cache 命中可能]
       ├─ Pydantic 校验 / retry ≤1
       └─ map [N] → DB chunk_id
@@ -260,6 +285,10 @@ FE → POST /api/quiz/sessions {node_path, count}
 ```
 
 任意阶段炸 → `error{code,detail}` + `done(ok=false)`,session 行标 abandoned_at。
+
+**M3 扩展(本文档 M2 阶段不实施,占位说明)**:
+- **岗位类 query**(US-5b):入参增 `mode='job'` + `jd_ids[]`;`retrieval_pipeline` 内多走两路并入(简历全文段落 / JD 子集职责+要求聚合),最终三源 chunks 合并喂 quiz_generator。详见 7-ROADMAP M3
+- **空 query / 系统自选**(US-5c):入参 `query` 留空 + `mode='auto'`;routers 调 `services/knowledge_gap_service.pick_next_topic()` → SR 选 heading_path → 复用主题类 pipeline
 
 ## 5.3 答题草稿(同步 PUT)
 
@@ -525,8 +554,12 @@ services:
 | `note_not_found` | 404 | services/notes_service |
 | `duplicate_folder_title` | 409 | services/notes_service |
 | `invalid_zip` | 400 | services/notes_service |
-| `insufficient_chunks` | SSE error | services/quiz_service |
-| `node_not_found` | SSE error | services/search_service |
+| `query_required` | 422 | routers/quiz(M2 主题类 query 为空且非 auto 模式)|
+| `query_too_long` | 422 | routers/quiz(query 超长,例如 > 200 字符)|
+| `no_chunks_for_query` | SSE error | services/retrieval_pipeline(0 命中,守门后报"笔记里没这主题",见 PRD Q-10 阈值) |
+| `query_rewrite_failed` | trace warning(回退原 query,不抛错) | services/query_rewriter |
+| `rerank_failed` | trace warning(回退 hybrid top-K,不抛错) | services/reranker |
+| `insufficient_chunks` | SSE error | services/quiz_service(M2 后 deprecated,经 retrieval_pipeline 命中 < count 时不再单独报)|
 | `llm_call_failed` | SSE error | agents/* |
 | `session_not_in_progress` | 409 | services/answer_service |
 | `unanswered_questions` | 409 | services/answer_service |
@@ -619,6 +652,12 @@ evals/suites/
 | 部署 | docker compose 本地 | postgres / api / web / caddy / langfuse / langfuse-db 六服务 |
 | Tracing 选型 | Langfuse 自部署 | LLM-native + 数据不出本地;详见 §6 |
 | Tool use 范围 | 仅 AnswerJudge 用 `lookup_in_notes_global`;Quiz / Embedder / JdParser / JdAggregator / ResumeAdvisor 不用 | 直击 LESSONS §1.1 假阳性,精准不滥用 |
+| 出题入口 | **聊天框 query**(M2 主题类 / M3 岗位类 + 空 query 自选);**笔记面板不再触发出题** | 笔记面板降级为查看 / 编辑 / 导航;PRD §6 锁定 |
+| M2 retrieval pipeline | **query_rewrite → hybrid + RRF → reranker → parent-doc 扩展** 四件;每段独立可观测进 Langfuse | 见 §5.2 数据流;0 命中守门 < 3 chunks → 返"笔记里没这主题"不兜底 |
+| Reranker 选型 | 百炼 **`qwen3-rerank`**(`/compatible-api/v1/reranks`,¥0.0005/k token);本地 bge-reranker-v2-m3 作 fallback 不实施 | 详见 5-AGENT §2.7.5 + memory `reference_aliyun_dashscope_rerank.md`;langfuse 不自动 instrument 要手动 generation 包 |
+| Parent-doc 扩展粒度 | **自适应**:命中段 < 200 字 → 扩到同 H2 父段;≥ 200 字 → 不扩 | 阈值在 M2 实施时按 dogfood 命中分布调 |
+| 简历存储模型 | 单条记录(全库一行 resumes);无"简历库 / 多份切换" | 一个人就一份简历;岗位类 query 拼"这一份 + 选定 JD 子集"已够 |
+| M3 岗位类三源融合 | retrieval_pipeline 多走两路:简历单条全文 + 用户选定 JD 子集职责/要求,合并喂 quiz_generator | 重点考"简历写了 JD 也要"交集 + "JD 强要 简历没写"缺口 |
 | LLM SDK | OpenAI Python SDK(via 百炼兼容接口)| Langfuse OpenAI wrapper(chat 自动 instrument,embedding 手动);langfuse SDK 锁 <3.0(server v2 不支持 OTLP);env mirror 必须早于 routers import — 见 STATUS 永久约束 |
 | qwen3.6-flash 多模态 | 文本 / 图像 / tool use 一把抓,JD 截图 + 简历 PDF 共用 | 简化模型路由 |
 | thinking 按 agent | 默认 off;评分 / 综合判断类显式 on(详见 5-AGENT §2.1) | 节省 reasoning_tokens 成本 |
