@@ -1,7 +1,7 @@
 ---
 title: API SPEC - JobCopilot v2(REST + SSE 端点契约)
 owner: lemma42796
-last_updated: 2026-05-09
+last_updated: 2026-05-10
 purpose: 锁前后端接口契约;每个端点的 path / method / 请求 / 响应 / SSE 事件序列
 ---
 
@@ -957,13 +957,18 @@ data: {"ok": true}
 
 # 9. 杂项
 
-## 9.1 `GET /api/health`
+## 9.1 `GET /v1/health`
 
 ```json
-{"status": "ok", "db": "ok", "llm": "ok", "langfuse": "ok"}
+{
+  "status": "ok",
+  "version": "0.0.1",
+  "env": "dev",
+  "timestamp": "2026-05-10T12:00:00Z"
+}
 ```
 
-`llm: "ok"` 检查阿里云百炼 `/models` 返回 200。`langfuse: "ok"` 检查 trace ingestion endpoint。
+部署 healthcheck 暂留 `/v1/health`;新业务端点统一挂 `/api`。`/v1/docs` 和 `/v1/openapi.json` 也沿用 FastAPI 开发入口。
 
 # 10. 已锁定的关键决策
 

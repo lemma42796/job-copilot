@@ -1,13 +1,13 @@
 ---
 title: ENGINEERING - JobCopilot v2(仓库结构 / 工具链 / CI / 迁移 / 本地开发 / 部署)
 owner: lemma42796
-last_updated: 2026-05-08
+last_updated: 2026-05-10
 purpose: 锁工程基线 — 一个新协作者按本文从零跑通项目,改完代码不破坏 CI,改 schema 不破坏迁移,改 prompt 不破坏评测
 ---
 
 # 1. 一句话总览
 
-monorepo:**Python uv workspace**(`apps/api`)+ **pnpm workspace**(`apps/web` / `packages/schemas` / `evals`),Python 一套(ruff + mypy + pytest),JS 一套(biome + tsc + 各包自带 test),Alembic 单 head,docker compose 5 服务本地起。CI 跑 6 条 workflow:lint / test-api / test-web / type-sync / docker-smoke / eval(M0 期间是手动触发,M2 数据集到位后再放开自动)。
+monorepo:**Python uv workspace**(`apps/api`)+ **pnpm workspace**(`apps/web` / `packages/schemas` / `evals`),Python 一套(ruff + mypy + pytest),JS 一套(biome + tsc + 各包自带 test),Alembic 单 head,docker compose 6 服务本地起。CI 跑 6 条 workflow:lint / test-api / test-web / type-sync / docker-smoke / eval(M0 期间是手动触发,M2 数据集到位后再放开自动)。
 
 # 2. 仓库结构
 
@@ -22,20 +22,18 @@ JobCopilot/
 │   │   │   ├── script.py.mako
 │   │   │   └── versions/             # 0001..0015 v1 历史 + 0016 v2 schema(M0 砍 v1 表 + 建 v2 表)
 │   │   └── tests/                    # pytest(unit + testcontainers integration)
-│   └── web/                          # Next.js 14 前端(pnpm workspace member)
+│   └── web/                          # Next.js 15 前端(pnpm workspace member)
 │       ├── package.json
 │       └── src/                      # 详见 2-TECH §4.2
 ├── packages/
 │   └── schemas/                      # OpenAPI 拉过来的 TS 类型(`pnpm gen:api` 自动生成,提交进库)
 │       ├── package.json
 │       └── src/api.ts                # CI type-sync workflow 防漂移(详见 §6.4)
-├── evals/                            # 评测套件(pnpm workspace member;详见 6-EVAL_PLAN)
-│   ├── package.json
-│   ├── kappa.py                      # Cohen's kappa 计算
+├── evals/                            # 评测套件(数据集 / 报告目录;详见 6-EVAL_PLAN)
 │   ├── suites/                       # M0 后重建:hybrid_search / quiz_generator / answer_judge / jd_aggregator / resume_advisor
 │   ├── reports/                      # 跑完写这里(.gitignore)
 │   └── README.md                     # eval 怎么跑 + DASHSCOPE_API_KEY_EVAL 哪儿来
-├── docker/                           # docker compose 三件套
+├── docker/                           # docker compose 配套镜像 / 反代 / 数据库初始化
 │   ├── api.Dockerfile                # python:3.12-slim + uv + standalone venv
 │   ├── web.Dockerfile                # node:22 多阶段 + Next standalone output
 │   ├── postgres/init.sql             # 创 pgvector + tsvector 扩展
@@ -50,7 +48,8 @@ JobCopilot/
 ├── tsconfig.base.json                # 各 package extends 这份(strict / noUncheckedIndexedAccess)
 ├── uv.lock                           # Python 锁文件(必须提交)
 ├── pnpm-lock.yaml                    # JS 锁文件(必须提交)
-├── CLAUDE.md                         # AI 协作指令(行为约束 / 文件导航)
+├── AGENTS.md                         # Codex 协作指令(行为约束 / 文件导航)
+├── CLAUDE.md                         # Claude Code 协作指令(行为约束 / 文件导航)
 ├── README.md                         # 一段话定位 + 跑起来命令
 └── .github/
     ├── workflows/                    # 6 条 CI(详见 §6)
@@ -165,8 +164,8 @@ DASHSCOPE_API_KEY_EVAL=sk-...
 
 - **每个 commit 一件事 + 编译过 + 测过**(M3 期间出过 commit 1 build broken,commit 2 修 build 的丑事 — v2 不再出)
 - **小步多 commit**(里程碑展开成切片,切片展开成 commit),不攒大 commit
-- **绝不加 Co-Author**(已入 memory `feedback_no_claude_coauthor.md`)
-- **不写"Generated with Claude Code"注脚**
+- **绝不加 Co-Author**
+- **不写"Generated with Claude Code" / "Generated with Codex" 注脚**
 
 ## 5.3 tag 策略
 
@@ -194,7 +193,7 @@ PR 必填:
   - prompt 改了已 bump 版本号 + 评测达标
   - 不向后兼容 → 写明 `BREAKING CHANGE`
 
-> **大白话**:PR 描述里讲 "为什么"。"什么" git diff 自己看,"为什么" diff 看不出来。
+> **说明**:PR 描述里讲 "为什么"。"什么" git diff 自己看,"为什么" diff 看不出来。
 
 # 6. CI 流水线
 
@@ -231,7 +230,7 @@ paths 触发:`apps/api/**` / `packages/schemas/**`
 
 - 起一个 API server → curl `/v1/openapi.json` → `pnpm gen:api` 重生 → `git diff --exit-code packages/schemas/src/api.ts`
 - 任何 router 改动忘 regen schema → CI 红
-- **大白话**:后端 schema 跟前端类型用同一份 source of truth(OpenAPI),CI 防"后端改了字段但前端 API 类型没同步"
+- **说明**:后端 schema 跟前端类型用同一份 source of truth(OpenAPI),CI 防"后端改了字段但前端 API 类型没同步"
 
 ## 6.5 docker-smoke.yml — 镜像可起 + 联通
 
@@ -438,7 +437,7 @@ langfuse:
 
 - v1 已写好的测试**保留不删**(`tests/unit` / `tests/integration` / `evals/suites/`),CI 跑(`test-api.yml` 沿用)
 - 新切片仅产出业务代码 + 评测 dataset(评测 dataset 不算"测试代码",是 prompt 防回归资产)
-- 自动化校验(`pytest` / `mypy` / `ruff` / `pnpm typecheck` / `pnpm lint` / `pnpm build` / `playwright` / `curl localhost:* probe` 等)由用户手动跑;Claude 改完代码**不主动启动**任何自动化校验,只口头描述期望(URL / 操作步骤 / 期望看到的字段或数字),让用户在浏览器或终端自己验
+- 自动化校验(`pytest` / `mypy` / `ruff` / `pnpm typecheck` / `pnpm lint` / `pnpm build` / `playwright` / `curl localhost:* probe` 等)由用户手动跑;AI 助手改完代码**不主动启动**任何自动化校验,只口头描述期望(URL / 操作步骤 / 期望看到的字段或数字),让用户在浏览器或终端自己验
 
 理由:dogfood 单用户体量,真实场景验比 mock unit 更直观;v1 W8 多次出现"测试都过但 dogfood 撞 bug"的反例(LESSONS §8.5 沉淀永久约束前必须跑过对应路径)。
 
@@ -569,7 +568,7 @@ async def submit_session(session_id: int):
 ## 12.3 ADR(架构决策记录)
 
 - v1 期间用过 `docs/adr/0001..0006`(M0 砍除)
-- v2 起**只有真正跨里程碑的架构决策**才另立 ADR,下一个编号 `0007`(CLAUDE.md 已锁)
+- v2 起**只有真正跨里程碑的架构决策**才另立 ADR,下一个编号 `0007`(协作指令已锁)
 - 单切片 / 单里程碑内的设计权衡走 STATUS.md "已锁定的关键决策"表,不开 ADR(避免文档膨胀)
 
 ## 12.4 不要重新讨论已锁定的决策
@@ -596,12 +595,12 @@ STATUS.md "已锁定的关键决策"表 = 不再返工的清单。如果有理�
 | model-id-lint | grep CI 防 stale 模型 ID 误用 | 永久约束 19(qwen3.6-flash 唯一)的工程化兜底 |
 | 模型版本 | qwen3.6-flash 一把抓(文本 + 图像 + tool use) | 简化模型路由(2-TECH §3) |
 | LLM SDK | OpenAI Python SDK(via 百炼兼容)+ langfuse.openai 自动 instrument | LLM 调用零额外埋点(**例外**:embeddings 要手动包 generation,见 §11.1)|
-| commit 风格 | feat / fix / docs / refactor / chore 前缀英文,描述中文随意 | 不加 Co-Author / 不写 Generated with Claude Code |
+| commit 风格 | feat / fix / docs / refactor / chore 前缀英文,描述中文随意 | 不加 Co-Author / 不写 Generated with Claude Code / Generated with Codex |
 | tag 策略 | 里程碑末态打 `v0.X-MX-end`,切片不打 | 避免 tag 噪音 |
 | 文档 SSoT | docs/ 9 份核心 + STATUS + LESSONS | 永久约束在 STATUS.md;踩坑细节追加 LESSONS.md |
 | ADR 阈值 | 跨里程碑架构决策才开 ADR,下一个编号 0007 | 单切片设计走 STATUS 锁定决策表 |
 | 测试纪律(v2)| **不写新测试代码**(unit / integration / e2e 都不写);v1 已写测试保留;CI 沿用 | §10.1.5 详述;dogfood 单用户体量,真实场景验比 mock unit 更直观 |
-| 自动化校验 | Claude 改完代码**不主动启动** pytest / mypy / ruff / typecheck / lint / build / playwright / curl probe;只口头描述期望让用户验 | 用户显式说"跑闸门"等指令例外 |
+| 自动化校验 | AI 助手改完代码**不主动启动** pytest / mypy / ruff / typecheck / lint / build / playwright / curl probe;只口头描述期望让用户验 | 用户显式说"跑闸门"等指令例外 |
 | Reranker langfuse | 同 embedder,**不在 auto-patch 范围**,要手动包 generation | 5-AGENT §2.7.5 + memory `reference_aliyun_dashscope_rerank.md` |
 
 ---

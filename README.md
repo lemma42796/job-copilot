@@ -4,7 +4,7 @@
 >
 > 一行 `docker compose up` 启动,本地优先,数据不出机器。
 
-[![Status](https://img.shields.io/badge/status-WIP%20M0-orange)](docs/STATUS.md)
+[![Status](https://img.shields.io/badge/status-WIP%20M2-yellow)](docs/STATUS.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![LLM](https://img.shields.io/badge/LLM-Qwen3.6%20%40%20DashScope-1f7ae0)]()
 
@@ -20,8 +20,8 @@ JobCopilot 把你的笔记当成私人题库,模拟真面试的强度反问你 �
 
 ```
 1. 笔记入库 — 上传本地 markdown 文件夹 / 在 Web 编辑器里写
-2. 选知识点 — 沿用你笔记的文件夹层级,例如 "Java / 并发 / synchronized"
-3. 系统自动出题 — 3-10 道开放式 + 八股,基于你笔记的 chunks(反幻觉:每题标 source_chunk_ids)
+2. 输入主题 — 在聊天框里说 "考考我多线程" / "缓存一致性"
+3. 系统全库 RAG 出题 — 3-10 道开放式 + 八股,基于你笔记的 chunks(反幻觉:每题标 source_chunk_ids)
 4. 你不能看笔记 — 纯靠记忆答
 5. LLM Judge 三层评分 — 覆盖度 / 忠实度 / 深度
 6. 弱点入队 — 知识点维度跟踪,下次按 spaced repetition 重点考你
@@ -122,7 +122,7 @@ Docs: http://localhost:8000/v1/docs   # 开发模式
 | [`docs/4-API_SPEC.md`](docs/4-API_SPEC.md) | API 规范:REST + SSE 端点、错误码、流式协议 |
 | [`docs/5-AGENT_DESIGN.md`](docs/5-AGENT_DESIGN.md) | Agent 设计:QuizGenerator / AnswerJudge 输入输出 + Prompt 全文 |
 | [`docs/6-EVAL_PLAN.md`](docs/6-EVAL_PLAN.md) | 评测计划:answer_judge / quiz_generate suite + Cohen's kappa |
-| [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md) | 4 个里程碑:M0-M3 节奏与退出标准 |
+| [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md) | M0 / M1 / M2 / M2.5 / M3 节奏与退出标准 |
 | [`docs/8-ENGINEERING.md`](docs/8-ENGINEERING.md) | 工程规范:仓库结构、Python+TS 规范、CI/CD |
 | [`docs/9-LESSONS.md`](docs/9-LESSONS.md) | 工程踩坑录(8 大类 ~30 条) |
 
@@ -136,27 +136,27 @@ Docs: http://localhost:8000/v1/docs   # 开发模式
 |---------|-----------|----------------|
 | LLM 应用工程化端到端落地 | 8 份设计文档 + ROADMAP + 工程踩坑录 | `docs/` |
 | Agent 编排(LangGraph 状态机) | 多轮追问面试编排(M3) | `docs/5-AGENT_DESIGN` |
-| RAG 工程(混合检索 + 重排) | hybrid search:pgvector + tsvector + RRF + char n-gram | `docs/5-AGENT_DESIGN` / `apps/api/services/retrieval_service.py` |
-| Prompt 工程 + 版本管理 | Prompt 即代码,Jinja2 模板 + `prompt_versions` 表 | `apps/api/agents/prompts/` |
+| RAG 工程(混合检索 + 重排) | hybrid search:pgvector + tsvector + RRF + char n-gram | `docs/5-AGENT_DESIGN` / `apps/api/src/jobcopilot_api/services/retrieval_pipeline.py` |
+| Prompt 工程 + 版本管理 | Prompt 即代码,Jinja2 模板 + `prompt_versions` 表 | `apps/api/src/jobcopilot_api/agents/*/prompts.py` |
 | 反幻觉 / 引用追溯 | quiz_generator 强约束 source_chunk_ids;answer_judge fidelity 层 | `docs/5-AGENT_DESIGN` |
 | LLM-as-Judge | 三层评分(Coverage / Fidelity / Depth)+ 先证据后打分 | `docs/6-EVAL_PLAN` |
 | 评测有效性 | Cohen's kappa 守门 ≥ 0.7;Judge 不引入 prompt 没要求的维度 | `docs/6-EVAL_PLAN` |
 | 评测踩坑案例 | 公开记录评测翻车 + 重做经验 | `docs/9-LESSONS.md` |
-| 结构化输出 | Pydantic Schema + JSON Schema retry | `docs/4-API_SPEC` / `apps/api/llm/` |
+| 结构化输出 | Pydantic Schema + JSON Schema retry | `docs/4-API_SPEC` / `apps/api/src/jobcopilot_api/llm/` |
 | 流式 SSE | EventSource + node 级事件协议 | `docs/4-API_SPEC` |
 | Prompt Cache 成本工程 | sha256 cache key + 异常降级 + Postgres 存储 | `docs/2-TECH_DESIGN` |
-| 多 Provider 抽象 | LLMProvider Protocol + qwen / dummy 双实现 | `apps/api/llm/` |
+| 多 Provider 抽象 | LLMProvider Protocol + qwen / dummy 双实现 | `apps/api/src/jobcopilot_api/llm/` |
 | 向量数据库工程 | pgvector HNSW + 归一化 + 多粒度 chunk | `docs/3-DATA_MODEL` |
 | FastAPI / SQLAlchemy 2.x async | 全异步 IO | `docs/8-ENGINEERING` |
 | Next.js 15 + RSC + TS | 服务端组件 + Tanstack Query | `apps/web/` |
-| Docker Compose 一键部署 | postgres + api + web 三件套 | `docker-compose.yml` |
+| Docker Compose 一键部署 | postgres + api + web + caddy + Langfuse | `docker-compose.yml` |
 | 工程纪律(CI / Lint) | ruff / mypy / typecheck / build 强制门槛 | `docs/8-ENGINEERING` |
 
 ---
 
 ## 当前状态
 
-**阶段**:M0 重构准备 — 文档已就位,代码改造待启动
+**阶段**:M2 — 聊天框主题 query → 全库 RAG → 出题 + Judge 三层评分
 
 详见 [`docs/STATUS.md`](docs/STATUS.md)。
 
@@ -164,13 +164,14 @@ Docs: http://localhost:8000/v1/docs   # 开发模式
 
 ## 路线图
 
-4 个里程碑(详见 [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md)):
+5 个阶段(详见 [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md)):
 
 ```
 M0  仓库改造 + 文档重写
 M1  笔记入库(.md 上传 + Web 编辑器)+ chunker + 树形导航
-M2  出题 + 答题 + LLM Judge 三层评分
-M3  弱点跟踪 + SR 队列 + 多轮追问 Agent + 语雀同步
+M2  聊天框主题 query → 全库 RAG → 出题 + LLM Judge 三层评分
+M2.5 JD 累积上传 + 一键分析 + 学习路径
+M3  弱点跟踪 + SR 队列 + 多轮追问 Agent + 岗位类三源出题 + 简历诊断
 ```
 
 ---

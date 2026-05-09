@@ -36,7 +36,6 @@ NOTE_SOURCE_VALUES = (
     # notes 用:
     "local_md",  # File System Access API 选目录 / 选单篇本地 .md 入库
     "web_editor",
-    "yuque",
     # jds 复用同一 ENUM(DATA_MODEL §5.7):
     "text_paste",
     "image_upload",
@@ -118,8 +117,6 @@ def upgrade() -> None:
             postgresql.ENUM(name="note_source", create_type=False),
             nullable=False,
         ),
-        sa.Column("external_id", sa.String(100)),
-        sa.Column("external_updated_at", sa.DateTime(timezone=True)),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -146,12 +143,6 @@ def upgrade() -> None:
         "notes",
         ["folder_path"],
         postgresql_using="gin",
-    )
-    op.create_index(
-        "ix_notes_external_id",
-        "notes",
-        ["external_id"],
-        postgresql_where=sa.text("external_id IS NOT NULL"),
     )
 
     # 4.2 note_chunks

@@ -1,7 +1,7 @@
 ---
 title: DATA MODEL - JobCopilot v2(笔记 / 题 / 答 / 弱点 schema)
 owner: lemma42796
-last_updated: 2026-05-09
+last_updated: 2026-05-10
 purpose: 锁所有表 schema、字段语义、JSONB 子结构、索引、迁移路径
 ---
 
@@ -69,7 +69,7 @@ M1-M3 是单用户本地 dogfood,**所有业务表均不带 `user_id`**。M4+ Sa
 
 | ENUM 名 | 值 | 用途 |
 |---------|----|----|
-| `note_source` | `local_md` / `web_editor` / `yuque` | notes.source;`local_md` = File System Access API 选目录 / 选单篇;`yuque` 仅 M3 启用 |
+| `note_source` | `local_md` / `web_editor` / `text_paste` / `image_upload` | notes.source + jds.source 复用;`local_md` = File System Access API 选目录 / 选单篇 |
 | `question_type` | `open_ended` / `definition` | questions.type;PRD §5.2 US-6 |
 | `quiz_session_status` | `in_progress` / `submitted` / `abandoned` | quiz_sessions.status |
 | `quiz_session_mode` | `topic` / `job` / `auto` | quiz_sessions.mode;`topic`=M2 主题类 query / `job`=M3 岗位类三源 / `auto`=M3 SR 系统自选(空 query)|
@@ -91,8 +91,6 @@ CREATE TABLE notes (
   content_md   TEXT         NOT NULL,                  -- 原始 markdown
 
   source       note_source  NOT NULL,
-  external_id  VARCHAR(100),                           -- yuque doc slug / id (M3)
-  external_updated_at TIMESTAMPTZ,                     -- yuque 增量同步用
 
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -106,19 +104,12 @@ CREATE UNIQUE INDEX uq_notes_folder_title
 
 CREATE INDEX ix_notes_folder
   ON notes USING GIN (folder_path);
-
--- M3 yuque 增量同步:按 external_id 查
-CREATE INDEX ix_notes_external_id
-  ON notes (external_id)
-  WHERE external_id IS NOT NULL;
 ```
 
 字段语义:
 
 - `folder_path`:笔记在树形导航中的位置。本地目录直读时从相对路径解析(`Java/并发/synchronized.md` → `['Java','并发']`),编辑器场景用户在保存时点选目标 folder
 - `content_md`:整篇 markdown,用户编辑保存覆盖即可。**chunker 从这里取**,不依赖磁盘文件
-- `external_id`:M3 语雀同步时存 doc slug,本地编辑器笔记保持 NULL
-- `external_updated_at`:语雀 doc 上次更新时间,增量同步对比基准
 
 ## 5.2 `note_chunks`(笔记切片)
 
@@ -775,7 +766,6 @@ LLM 一次调用基于 aggregated_requirements 输出的 markdown,**不约束严
 |----|------|------|
 | `notes` | `uq_notes_folder_title (folder_path, title) WHERE deleted_at IS NULL` | 防重复 |
 | `notes` | `gin (folder_path)` | 树形导航 |
-| `notes` | `(external_id) WHERE external_id IS NOT NULL` | M3 yuque 增量 |
 | `note_chunks` | `(note_id)` | 删 / 重切 chunks |
 | `note_chunks` | `gin (folder_path)` | 树节点 prefix 匹配 |
 | `note_chunks` | `hnsw (embedding vector_cosine_ops)` | 语义召回 |

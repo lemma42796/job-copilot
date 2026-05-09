@@ -5,7 +5,7 @@ JSONB 持久化复用,后续一键分析免重 LLM。截图场景:source='image_
 raw_text 存 Qwen 多模态 OCR 后的文本(原图不存)。
 
 source ENUM `note_source` 共享:'text_paste' / 'image_upload' (jds) +
-'local_md' / 'web_editor' / 'yuque' (notes)— 5 值同一 ENUM。
+'local_md' / 'web_editor' (notes)— 4 值同一 ENUM。
 """
 
 from __future__ import annotations

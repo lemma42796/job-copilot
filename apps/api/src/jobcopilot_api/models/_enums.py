@@ -13,7 +13,6 @@ NOTE_SOURCE_VALUES: tuple[str, ...] = (
     # notes 用:
     "local_md",
     "web_editor",
-    "yuque",
     # jds 复用同 ENUM:
     "text_paste",
     "image_upload",

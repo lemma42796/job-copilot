@@ -6,9 +6,7 @@ chunker 从 content_md 取,不依赖磁盘文件。
 
 from __future__ import annotations
 
-from datetime import datetime
-
-from sqlalchemy import DateTime, String, Text
+from sqlalchemy import String, Text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -30,8 +28,4 @@ class Note(Base, IDMixin, TimestampMixin):
             *NOTE_SOURCE_VALUES, name="note_source", create_type=False
         ),
         nullable=False,
-    )
-    external_id: Mapped[str | None] = mapped_column(String(100))
-    external_updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
     )

@@ -1,7 +1,7 @@
 ---
 title: ROADMAP - JobCopilot v2
 owner: lemma42796
-last_updated: 2026-05-09
+last_updated: 2026-05-10
 purpose: 5 个里程碑 + 退出标准 + 下一刀
 ---
 
@@ -27,7 +27,7 @@ M3    弱点跟踪 + SR(空 query 系统自选)+ 多轮追问 + 岗位类出题(
 - [x] docs/1-PRD.md 重写
 - [x] docs/7-ROADMAP.md 重写
 - [x] docs/STATUS.md 重置
-- [x] CLAUDE.md 文件导航更新
+- [x] AI 协作指令文件导航更新
 - [ ] docs/{2-TECH_DESIGN, 3-DATA_MODEL, 4-API_SPEC, 5-AGENT_DESIGN, 6-EVAL_PLAN, 8-ENGINEERING}.md 重写
 - [ ] 旧 v1 代码砍除:apps/api/agents/{jd_parser, profile_parser, match_analyst, resume_planner, resume_drafter, resume_reviewer}/、对应 service / router / model / scripts、apps/web 旧页面
 - [ ] 保留可复用模块:llm/(client / cache / providers / cache_key)、agents/embedder、services/{tokenize, chunk_service(改造)}、evals/{kappa, judge}.py、alembic 0014/0015

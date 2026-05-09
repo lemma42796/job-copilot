@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-09
+last_updated: 2026-05-10
 purpose: 跨会话续作的状态快照。任何新会话从这里开始读。
 ---
 
@@ -90,7 +90,7 @@ dogfood DB 现状(查 PG `2026-05-09`):30 篇笔记 / 258 chunks / 100% embeddin
 | Agent 编排 | MVP 单 Agent;M3 才用 LangGraph 多轮追问 | |
 | 部署 | 本地 docker compose 6 服务(postgres / api / web / caddy / langfuse / langfuse-db);不做 SaaS(M4+) | |
 
-风格规矩(中文为主 / 不估工时 / 不加 Co-Author / 测试由用户手动跑 / 大白话回答)见 `CLAUDE.md`。
+风格规矩(中文为主 / 不估工时 / 不加 Co-Author / 测试由用户手动跑)见 `AGENTS.md` / `CLAUDE.md`。
 
 # 永久约束累积
 
