@@ -11,6 +11,7 @@ from typing import Any
 
 from jobcopilot_api.schemas.agents.quiz_generator import QuizGenChunkInput
 
+CONTEXT_CACHE_ENABLED = False
 CONTEXT_CACHE_MIN_CHARS = 3000
 
 SHARED_CHUNKS_SYSTEM_PREAMBLE = (
@@ -50,13 +51,15 @@ def render_chunk_cache_text(chunks: list[QuizGenChunkInput]) -> str:
         )
     chunks_text = "\n\n".join(blocks)
     return (
-        SHARED_CHUNKS_SYSTEM_PREAMBLE
+        SHARED_CHUNKS_SYSTEM_PREAMBLE +
         f"retrieval pipeline chunks(共 {len(chunks)} 个,已按相关性排序):\n\n"
         f"{chunks_text}"
     )
 
 
 def should_use_explicit_context_cache(text: str) -> bool:
+    if not CONTEXT_CACHE_ENABLED:
+        return False
     # DashScope documents the lower bound in tokens; this char threshold is a
     # conservative proxy that avoids marking short prompts.
     return len(text) >= CONTEXT_CACHE_MIN_CHARS
