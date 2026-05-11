@@ -487,4 +487,120 @@ export async function batchImportNotes(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Quiz(M2 — 聊天框 query → 全库 RAG → 出题 + Judge 三层评分)
+// ---------------------------------------------------------------------------
+
+export type QuizMode = 'topic' | 'job' | 'auto';
+export type QuizQuestionType = 'open_ended' | 'definition';
+
+export type QuizSessionCreateInput = {
+  query: string;
+  mode: QuizMode;
+  question_count: number;
+  jd_ids?: number[] | null;
+};
+
+export type QuizQuestionPublic = {
+  id: number;
+  type: QuizQuestionType;
+  prompt: string;
+  source_chunk_ids: number[];
+};
+
+export type QuizQuestionReady = {
+  order_index: number;
+  question: QuizQuestionPublic;
+};
+
+export type QuizTypeMix = {
+  open_ended: number;
+  definition: number;
+  rationale?: string;
+};
+
+export type QuizProgress = {
+  phase: string;
+  expanded_queries?: string[];
+  candidate_count?: number;
+  chunk_count?: number;
+  model?: string;
+  type_mix?: QuizTypeMix;
+  order_index?: number;
+};
+
+export type QuizScores = {
+  coverage: number;
+  fidelity: number;
+  depth: number;
+  total: number;
+};
+
+export type QuizEvidence = {
+  coverage_evidence?: unknown;
+  fidelity_evidence?: unknown;
+  depth_evidence?: unknown;
+};
+
+export type QuizCreateSseFrame =
+  | SseFrame<
+      'started',
+      { job_id?: string; resource_id: number; query: string; mode: QuizMode }
+    >
+  | SseFrame<'progress', QuizProgress>
+  | SseFrame<'question_ready', QuizQuestionReady>
+  | SseFrame<'error', { code: string; detail: string }>
+  | SseFrame<'done', { ok: boolean }>;
+
+export type QuizSubmitSseFrame =
+  | SseFrame<
+      'started',
+      { job_id: string; resource_id: number; session_id?: number; total_questions: number }
+    >
+  | SseFrame<'progress', QuizProgress>
+  | SseFrame<'question_done', { order_index: number; scores: QuizScores; evidence: QuizEvidence }>
+  | SseFrame<'result', { session_id: number; scores: QuizScores; recall_md_path?: string | null }>
+  | SseFrame<'error', { code: string; detail: string; order_index?: number }>
+  | SseFrame<'done', { ok: boolean }>;
+
+export function createQuizSession(
+  input: QuizSessionCreateInput,
+): AsyncGenerator<QuizCreateSseFrame> {
+  return streamSse<QuizCreateSseFrame>(`${API_BASE_URL}/api/quiz/sessions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-User-Id': USER_ID,
+    },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function saveQuizAnswer(
+  sessionId: number,
+  orderIndex: number,
+  userAnswer: string,
+): Promise<{ ok: boolean }> {
+  return jsonFetch<{ ok: boolean }>(`/api/quiz/sessions/${sessionId}/answers/${orderIndex}`, {
+    method: 'PUT',
+    body: JSON.stringify({ user_answer: userAnswer }),
+  });
+}
+
+export function submitQuizSession(sessionId: number): AsyncGenerator<QuizSubmitSseFrame> {
+  return streamSse<QuizSubmitSseFrame>(`${API_BASE_URL}/api/quiz/sessions/${sessionId}/submit`, {
+    method: 'POST',
+    headers: { 'X-User-Id': USER_ID },
+  });
+}
+
+export async function abandonQuizSession(
+  sessionId: number,
+): Promise<{ id: number; status: 'abandoned'; abandoned_at: string }> {
+  return jsonFetch<{ id: number; status: 'abandoned'; abandoned_at: string }>(
+    `/api/quiz/sessions/${sessionId}/abandon`,
+    { method: 'POST' },
+  );
+}
+
 export { API_BASE_URL };

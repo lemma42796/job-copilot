@@ -12,6 +12,7 @@ type NavGroup = { key: string; title?: string; items: NavItem[] };
 
 const NAV: NavGroup[] = [
   { key: 'home', items: [{ href: '/', label: '首页', icon: <HomeIcon />, match: 'exact' }] },
+  { key: 'quiz', items: [{ href: '/quiz', label: '练习', icon: <QuizIcon />, match: 'prefix' }] },
   { key: 'notes', items: [{ href: '/notes', label: '笔记', icon: <NotesIcon />, match: 'prefix' }] },
 ];
 
@@ -87,6 +88,15 @@ function NotesIcon() {
       <path d="M3.5 2h6.5l3 3v9a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5v-11a.5.5 0 0 1 .5-.5Z" />
       <path d="M10 2v3h3" />
       <path d="M5.5 8h5M5.5 10.5h5M5.5 6h2" />
+    </svg>
+  );
+}
+
+function QuizIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+      <path d="M4 2.5h8a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H8.8L5.5 13.5v-2.8H4a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1Z" />
+      <path d="M5.7 5.2h4.6M5.7 7.4h3.2" />
     </svg>
   );
 }
