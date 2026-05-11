@@ -61,6 +61,7 @@ def _result(**overrides: Any) -> LLMResult:
         related_entity="jd",
         related_id=7,
         prompt_version_id=None,
+        metadata={"lookup_tool_call_count": 2},
     )
     base.update(overrides)
     return LLMResult(**base)
@@ -98,6 +99,7 @@ async def test_log_writes_one_row_with_all_fields() -> None:
     assert record.trace_id == "t-1"
     assert record.related_entity == "jd"
     assert record.related_id == 7
+    assert record.metadata_json == {"lookup_tool_call_count": 2}
     assert fake.commit_count == 1
 
 

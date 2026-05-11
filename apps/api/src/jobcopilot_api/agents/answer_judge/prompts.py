@@ -1,4 +1,4 @@
-"""AnswerJudge prompts — `answer_judge` v1.0(5-AGENT_DESIGN §4.3 / §4.4)。"""
+"""AnswerJudge prompts — `answer_judge` v1.1(5-AGENT_DESIGN §4.3 / §4.4)。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from jobcopilot_api.schemas.agents.quiz_generator import (
 )
 
 PROMPT_NAME = "answer_judge"
-PROMPT_VERSION = "v1.0"
+PROMPT_VERSION = "v1.1"
 
 SYSTEM = """你是评估程序员技术问答的 Judge Agent。三层评分:
 
@@ -77,7 +77,27 @@ SYSTEM = """你是评估程序员技术问答的 Judge Agent。三层评分:
   }
 }
 
-注:claims 里的 chunk_ids 必须是 USER 段 [N] 标号,不是数据库 id。"""
+注:claims 里的 chunk_ids 默认写 USER 段 [N] 标号;若采用工具结果作为证据,
+写工具返回的 ref_id。不要写数据库 id。"""
+
+TOOL_SYSTEM_APPENDIX = """
+
+【工具使用】
+
+在 fidelity 评分时,任何想标 fabricated 的 claim,必须先调用
+lookup_in_notes_global(claim) 验证一次。流程:
+
+1. 看到一条声明,判断它在本题 chunks 里没支撑
+2. 调用 lookup_in_notes_global(claim_text)
+3. 如果工具返回的 chunks 里有支持该声明的内容(跟用户答的语义对得上),
+   标 supported
+4. 没匹配上,才标 fabricated
+
+不要为 supported / inferred 的 claim 调工具。每个用户答案最多 5 次工具调用。
+本题原始 chunks 仍用 [N] 编号;工具返回的全库 chunks 带 ref_id。如果你采用
+工具结果作为证据,claims[].chunk_ids 写工具返回的 ref_id,不要写 chunk_id。"""
+
+SYSTEM_WITH_LOOKUP_TOOL = f"{SYSTEM}{TOOL_SYSTEM_APPENDIX}"
 
 
 def render_user(

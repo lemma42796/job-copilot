@@ -6,6 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import BigInteger, Boolean, DateTime, Integer, Numeric, String, func
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from jobcopilot_api.models.base import Base, IDMixin
@@ -38,6 +39,13 @@ class LlmCall(Base, IDMixin):
 
     # True iff served from llm_response_cache (added by alembic 0015).
     cached: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+
+    metadata_json: Mapped[dict] = mapped_column(
+        "metadata",
+        postgresql.JSONB,
+        nullable=False,
+        server_default="{}",
+    )
 
     trace_id: Mapped[str | None] = mapped_column(String(100))
     related_entity: Mapped[str | None] = mapped_column(String(50))

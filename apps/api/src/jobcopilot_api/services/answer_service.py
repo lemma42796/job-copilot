@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -48,6 +49,8 @@ from jobcopilot_api.schemas.quiz import AnswerDraftIn
 from jobcopilot_api.services.retrieval_pipeline import fetch_note_titles
 
 REQUIRED_DEPTH_DIMENSIONS = {"tradeoff", "why", "boundary"}
+# SSE-level escape hatch for one answer, including any lookup tool rounds.
+JUDGE_CALL_HARD_TIMEOUT_S = 95.0
 
 
 class SessionNotInProgressError(JobCopilotError):
@@ -157,12 +160,16 @@ async def submit_session_sse(
             user_answer=task.user_answer,
         )
         try:
-            llm_result = await answer_judge_agent.run(judge_input)
+            llm_result = await _run_judge_with_hard_timeout(
+                judge_input,
+                sessionmaker=sessionmaker,
+            )
             judged = _extract_judge_output(llm_result)
             judged = _map_and_validate_output(
                 output=judged,
                 reference_points=task.question.reference_points,
                 source_chunk_ids=task.source_chunk_ids,
+                lookup_ref_map=_lookup_ref_map(llm_result),
             )
             scores = _compute_scores(judged, task.question.reference_points)
             await _persist_judged_answer(
@@ -247,6 +254,62 @@ def _error_payload(exc: JobCopilotError) -> dict[str, Any]:
     if exc.errors:
         payload["errors"] = exc.errors
     return payload
+
+
+async def _run_judge_with_hard_timeout(
+    judge_input: AnswerJudgeInput,
+    *,
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> LLMResult:
+    """Run one Judge call with a service-level wall-clock cap.
+
+    The LLM layer already passes provider timeouts, but SSE must still have a
+    final escape hatch when the SDK/upstream hangs without raising.
+    """
+    task = asyncio.create_task(
+        answer_judge_agent.run(judge_input, sessionmaker=sessionmaker)
+    )
+    try:
+        done, _pending = await asyncio.wait(
+            {task},
+            timeout=JUDGE_CALL_HARD_TIMEOUT_S,
+        )
+    except asyncio.CancelledError:
+        _cancel_and_drain(task)
+        raise
+
+    if not done:
+        _cancel_and_drain(task)
+        raise JudgeCallFailedError(
+            f"Judge 调用超过 {JUDGE_CALL_HARD_TIMEOUT_S:.0f}s 未返回,已中止"
+        )
+
+    return task.result()
+
+
+def _cancel_and_drain(task: asyncio.Task[LLMResult]) -> None:
+    task.cancel()
+    task.add_done_callback(_drain_task_exception)
+
+
+def _drain_task_exception(task: asyncio.Task[LLMResult]) -> None:
+    try:
+        task.exception()
+    except (asyncio.CancelledError, Exception):
+        return None
+
+
+def _lookup_ref_map(llm_result: LLMResult) -> dict[int, int]:
+    raw = llm_result.metadata.get("lookup_ref_map", {})
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[int, int] = {}
+    for ref_id, chunk_id in raw.items():
+        try:
+            out[int(ref_id)] = int(chunk_id)
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 async def _load_judge_tasks(
@@ -412,9 +475,10 @@ def _map_and_validate_output(
     output: AnswerJudgeOutput,
     reference_points: list[ReferencePoint],
     source_chunk_ids: list[int],
+    lookup_ref_map: dict[int, int],
 ) -> AnswerJudgeOutput:
     _validate_coverage(output, reference_points)
-    _validate_fidelity(output, source_chunk_ids)
+    _validate_fidelity(output, source_chunk_ids, lookup_ref_map)
     _validate_depth(output)
 
     data = output.model_dump(mode="json")
@@ -422,10 +486,11 @@ def _map_and_validate_output(
         if claim["label"] == "fabricated":
             claim["chunk_ids"] = []
             continue
-        claim["chunk_ids"] = [
-            source_chunk_ids[int(local_id) - 1]
-            for local_id in claim.get("chunk_ids", [])
-        ]
+        claim["chunk_ids"] = _map_claim_chunk_ids(
+            claim.get("chunk_ids", []),
+            source_chunk_ids=source_chunk_ids,
+            lookup_ref_map=lookup_ref_map,
+        )
     return AnswerJudgeOutput.model_validate(data)
 
 
@@ -447,21 +512,50 @@ def _validate_coverage(
 def _validate_fidelity(
     output: AnswerJudgeOutput,
     source_chunk_ids: list[int],
+    lookup_ref_map: dict[int, int],
 ) -> None:
     claims = output.fidelity_evidence.claims
     if not claims:
         raise JudgeIntegrityError("fidelity_evidence.claims 不能为空")
 
-    max_local_id = len(source_chunk_ids)
     for claim in claims:
         if claim.label == "fabricated" and claim.chunk_ids:
             raise JudgeIntegrityError("fabricated claim 的 chunk_ids 必须为空")
-        for local_id in claim.chunk_ids:
-            if local_id < 1 or local_id > max_local_id:
-                raise JudgeIntegrityError(
-                    f"fidelity claim chunk_id [{local_id}] 越界,"
-                    f"合法范围 1..{max_local_id}"
-                )
+        if claim.label != "fabricated":
+            _map_claim_chunk_ids(
+                claim.chunk_ids,
+                source_chunk_ids=source_chunk_ids,
+                lookup_ref_map=lookup_ref_map,
+            )
+
+
+def _map_claim_chunk_ids(
+    raw_ids: list[int],
+    *,
+    source_chunk_ids: list[int],
+    lookup_ref_map: dict[int, int],
+) -> list[int]:
+    max_local_id = len(source_chunk_ids)
+    lookup_chunk_ids = set(lookup_ref_map.values())
+    mapped: list[int] = []
+    for raw_id in raw_ids:
+        chunk_id = int(raw_id)
+        if 1 <= chunk_id <= max_local_id:
+            mapped.append(source_chunk_ids[chunk_id - 1])
+            continue
+        if chunk_id in lookup_ref_map:
+            mapped.append(lookup_ref_map[chunk_id])
+            continue
+        if chunk_id > max_local_id and (
+            chunk_id in source_chunk_ids or chunk_id in lookup_chunk_ids
+        ):
+            mapped.append(chunk_id)
+            continue
+        raise JudgeIntegrityError(
+            f"fidelity claim chunk_id [{chunk_id}] 越界,"
+            f"合法范围 1..{max_local_id} 或 lookup ref_id"
+        )
+    return mapped
 
 
 def _validate_depth(output: AnswerJudgeOutput) -> None:

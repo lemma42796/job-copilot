@@ -122,6 +122,9 @@ class LLMResult:
     """True iff this result came from `CacheStore` (no upstream call). On
     cache hit `cost_cny`/`tokens_*` are zeroed — analytics that want
     "would-have-cost" should reconstruct from `llm_response_cache.response`."""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    """Agent-specific runtime metadata that should not be persisted in
+    `llm_calls`, e.g. tool ref-id maps used by a service post-processor."""
 
 
 @dataclass
