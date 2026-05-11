@@ -7,8 +7,10 @@ import {
   Play,
   RotateCcw,
   Send,
+  Sparkles,
   X,
 } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -45,7 +47,265 @@ type QuestionResult = {
   evidence: QuizEvidence;
 };
 
+type SampleQuiz = {
+  query: string;
+  questionCount: number;
+  typeMix: QuizTypeMix;
+  questions: QuizQuestionReady[];
+  answers: Record<number, string>;
+  results: Record<number, QuestionResult>;
+  finalResult: {
+    scores: QuizScores;
+    recallMdPath?: string | null;
+  };
+};
+
+type CoveragePoint = {
+  id?: string;
+  label?: string;
+  user_excerpt?: string | null;
+};
+
+type CoverageEvidenceView = {
+  points?: CoveragePoint[];
+  score_raw?: number;
+  reasoning?: string;
+};
+
+type FidelityClaim = {
+  text?: string;
+  label?: string;
+  chunk_ids?: number[];
+};
+
+type FidelityEvidenceView = {
+  claims?: FidelityClaim[];
+  score_raw?: number;
+  reasoning?: string;
+};
+
+type DepthDimension = {
+  covered?: boolean;
+  excerpt?: string | null;
+};
+
+type DepthEvidenceView = {
+  dimensions?: Record<string, DepthDimension>;
+  score_raw?: number;
+  reasoning?: string;
+};
+
 const QUESTION_COUNTS = [3, 5, 7, 10] as const;
+
+const SAMPLE_QUIZ: SampleQuiz = {
+  query: 'Langfuse Prompt 版本管理',
+  questionCount: 3,
+  typeMix: { open_ended: 2, definition: 1 },
+  questions: [
+    {
+      order_index: 0,
+      question: {
+        id: 9001,
+        type: 'open_ended',
+        prompt:
+          '在 JobCopilot 项目中，针对 Prompt 版本管理采取了哪两种主要路径？请对比它们的优缺点，并说明项目最终采用了什么策略来平衡两者？',
+        source_chunk_ids: [6, 10],
+      },
+    },
+    {
+      order_index: 1,
+      question: {
+        id: 9002,
+        type: 'open_ended',
+        prompt:
+          '在使用 Langfuse 进行 Prompt 版本管理时，如果直接在 UI 修改 Prompt 并更新 production 标签，会带来什么风险？笔记中提到了哪些解法或最佳实践来规避这些风险？',
+        source_chunk_ids: [6, 11],
+      },
+    },
+    {
+      order_index: 2,
+      question: {
+        id: 9003,
+        type: 'definition',
+        prompt:
+          '根据笔记内容，Langfuse 视角下 Prompt 被定义为什么类型的数据？这与传统观点有何不同？',
+        source_chunk_ids: [6],
+      },
+    },
+  ],
+  answers: {
+    0: 'JobCopilot 针对 Prompt 版本管理主要考虑了两条路径：Git 管理 Prompt 和 Langfuse Prompts 管理 Prompt。Git 的优点是可 review、可审计、能和代码一起发布，契约稳定；缺点是每次调 prompt 都要走代码提交和部署，迭代慢。Langfuse 的优点是可以在线版本化、快速切换、回滚，并且能和 trace、token、cost 关联；缺点是如果缺少流程约束，容易出现线上 prompt 和 git 代码不一致的配置漂移。最终策略是 Git 管基线和代码契约，Langfuse 管线上版本和实验；生产环境固定具体版本，不随意漂移。',
+    1: '直接在 Langfuse UI 修改 Prompt 并更新 production 标签的风险是：线上行为会立刻变化，但 git 代码没有同步，导致代码和 prompt 不一致；如果没人 review，也可能把未验证的 prompt 推到生产，排查和回滚都会变复杂。规避方式包括生产不要只依赖浮动 production 标签，尽量固定具体 prompt version；发布前做 review；Git 中保留基线 prompt 或同步记录；Langfuse 用于实验、版本切换和回滚，但生产版本要有明确发布流程。',
+    2: '在 Langfuse 视角下，Prompt 更像是可版本化的配置数据，可以通过名称和版本读取、发布、回滚，并和运行 trace、成本、效果关联。这和传统观点不同：传统方式通常把 Prompt 当成代码里的静态字符串，跟随代码提交和部署；Langfuse 则把 Prompt 抽出来，作为运行时可管理、可观测、可实验的配置资产。',
+  },
+  results: {
+    0: {
+      scores: { coverage: 65, fidelity: 92, depth: 67, total: 76 },
+      evidence: {
+        coverage_evidence: {
+          score_raw: 0.65,
+          points: [
+            {
+              id: 'p1',
+              label: 'hit',
+              user_excerpt: 'Git 的优点是可 review、可审计、能和代码一起发布',
+            },
+            {
+              id: 'p2',
+              label: 'partial',
+              user_excerpt: '缺点是如果缺少流程约束，容易出现配置漂移',
+            },
+            {
+              id: 'p3',
+              label: 'partial',
+              user_excerpt: 'Git 管基线和代码契约，Langfuse 管线上版本和实验',
+            },
+          ],
+          reasoning:
+            '覆盖了 Git 路径的优缺点和混合策略，但 Langfuse 风险未提到服务不可达与 fallback。',
+        },
+        fidelity_evidence: {
+          score_raw: 0.92,
+          claims: [
+            {
+              text: 'Git 管理 Prompt 可 review、可审计、能和代码一起发布。',
+              label: 'supported',
+              chunk_ids: [6],
+            },
+            {
+              text: 'Langfuse 可以在线版本化、快速切换和回滚。',
+              label: 'supported',
+              chunk_ids: [10],
+            },
+            {
+              text: '配置漂移是 Langfuse 风险之一。',
+              label: 'inferred',
+              chunk_ids: [10],
+            },
+          ],
+          reasoning: '主要声明均有笔记依据或可由笔记合理推断。',
+        },
+        depth_evidence: {
+          score_raw: 0.67,
+          dimensions: {
+            tradeoff: { covered: true, excerpt: '对比了 Git 与 Langfuse 的迭代速度和审计能力。' },
+            why: { covered: true, excerpt: '解释了为什么采用 Git 管基线、Langfuse 管实验。' },
+            boundary: { covered: false, excerpt: null },
+          },
+          reasoning: '取舍和动机清楚，但缺少 fallback 等边界条件。',
+        },
+      },
+    },
+    1: {
+      scores: { coverage: 30, fidelity: 93, depth: 67, total: 59 },
+      evidence: {
+        coverage_evidence: {
+          score_raw: 0.3,
+          points: [
+            {
+              id: 'p1',
+              label: 'hit',
+              user_excerpt: '线上行为会立刻变化，但 git 代码没有同步',
+            },
+            {
+              id: 'p2',
+              label: 'partial',
+              user_excerpt: '发布前做 review；生产版本要有明确发布流程',
+            },
+            { id: 'p3', label: 'miss', user_excerpt: null },
+          ],
+          reasoning:
+            '命中了直接改 production 的风险和部分流程解法，但漏掉自动备份与 trace 关联 version 审计。',
+        },
+        fidelity_evidence: {
+          score_raw: 0.93,
+          claims: [
+            {
+              text: '直接更新 production 标签会导致线上行为立即变化。',
+              label: 'supported',
+              chunk_ids: [11],
+            },
+            {
+              text: '固定具体 prompt version 可以降低漂移风险。',
+              label: 'supported',
+              chunk_ids: [6],
+            },
+            {
+              text: 'Git 保留基线有助于审计。',
+              label: 'inferred',
+              chunk_ids: [6],
+            },
+          ],
+          reasoning: '答案中的风险和解法基本都能被笔记支撑或合理推断。',
+        },
+        depth_evidence: {
+          score_raw: 0.67,
+          dimensions: {
+            tradeoff: { covered: true, excerpt: '区分实验便利性和生产稳定性。' },
+            why: { covered: true, excerpt: '解释了不一致、不可回滚和排查复杂度。' },
+            boundary: { covered: false, excerpt: null },
+          },
+          reasoning: '说明了生产流程的必要性，但没有展开核心 prompt / 实验 prompt 的边界。',
+        },
+      },
+    },
+    2: {
+      scores: { coverage: 85, fidelity: 100, depth: 33, total: 86 },
+      evidence: {
+        coverage_evidence: {
+          score_raw: 0.85,
+          points: [
+            {
+              id: 'p1',
+              label: 'hit',
+              user_excerpt: 'Prompt 更像是可版本化的配置数据',
+            },
+            {
+              id: 'p2',
+              label: 'hit',
+              user_excerpt: '传统方式通常把 Prompt 当成代码里的静态字符串',
+            },
+            {
+              id: 'p3',
+              label: 'partial',
+              user_excerpt: '通过名称和版本读取、发布、回滚',
+            },
+          ],
+          reasoning: '核心定义和传统观点区别都准确，但未明确提到 UI 编辑和无需 redeploy。',
+        },
+        fidelity_evidence: {
+          score_raw: 1,
+          claims: [
+            {
+              text: 'Langfuse 将 Prompt 视为可版本化配置数据。',
+              label: 'supported',
+              chunk_ids: [6],
+            },
+            {
+              text: '传统方式把 Prompt 放在代码静态字符串中。',
+              label: 'supported',
+              chunk_ids: [6],
+            },
+          ],
+          reasoning: '所有声明均能在笔记中找到直接支持。',
+        },
+        depth_evidence: {
+          score_raw: 0.33,
+          dimensions: {
+            tradeoff: { covered: true, excerpt: '对比了运行时配置和代码部署。' },
+            why: { covered: false, excerpt: null },
+            boundary: { covered: false, excerpt: null },
+          },
+          reasoning: '回答了是什么，但没有深入说明为什么这样设计以及适用边界。',
+        },
+      },
+    },
+  },
+  finalResult: {
+    scores: { coverage: 60, fidelity: 95, depth: 56, total: 74 },
+    recallMdPath: 'notes/_recall/sample.md',
+  },
+};
 
 const PHASE_LABELS: Record<string, string> = {
   query_rewriting: '理解主题',
@@ -96,11 +356,122 @@ function roundedScore(score: number | undefined): string {
   return String(Math.round(score));
 }
 
-function evidenceReasoning(evidence: QuizEvidence, key: keyof QuizEvidence): string | null {
-  const value = evidence[key];
-  if (!value || typeof value !== 'object') return null;
-  const reasoning = (value as { reasoning?: unknown }).reasoning;
-  return typeof reasoning === 'string' && reasoning.trim() ? reasoning : null;
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function textOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function numberArray(value: unknown): number[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out = value.filter((item): item is number => typeof item === 'number');
+  return out.length ? out : undefined;
+}
+
+function coverageEvidence(evidence: QuizEvidence): CoverageEvidenceView {
+  const raw = asRecord(evidence.coverage_evidence);
+  if (!raw) return {};
+  const points = Array.isArray(raw.points)
+    ? raw.points
+        .map((point) => {
+          const record = asRecord(point);
+          if (!record) return null;
+          return {
+            id: textOrNull(record.id) ?? undefined,
+            label: textOrNull(record.label) ?? undefined,
+            user_excerpt: textOrNull(record.user_excerpt),
+          };
+        })
+        .filter((point): point is CoveragePoint => point !== null)
+    : undefined;
+  return {
+    points,
+    score_raw: typeof raw.score_raw === 'number' ? raw.score_raw : undefined,
+    reasoning: textOrNull(raw.reasoning) ?? undefined,
+  };
+}
+
+function fidelityEvidence(evidence: QuizEvidence): FidelityEvidenceView {
+  const raw = asRecord(evidence.fidelity_evidence);
+  if (!raw) return {};
+  const claims = Array.isArray(raw.claims)
+    ? raw.claims
+        .map((claim) => {
+          const record = asRecord(claim);
+          if (!record) return null;
+          return {
+            text: textOrNull(record.text) ?? undefined,
+            label: textOrNull(record.label) ?? undefined,
+            chunk_ids: numberArray(record.chunk_ids),
+          };
+        })
+        .filter((claim): claim is FidelityClaim => claim !== null)
+    : undefined;
+  return {
+    claims,
+    score_raw: typeof raw.score_raw === 'number' ? raw.score_raw : undefined,
+    reasoning: textOrNull(raw.reasoning) ?? undefined,
+  };
+}
+
+function depthEvidence(evidence: QuizEvidence): DepthEvidenceView {
+  const raw = asRecord(evidence.depth_evidence);
+  const rawDimensions = asRecord(raw?.dimensions);
+  if (!raw) return {};
+  const dimensions: Record<string, DepthDimension> = {};
+  if (rawDimensions) {
+    for (const [key, value] of Object.entries(rawDimensions)) {
+      const record = asRecord(value);
+      if (!record) continue;
+      dimensions[key] = {
+        covered: typeof record.covered === 'boolean' ? record.covered : undefined,
+        excerpt: textOrNull(record.excerpt),
+      };
+    }
+  }
+  return {
+    dimensions,
+    score_raw: typeof raw.score_raw === 'number' ? raw.score_raw : undefined,
+    reasoning: textOrNull(raw.reasoning) ?? undefined,
+  };
+}
+
+function coverageLabel(label?: string): string {
+  if (label === 'hit') return '命中';
+  if (label === 'partial') return '部分';
+  if (label === 'miss') return '漏掉';
+  return label ?? '未知';
+}
+
+function fidelityLabel(label?: string): string {
+  if (label === 'supported') return '有依据';
+  if (label === 'inferred') return '推断';
+  if (label === 'fabricated') return '编造';
+  return label ?? '未知';
+}
+
+function depthLabel(key: string): string {
+  if (key === 'tradeoff') return '取舍';
+  if (key === 'why') return '原因';
+  if (key === 'boundary') return '边界';
+  return key;
+}
+
+function badgeTone(label?: string): string {
+  if (label === 'hit' || label === 'supported') {
+    return 'bg-[var(--color-success-bg)] text-[var(--color-success-fg)]';
+  }
+  if (label === 'partial' || label === 'inferred') {
+    return 'bg-[var(--color-warning-bg)] text-[var(--color-warning-fg)]';
+  }
+  if (label === 'miss' || label === 'fabricated') {
+    return 'bg-red-50 text-[var(--color-danger)]';
+  }
+  return 'bg-[var(--color-system-gray-6)] text-muted';
 }
 
 export default function QuizPage() {
@@ -146,6 +517,25 @@ export default function QuizPage() {
     setRunError(null);
     setSaveState({ kind: 'idle' });
     savedAnswersRef.current = {};
+  }, []);
+
+  const loadSample = useCallback(() => {
+    setQuery(SAMPLE_QUIZ.query);
+    setQuestionCount(SAMPLE_QUIZ.questionCount);
+    setStage('submitted');
+    setSessionId(null);
+    setQuestions(SAMPLE_QUIZ.questions);
+    setAnswers(SAMPLE_QUIZ.answers);
+    setProgressItems([
+      { id: 'sample-session', label: '样例 Session', detail: SAMPLE_QUIZ.query },
+      { id: 'sample-result', label: '评分完成', detail: '本地样例' },
+    ]);
+    setTypeMix(SAMPLE_QUIZ.typeMix);
+    setQuestionResults(SAMPLE_QUIZ.results);
+    setFinalResult(SAMPLE_QUIZ.finalResult);
+    setRunError(null);
+    setSaveState({ kind: 'idle' });
+    savedAnswersRef.current = SAMPLE_QUIZ.answers;
   }, []);
 
   const saveAllAnswers = useCallback(async () => {
@@ -407,6 +797,15 @@ export default function QuizPage() {
               <RotateCcw className="size-4" />
             </Button>
           </div>
+          <Button
+            className="w-full rounded-lg"
+            variant="outline"
+            onClick={loadSample}
+            disabled={stage === 'generating' || stage === 'submitting'}
+          >
+            <Sparkles className="size-4" />
+            样例
+          </Button>
 
           <div className="border-t border-border pt-4">
             <div className="mb-2 flex items-center justify-between">
@@ -475,14 +874,21 @@ export default function QuizPage() {
                 放弃
               </Button>
             ) : null}
-            <Button className="rounded-lg" onClick={handleSubmit} disabled={!canSubmit}>
-              {stage === 'submitting' ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Send className="size-4" />
-              )}
-              提交评分
-            </Button>
+            {stage === 'submitted' ? (
+              <Button className="rounded-lg" variant="outline" onClick={resetSession}>
+                <RotateCcw className="size-4" />
+                再来一轮
+              </Button>
+            ) : (
+              <Button className="rounded-lg" onClick={handleSubmit} disabled={!canSubmit}>
+                {stage === 'submitting' ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Send className="size-4" />
+                )}
+                {stage === 'submitting' ? '评分中' : '提交评分'}
+              </Button>
+            )}
           </div>
         </header>
 
@@ -599,8 +1005,8 @@ function QuestionPanel({
         <h2 className="text-base font-semibold leading-relaxed tracking-tight">
           {item.question.prompt}
         </h2>
-        <div className="mt-2 truncate text-xs text-muted">
-          chunks {item.question.source_chunk_ids.join(', ')}
+        <div className="mt-2 truncate text-xs text-muted" title={`chunks ${item.question.source_chunk_ids.join(', ')}`}>
+          来源 {item.question.source_chunk_ids.length} 段
         </div>
       </div>
       <div className="px-5 py-4">
@@ -618,27 +1024,133 @@ function QuestionPanel({
 }
 
 function QuestionScore({ result }: { result: QuestionResult }) {
-  const coverage = evidenceReasoning(result.evidence, 'coverage_evidence');
-  const fidelity = evidenceReasoning(result.evidence, 'fidelity_evidence');
-  const depth = evidenceReasoning(result.evidence, 'depth_evidence');
+  const coverage = coverageEvidence(result.evidence);
+  const fidelity = fidelityEvidence(result.evidence);
+  const depth = depthEvidence(result.evidence);
 
   return (
-    <div className="mt-4 space-y-3">
+    <div className="mt-4 space-y-4">
       <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
         <ScorePill label="Coverage" value={result.scores.coverage} />
         <ScorePill label="Fidelity" value={result.scores.fidelity} />
         <ScorePill label="Depth" value={result.scores.depth} />
         <ScorePill label="Total" value={result.scores.total} strong />
       </div>
-      {[coverage, fidelity, depth].filter(Boolean).map((text, index) => (
-        <p
-          key={`${index}-${text}`}
-          className="rounded-lg bg-[var(--color-system-gray-6)] px-3 py-2 text-xs leading-5 text-muted"
-        >
-          {text}
-        </p>
-      ))}
+      <div className="grid gap-3 lg:grid-cols-3">
+        <CoveragePanel evidence={coverage} />
+        <FidelityPanel evidence={fidelity} />
+        <DepthPanel evidence={depth} />
+      </div>
     </div>
+  );
+}
+
+function EvidencePanel({
+  title,
+  score,
+  children,
+  reasoning,
+}: {
+  title: string;
+  score?: number;
+  children: ReactNode;
+  reasoning?: string;
+}) {
+  return (
+    <section className="rounded-lg border border-border bg-[var(--color-system-gray-6)] p-3">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-xs font-semibold text-foreground">{title}</h3>
+        {typeof score === 'number' ? (
+          <span className="text-xs font-medium text-muted">{Math.round(score * 100)}%</span>
+        ) : null}
+      </div>
+      <div className="mt-3 space-y-2">{children}</div>
+      {reasoning ? (
+        <p className="mt-3 border-t border-border pt-2 text-xs leading-5 text-muted">{reasoning}</p>
+      ) : null}
+    </section>
+  );
+}
+
+function CoveragePanel({ evidence }: { evidence: CoverageEvidenceView }) {
+  const points = evidence.points ?? [];
+  return (
+    <EvidencePanel title="Coverage" score={evidence.score_raw} reasoning={evidence.reasoning}>
+      {points.length ? (
+        points.map((point, index) => (
+          <div key={`${point.id ?? index}-${point.label}`} className="rounded-md bg-surface px-3 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-xs font-medium text-foreground">{point.id ?? `p${index + 1}`}</span>
+              <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium', badgeTone(point.label))}>
+                {coverageLabel(point.label)}
+              </span>
+            </div>
+            {point.user_excerpt ? (
+              <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted">{point.user_excerpt}</p>
+            ) : null}
+          </div>
+        ))
+      ) : (
+        <p className="text-xs text-muted">暂无命中点明细</p>
+      )}
+    </EvidencePanel>
+  );
+}
+
+function FidelityPanel({ evidence }: { evidence: FidelityEvidenceView }) {
+  const claims = evidence.claims ?? [];
+  return (
+    <EvidencePanel title="Fidelity" score={evidence.score_raw} reasoning={evidence.reasoning}>
+      {claims.length ? (
+        claims.map((claim, index) => (
+          <div key={`${index}-${claim.text ?? claim.label}`} className="rounded-md bg-surface px-3 py-2">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium', badgeTone(claim.label))}>
+                {fidelityLabel(claim.label)}
+              </span>
+              {claim.chunk_ids?.length ? (
+                <span className="truncate text-[11px] text-muted">chunks {claim.chunk_ids.join(', ')}</span>
+              ) : null}
+            </div>
+            <p className="line-clamp-3 text-xs leading-5 text-foreground">{claim.text ?? '未返回 claim 文本'}</p>
+          </div>
+        ))
+      ) : (
+        <p className="text-xs text-muted">暂无声明明细</p>
+      )}
+    </EvidencePanel>
+  );
+}
+
+function DepthPanel({ evidence }: { evidence: DepthEvidenceView }) {
+  const dimensions = Object.entries(evidence.dimensions ?? {});
+  return (
+    <EvidencePanel title="Depth" score={evidence.score_raw} reasoning={evidence.reasoning}>
+      {dimensions.length ? (
+        dimensions.map(([key, value]) => (
+          <div key={key} className="rounded-md bg-surface px-3 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-xs font-medium text-foreground">{depthLabel(key)}</span>
+              <span
+                className={cn(
+                  'rounded-full px-2 py-0.5 text-[11px] font-medium',
+                  value.covered
+                    ? 'bg-[var(--color-success-bg)] text-[var(--color-success-fg)]'
+                    : 'bg-[var(--color-system-gray-6)] text-muted',
+                )}
+              >
+                {value.covered ? '讲到' : '缺失'}
+              </span>
+            </div>
+            {value.excerpt ? (
+              <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted">{value.excerpt}</p>
+            ) : null}
+          </div>
+        ))
+      ) : (
+        <p className="text-xs text-muted">暂无深度维度明细</p>
+      )}
+    </EvidencePanel>
   );
 }
 
