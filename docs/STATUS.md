@@ -19,13 +19,12 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 # 当前快照
 
-当前阶段:**M2 — 聊天框主题 query → 全库 RAG → 出题 + Judge 三层评分**。
+当前阶段:**M2.1 — `InterviewCoachAgent` Agentic RAG 面试状态机 + 追问分支**。
 
 最新状态:
 
-- 本轮完成 **M2 quiz/session 前端入口**:`/quiz` 可出题、答题、保存草稿、提交 Judge、展示三层评分 evidence。
-- 本轮完成 session 恢复与历史回看:`GET /api/quiz/sessions/{id}`、`GET /api/quiz/sessions`、`/quiz?session=4` 可恢复真实已评分 session。
-- 本轮完成前端 dogfood polish:本地样例模式、最近练习列表、Coverage/Fidelity/Depth 结构化展示、出题/评分进度摘要。
+- **M2 已由用户确认完成**:聊天框主题 query → 全库 RAG → 出题 → 答题 → Judge 三层评分 → session 恢复已跑通。
+- 本次收口前 `git status --short` 为空;本次只改 `docs/STATUS.md`,等待用户决定是否 commit / push / tag。
 - Context Cache 已验证 provider-side 命中,但因 5 分钟 TTL 不适合当前一次性答题流,已默认关闭显式 `cache_control`;后续多轮讨论面试题时再打开。
 - 最新功能提交主题:`feat: summarize quiz progress UI`;push 后 working tree 应清空。
 - M2 retrieval quiz pipeline 代码已提交:`103d882 feat: add m2 retrieval quiz pipeline`。
@@ -41,8 +40,8 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 |--------|------|------|
 | M0 | 仓库改造 + 文档重写 + v2 schema + 模块骨架 | ✅ `v0.2-m0-end` |
 | M1 | 笔记入库 + chunker + 树形导航 + Langfuse 起步 | ✅ `v0.3-m1-end` |
-| M2 | 主题 query → 全库 RAG → 出题 + Judge 三层评分 | ⏳ 当前 |
-| M2.1 | `InterviewCoachAgent`:Agentic RAG 面试状态机 + 追问分支 | ⏳ M2 后 |
+| M2 | 主题 query → 全库 RAG → 出题 + Judge 三层评分 | ✅ 待 tag `v0.4-m2-end` |
+| M2.1 | `InterviewCoachAgent`:Agentic RAG 面试状态机 + 追问分支 | ⏳ 当前 |
 | M2.5 | JD 累积上传 + 一键分析 + 学习路径 | ⏳ |
 | M3 | 弱点跟踪 + SR + 岗位类三源出题 + 简历诊断 | ⏳ |
 
@@ -59,14 +58,15 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **M2 收口检查**:用户手动再走 `/quiz` 样例、最近练习、真实出题/评分;若 OK,可按"MX 完成了"流程收 M2。
+1. **M2.1 状态机骨架**:新增 `InterviewCoachAgent` session root orchestrator,先串 `retrieve_context → generate_question → wait_user_answer → judge_answer`。
 
 备选:
 
-- 补 Langfuse trace 颗粒度:query rewrite / hybrid / rerank / parent-doc / quiz generation。
-- 把评分结果页进一步接 recall markdown / 下载。
-- 开始 M2.1 `InterviewCoachAgent` 状态机。
-- 用户手动跑后,根据失败日志修 M2 pipeline。
+- 接 `decide_next_action`:按 coverage / fabricated / depth evidence 决定追问或下一题。
+- 接 `generate_followup`:单题最多 1 轮追问,不做无限循环。
+- 做中途退出恢复:从 `wait_user_answer` 状态恢复真实 session。
+- 补 Langfuse trace 颗粒度:`retrieve → generate → judge → decide → followup → summarize`。
+- 预留 `update_knowledge_gap(...)` 接口,真实 SR 队列放 M3。
 
 # 已锁定关键决策
 
