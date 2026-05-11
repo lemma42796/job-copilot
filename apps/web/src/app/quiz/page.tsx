@@ -19,12 +19,15 @@ import {
   ApiError,
   abandonQuizSession,
   createQuizSession,
+  getQuizSession,
   saveQuizAnswer,
   submitQuizSession,
   type QuizEvidence,
+  type QuizNullableScores,
   type QuizProgress,
   type QuizQuestionReady,
   type QuizScores,
+  type QuizSessionDetail,
   type QuizTypeMix,
 } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -474,6 +477,39 @@ function badgeTone(label?: string): string {
   return 'bg-[var(--color-system-gray-6)] text-muted';
 }
 
+function toScores(scores: QuizNullableScores | null | undefined): QuizScores | null {
+  if (
+    !scores ||
+    scores.coverage === null ||
+    scores.fidelity === null ||
+    scores.depth === null ||
+    scores.total === null
+  ) {
+    return null;
+  }
+  return {
+    coverage: scores.coverage,
+    fidelity: scores.fidelity,
+    depth: scores.depth,
+    total: scores.total,
+  };
+}
+
+function typeMixFromQuestions(questions: QuizQuestionReady[]): QuizTypeMix {
+  return {
+    open_ended: questions.filter((item) => item.question.type === 'open_ended').length,
+    definition: questions.filter((item) => item.question.type === 'definition').length,
+  };
+}
+
+function updateSessionUrl(sessionId: number | null): void {
+  if (typeof window === 'undefined') return;
+  const url = new URL(window.location.href);
+  if (sessionId === null) url.searchParams.delete('session');
+  else url.searchParams.set('session', String(sessionId));
+  window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+}
+
 export default function QuizPage() {
   const [query, setQuery] = useState('');
   const [questionCount, setQuestionCount] = useState<number>(5);
@@ -517,6 +553,59 @@ export default function QuizPage() {
     setRunError(null);
     setSaveState({ kind: 'idle' });
     savedAnswersRef.current = {};
+    updateSessionUrl(null);
+  }, []);
+
+  const hydrateSession = useCallback((detail: QuizSessionDetail) => {
+    const restoredQuestions: QuizQuestionReady[] = detail.questions
+      .map((item) => ({
+        order_index: item.order_index,
+        question: item.question,
+      }))
+      .sort((a, b) => a.order_index - b.order_index);
+    const restoredAnswers: Record<number, string> = {};
+    const restoredResults: Record<number, QuestionResult> = {};
+    for (const item of detail.questions) {
+      restoredAnswers[item.order_index] = item.user_answer ?? '';
+      const scores = toScores(item.scores);
+      if (scores && item.evidence) {
+        restoredResults[item.order_index] = {
+          scores,
+          evidence: item.evidence,
+        };
+      }
+    }
+    const finalScores = toScores(detail.scores);
+
+    setQuery(detail.query);
+    setQuestionCount(restoredQuestions.length || 5);
+    setStage(
+      detail.status === 'submitted'
+        ? 'submitted'
+        : detail.status === 'in_progress'
+          ? 'answering'
+          : 'idle',
+    );
+    setSessionId(detail.id);
+    setQuestions(restoredQuestions);
+    setAnswers(restoredAnswers);
+    setProgressItems([
+      { id: `restored-${detail.id}`, label: `恢复 Session #${detail.id}`, detail: detail.query },
+    ]);
+    setTypeMix(restoredQuestions.length ? typeMixFromQuestions(restoredQuestions) : null);
+    setQuestionResults(restoredResults);
+    setFinalResult(
+      finalScores
+        ? {
+            scores: finalScores,
+            recallMdPath: detail.recall_md_path,
+          }
+        : null,
+    );
+    setRunError(detail.status === 'abandoned' ? '这个 session 已放弃，不能继续答题' : null);
+    setSaveState({ kind: 'idle' });
+    savedAnswersRef.current = restoredAnswers;
+    updateSessionUrl(detail.id);
   }, []);
 
   const loadSample = useCallback(() => {
@@ -536,7 +625,27 @@ export default function QuizPage() {
     setRunError(null);
     setSaveState({ kind: 'idle' });
     savedAnswersRef.current = SAMPLE_QUIZ.answers;
+    updateSessionUrl(null);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const raw = new URLSearchParams(window.location.search).get('session');
+    if (!raw) return;
+    const id = Number(raw);
+    if (!Number.isInteger(id) || id <= 0) return;
+
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const detail = await getQuizSession(id, controller.signal);
+        hydrateSession(detail);
+      } catch (err) {
+        if (!controller.signal.aborted) setRunError(problemMessage(err));
+      }
+    })();
+    return () => controller.abort();
+  }, [hydrateSession]);
 
   const saveAllAnswers = useCallback(async () => {
     if (sessionId === null) return;
@@ -608,6 +717,7 @@ export default function QuizPage() {
       })) {
         if (frame.event === 'started') {
           setSessionId(frame.data.resource_id);
+          updateSessionUrl(frame.data.resource_id);
           setProgressItems((items) =>
             appendProgress(items, {
               id: `session-${frame.data.resource_id}`,

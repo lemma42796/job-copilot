@@ -70,3 +70,36 @@ class SessionAnswerOut(BaseModel):
     fidelity_score: float | None
     depth_score: float | None
     total_score: float | None
+
+
+class QuizScoresOut(BaseModel):
+    coverage: float | None = None
+    fidelity: float | None = None
+    depth: float | None = None
+    total: float | None = None
+
+
+class QuizQuestionDetailOut(BaseModel):
+    order_index: int
+    question: QuestionPublic
+    user_answer: str | None = None
+    answer_submitted_at: datetime | None = None
+    judged: bool = False
+    scores: QuizScoresOut | None = None
+    evidence: dict | None = None
+    reference_answer: str | None = None
+    reference_points: list[dict] | None = None
+
+
+class QuizSessionDetailOut(BaseModel):
+    id: int
+    query: str
+    mode: QuizMode
+    jd_ids: list[int] | None = None
+    status: Literal["in_progress", "submitted", "abandoned"]
+    started_at: datetime
+    submitted_at: datetime | None = None
+    abandoned_at: datetime | None = None
+    scores: QuizScoresOut | None = None
+    recall_md_path: str | None = None
+    questions: list[QuizQuestionDetailOut]

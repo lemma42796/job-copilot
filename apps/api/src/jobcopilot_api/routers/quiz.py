@@ -2,7 +2,7 @@
 
 router 自身 prefix `/quiz`;main.py include 时挂 `/api` 前缀,实际端点路径
 = `/api/quiz/*`。当前实现 M2 出题、答题草稿、提交评分、放弃会话端点。
-GET /api/quiz/sessions/{id} 详情查询另切片补。
+GET /api/quiz/sessions/{id} 用于刷新恢复 / 历史回看。
 """
 
 from __future__ import annotations
@@ -16,7 +16,11 @@ from jobcopilot_api.errors import (
     QueryTooLongError,
 )
 from jobcopilot_api.infra.db import get_sessionmaker
-from jobcopilot_api.schemas.quiz import AnswerDraftIn, QuizSessionCreateIn
+from jobcopilot_api.schemas.quiz import (
+    AnswerDraftIn,
+    QuizSessionCreateIn,
+    QuizSessionDetailOut,
+)
 from jobcopilot_api.services import answer_service, quiz_service
 
 router = APIRouter(tags=["quiz"], prefix="/quiz")
@@ -51,6 +55,16 @@ async def create_session(payload: QuizSessionCreateIn) -> EventSourceResponse:
     return EventSourceResponse(
         quiz_service.start_session_sse(sessionmaker, payload)
     )
+
+
+@router.get(
+    "/sessions/{session_id}",
+    summary="查询答题会话详情",
+)
+async def get_session(session_id: int) -> QuizSessionDetailOut:
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        return await answer_service.get_session_detail(session, session_id)
 
 
 @router.put(

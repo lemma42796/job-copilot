@@ -45,7 +45,13 @@ from jobcopilot_api.schemas.agents.quiz_generator import (
     QuizGenChunkInput,
     ReferencePoint,
 )
-from jobcopilot_api.schemas.quiz import AnswerDraftIn
+from jobcopilot_api.schemas.quiz import (
+    AnswerDraftIn,
+    QuizQuestionDetailOut,
+    QuizScoresOut,
+    QuizSessionDetailOut,
+    QuestionPublic,
+)
 from jobcopilot_api.services.retrieval_pipeline import fetch_note_titles
 
 REQUIRED_DEPTH_DIMENSIONS = {"tradeoff", "why", "boundary"}
@@ -83,6 +89,105 @@ class _JudgeTask:
     question: GeneratedQuestion
     chunks: list[QuizGenChunkInput]
     prompt_chunk_ids: list[int]
+
+
+async def get_session_detail(
+    session: AsyncSession,
+    session_id: int,
+) -> QuizSessionDetailOut:
+    quiz_session = await session.get(QuizSession, session_id)
+    if quiz_session is None:
+        raise NotFoundError(f"quiz_session {session_id} 不存在")
+
+    answers = list(
+        (
+            await session.execute(
+                sa.select(SessionAnswer)
+                .where(SessionAnswer.session_id == session_id)
+                .order_by(SessionAnswer.order_index)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    question_ids = [answer.question_id for answer in answers]
+    questions = list(
+        (
+            await session.execute(
+                sa.select(Question).where(Question.id.in_(question_ids))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    question_by_id = {question.id: question for question in questions}
+    if len(question_by_id) != len(set(question_ids)):
+        raise JudgeIntegrityError("session_answers 引用了不存在的 question")
+
+    include_scoring = quiz_session.status == "submitted"
+    question_items: list[QuizQuestionDetailOut] = []
+    for answer in answers:
+        question = question_by_id[answer.question_id]
+        scores = None
+        evidence = None
+        reference_answer = None
+        reference_points = None
+        if include_scoring:
+            scores = QuizScoresOut(
+                coverage=_decimal_to_float(answer.coverage_score),
+                fidelity=_decimal_to_float(answer.fidelity_score),
+                depth=_decimal_to_float(answer.depth_score),
+                total=_decimal_to_float(answer.total_score),
+            )
+            evidence = {
+                "coverage_evidence": answer.coverage_evidence,
+                "fidelity_evidence": answer.fidelity_evidence,
+                "depth_evidence": answer.depth_evidence,
+            }
+            reference_answer = question.reference_answer
+            reference_points = question.reference_points
+
+        question_items.append(
+            QuizQuestionDetailOut(
+                order_index=answer.order_index,
+                question=QuestionPublic(
+                    id=question.id,
+                    type=question.type,
+                    prompt=question.prompt,
+                    source_chunk_ids=list(question.source_chunk_ids),
+                ),
+                user_answer=answer.user_answer,
+                answer_submitted_at=answer.answer_submitted_at,
+                judged=answer.judged_at is not None,
+                scores=scores,
+                evidence=evidence,
+                reference_answer=reference_answer,
+                reference_points=reference_points,
+            )
+        )
+
+    session_scores = None
+    if include_scoring:
+        session_scores = QuizScoresOut(
+            coverage=_decimal_to_float(quiz_session.coverage_score),
+            fidelity=_decimal_to_float(quiz_session.fidelity_score),
+            depth=_decimal_to_float(quiz_session.depth_score),
+            total=_decimal_to_float(quiz_session.total_score),
+        )
+
+    return QuizSessionDetailOut(
+        id=quiz_session.id,
+        query=quiz_session.query,
+        mode=quiz_session.mode,
+        jd_ids=list(quiz_session.jd_ids) if quiz_session.jd_ids is not None else None,
+        status=quiz_session.status,
+        started_at=quiz_session.started_at,
+        submitted_at=quiz_session.submitted_at,
+        abandoned_at=quiz_session.abandoned_at,
+        scores=session_scores,
+        recall_md_path=quiz_session.recall_md_path,
+        questions=question_items,
+    )
 
 
 async def save_draft(
@@ -725,6 +830,10 @@ def _avg_score(values: list[Decimal | None]) -> float:
         raise JudgeIntegrityError("存在未完成评分的答案,不能汇总 session")
     scores = [float(value) for value in values]
     return sum(scores) / len(scores)
+
+
+def _decimal_to_float(value: Decimal | None) -> float | None:
+    return float(value) if value is not None else None
 
 
 def _score_decimal(value: float) -> Decimal:

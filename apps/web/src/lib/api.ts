@@ -536,10 +536,43 @@ export type QuizScores = {
   total: number;
 };
 
+export type QuizNullableScores = {
+  coverage: number | null;
+  fidelity: number | null;
+  depth: number | null;
+  total: number | null;
+};
+
 export type QuizEvidence = {
   coverage_evidence?: unknown;
   fidelity_evidence?: unknown;
   depth_evidence?: unknown;
+};
+
+export type QuizSessionQuestionDetail = {
+  order_index: number;
+  question: QuizQuestionPublic;
+  user_answer: string | null;
+  answer_submitted_at: string | null;
+  judged: boolean;
+  scores: QuizNullableScores | null;
+  evidence: QuizEvidence | null;
+  reference_answer?: string | null;
+  reference_points?: unknown[] | null;
+};
+
+export type QuizSessionDetail = {
+  id: number;
+  query: string;
+  mode: QuizMode;
+  jd_ids: number[] | null;
+  status: 'in_progress' | 'submitted' | 'abandoned';
+  started_at: string;
+  submitted_at: string | null;
+  abandoned_at: string | null;
+  scores: QuizNullableScores | null;
+  recall_md_path: string | null;
+  questions: QuizSessionQuestionDetail[];
 };
 
 export type QuizCreateSseFrame =
@@ -585,6 +618,13 @@ export async function saveQuizAnswer(
     method: 'PUT',
     body: JSON.stringify({ user_answer: userAnswer }),
   });
+}
+
+export async function getQuizSession(
+  sessionId: number,
+  signal?: AbortSignal,
+): Promise<QuizSessionDetail> {
+  return jsonFetch<QuizSessionDetail>(`/api/quiz/sessions/${sessionId}`, { signal });
 }
 
 export function submitQuizSession(sessionId: number): AsyncGenerator<QuizSubmitSseFrame> {
