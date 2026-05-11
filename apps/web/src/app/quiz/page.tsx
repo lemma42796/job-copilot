@@ -20,6 +20,7 @@ import {
   abandonQuizSession,
   createQuizSession,
   getQuizSession,
+  listQuizSessions,
   saveQuizAnswer,
   submitQuizSession,
   type QuizEvidence,
@@ -28,6 +29,7 @@ import {
   type QuizQuestionReady,
   type QuizScores,
   type QuizSessionDetail,
+  type QuizSessionListItem,
   type QuizTypeMix,
 } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -510,6 +512,29 @@ function updateSessionUrl(sessionId: number | null): void {
   window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
 }
 
+function sessionStatusLabel(status: QuizSessionListItem['status']): string {
+  if (status === 'submitted') return '已评分';
+  if (status === 'in_progress') return '答题中';
+  return '已放弃';
+}
+
+function sessionStatusTone(status: QuizSessionListItem['status']): string {
+  if (status === 'submitted') return 'text-[var(--color-success-fg)]';
+  if (status === 'in_progress') return 'text-accent';
+  return 'text-muted';
+}
+
+function shortDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
 export default function QuizPage() {
   const [query, setQuery] = useState('');
   const [questionCount, setQuestionCount] = useState<number>(5);
@@ -526,6 +551,8 @@ export default function QuizPage() {
   } | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>({ kind: 'idle' });
+  const [recentSessions, setRecentSessions] = useState<QuizSessionListItem[]>([]);
+  const [recentError, setRecentError] = useState<string | null>(null);
   const savedAnswersRef = useRef<Record<number, string>>({});
 
   const answeredCount = useMemo(
@@ -540,6 +567,16 @@ export default function QuizPage() {
     questions.length > 0 &&
     answeredCount === questions.length &&
     sessionId !== null;
+
+  const reloadRecent = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const data = await listQuizSessions({ limit: 8, signal });
+      setRecentSessions(data.items);
+      setRecentError(null);
+    } catch (err) {
+      if (!signal?.aborted) setRecentError(problemMessage(err));
+    }
+  }, []);
 
   const resetSession = useCallback(() => {
     setStage('idle');
@@ -628,6 +665,24 @@ export default function QuizPage() {
     updateSessionUrl(null);
   }, []);
 
+  const loadSession = useCallback(
+    async (id: number, signal?: AbortSignal) => {
+      try {
+        const detail = await getQuizSession(id, signal);
+        hydrateSession(detail);
+      } catch (err) {
+        if (!signal?.aborted) setRunError(problemMessage(err));
+      }
+    },
+    [hydrateSession],
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void reloadRecent(controller.signal);
+    return () => controller.abort();
+  }, [reloadRecent]);
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const raw = new URLSearchParams(window.location.search).get('session');
@@ -636,16 +691,9 @@ export default function QuizPage() {
     if (!Number.isInteger(id) || id <= 0) return;
 
     const controller = new AbortController();
-    void (async () => {
-      try {
-        const detail = await getQuizSession(id, controller.signal);
-        hydrateSession(detail);
-      } catch (err) {
-        if (!controller.signal.aborted) setRunError(problemMessage(err));
-      }
-    })();
+    void loadSession(id, controller.signal);
     return () => controller.abort();
-  }, [hydrateSession]);
+  }, [loadSession]);
 
   const saveAllAnswers = useCallback(async () => {
     if (sessionId === null) return;
@@ -752,15 +800,18 @@ export default function QuizPage() {
         savedAnswersRef.current = initialSaved;
         setStage('answering');
         setSaveState({ kind: 'idle' });
+        void reloadRecent();
       } else {
         setStage('idle');
         if (!streamError) setRunError('出题没有返回可答题目');
+        void reloadRecent();
       }
     } catch (err) {
       setStage('idle');
       setRunError(problemMessage(err));
+      void reloadRecent();
     }
-  }, [questionCount, query]);
+  }, [questionCount, query, reloadRecent]);
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit || sessionId === null) return;
@@ -819,11 +870,13 @@ export default function QuizPage() {
         }
       }
       setStage(ok ? 'submitted' : 'answering');
+      void reloadRecent();
     } catch (err) {
       setStage('answering');
       setRunError(problemMessage(err));
+      void reloadRecent();
     }
-  }, [answers, canSubmit, questions, saveAllAnswers, sessionId]);
+  }, [answers, canSubmit, questions, reloadRecent, saveAllAnswers, sessionId]);
 
   const handleAbandon = useCallback(async () => {
     if (sessionId === null) {
@@ -834,10 +887,11 @@ export default function QuizPage() {
     try {
       await abandonQuizSession(sessionId);
       resetSession();
+      void reloadRecent();
     } catch (err) {
       setRunError(problemMessage(err));
     }
-  }, [resetSession, sessionId]);
+  }, [reloadRecent, resetSession, sessionId]);
 
   return (
     <div className="grid h-full grid-cols-1 bg-background lg:grid-cols-[320px_1fr]">
@@ -916,6 +970,66 @@ export default function QuizPage() {
             <Sparkles className="size-4" />
             样例
           </Button>
+
+          <div className="border-t border-border pt-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-medium text-muted">最近练习</span>
+              <button
+                type="button"
+                onClick={() => void reloadRecent()}
+                className="text-xs text-muted hover:text-foreground"
+              >
+                刷新
+              </button>
+            </div>
+            {recentError ? (
+              <p className="rounded-lg bg-[var(--color-warning-bg)] px-3 py-2 text-xs text-[var(--color-warning-fg)]">
+                {recentError}
+              </p>
+            ) : recentSessions.length === 0 ? (
+              <p className="text-xs text-muted">暂无 session</p>
+            ) : (
+              <ul className="space-y-1">
+                {recentSessions.map((item) => (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      onClick={() => void loadSession(item.id)}
+                      disabled={stage === 'generating' || stage === 'submitting'}
+                      className={cn(
+                        'w-full rounded-lg px-3 py-2 text-left transition-colors',
+                        sessionId === item.id
+                          ? 'bg-[var(--color-selection)]'
+                          : 'hover:bg-[var(--color-system-gray-6)]',
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="min-w-0 truncate text-xs font-medium text-foreground">
+                          {item.query || '未命名练习'}
+                        </span>
+                        <span
+                          className={cn(
+                            'shrink-0 text-[11px] font-medium',
+                            sessionStatusTone(item.status),
+                          )}
+                        >
+                          {sessionStatusLabel(item.status)}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted">
+                        <span>#{item.id} · {item.question_count} 题</span>
+                        <span>
+                          {item.total_score === null
+                            ? shortDateTime(item.started_at)
+                            : `总分 ${roundedScore(item.total_score)}`}
+                        </span>
+                      </div>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
 
           <div className="border-t border-border pt-4">
             <div className="mb-2 flex items-center justify-between">

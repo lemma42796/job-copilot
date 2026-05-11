@@ -50,6 +50,8 @@ from jobcopilot_api.schemas.quiz import (
     QuizQuestionDetailOut,
     QuizScoresOut,
     QuizSessionDetailOut,
+    QuizSessionListItemOut,
+    QuizSessionListOut,
     QuestionPublic,
 )
 from jobcopilot_api.services.retrieval_pipeline import fetch_note_titles
@@ -187,6 +189,61 @@ async def get_session_detail(
         scores=session_scores,
         recall_md_path=quiz_session.recall_md_path,
         questions=question_items,
+    )
+
+
+async def list_sessions(
+    session: AsyncSession,
+    *,
+    status: str | None = None,
+    cursor: int | None = None,
+    limit: int = 20,
+) -> QuizSessionListOut:
+    limit = max(1, min(limit, 100))
+    answer_count = (
+        sa.select(
+            SessionAnswer.session_id.label("session_id"),
+            sa.func.count(SessionAnswer.id).label("question_count"),
+        )
+        .group_by(SessionAnswer.session_id)
+        .subquery()
+    )
+    stmt = (
+        sa.select(
+            QuizSession,
+            sa.func.coalesce(answer_count.c.question_count, 0).label(
+                "question_count"
+            ),
+        )
+        .outerjoin(answer_count, answer_count.c.session_id == QuizSession.id)
+        .order_by(QuizSession.id.desc())
+        .limit(limit + 1)
+    )
+    if status:
+        stmt = stmt.where(QuizSession.status == status)
+    if cursor is not None:
+        stmt = stmt.where(QuizSession.id < cursor)
+
+    rows = list((await session.execute(stmt)).all())
+    has_more = len(rows) > limit
+    visible = rows[:limit]
+    items = [
+        QuizSessionListItemOut(
+            id=quiz_session.id,
+            query=quiz_session.query,
+            mode=quiz_session.mode,
+            status=quiz_session.status,
+            started_at=quiz_session.started_at,
+            submitted_at=quiz_session.submitted_at,
+            total_score=_decimal_to_float(quiz_session.total_score),
+            question_count=int(question_count),
+        )
+        for quiz_session, question_count in visible
+    ]
+    return QuizSessionListOut(
+        items=items,
+        next_cursor=items[-1].id if has_more and items else None,
+        has_more=has_more,
     )
 
 

@@ -103,3 +103,20 @@ class QuizSessionDetailOut(BaseModel):
     scores: QuizScoresOut | None = None
     recall_md_path: str | None = None
     questions: list[QuizQuestionDetailOut]
+
+
+class QuizSessionListItemOut(BaseModel):
+    id: int
+    query: str
+    mode: QuizMode
+    status: Literal["in_progress", "submitted", "abandoned"]
+    started_at: datetime
+    submitted_at: datetime | None = None
+    total_score: float | None = None
+    question_count: int
+
+
+class QuizSessionListOut(BaseModel):
+    items: list[QuizSessionListItemOut]
+    next_cursor: int | None = None
+    has_more: bool = False

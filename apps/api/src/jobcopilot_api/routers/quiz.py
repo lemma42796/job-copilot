@@ -7,7 +7,9 @@ GET /api/quiz/sessions/{id} 用于刷新恢复 / 历史回看。
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from typing import Literal
+
+from fastapi import APIRouter, Query
 from sse_starlette.sse import EventSourceResponse
 
 from jobcopilot_api.errors import (
@@ -20,6 +22,7 @@ from jobcopilot_api.schemas.quiz import (
     AnswerDraftIn,
     QuizSessionCreateIn,
     QuizSessionDetailOut,
+    QuizSessionListOut,
 )
 from jobcopilot_api.services import answer_service, quiz_service
 
@@ -55,6 +58,25 @@ async def create_session(payload: QuizSessionCreateIn) -> EventSourceResponse:
     return EventSourceResponse(
         quiz_service.start_session_sse(sessionmaker, payload)
     )
+
+
+@router.get(
+    "/sessions",
+    summary="查询最近答题会话",
+)
+async def list_sessions(
+    status: Literal["in_progress", "submitted", "abandoned"] | None = None,
+    cursor: int | None = None,
+    limit: int = Query(default=20, ge=1, le=100),
+) -> QuizSessionListOut:
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        return await answer_service.list_sessions(
+            session,
+            status=status,
+            cursor=cursor,
+            limit=limit,
+        )
 
 
 @router.get(

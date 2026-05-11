@@ -575,6 +575,23 @@ export type QuizSessionDetail = {
   questions: QuizSessionQuestionDetail[];
 };
 
+export type QuizSessionListItem = {
+  id: number;
+  query: string;
+  mode: QuizMode;
+  status: 'in_progress' | 'submitted' | 'abandoned';
+  started_at: string;
+  submitted_at: string | null;
+  total_score: number | null;
+  question_count: number;
+};
+
+export type QuizSessionListResponse = {
+  items: QuizSessionListItem[];
+  next_cursor: number | null;
+  has_more: boolean;
+};
+
 export type QuizCreateSseFrame =
   | SseFrame<
       'started',
@@ -625,6 +642,24 @@ export async function getQuizSession(
   signal?: AbortSignal,
 ): Promise<QuizSessionDetail> {
   return jsonFetch<QuizSessionDetail>(`/api/quiz/sessions/${sessionId}`, { signal });
+}
+
+export async function listQuizSessions(
+  opts: {
+    status?: 'in_progress' | 'submitted' | 'abandoned';
+    cursor?: number | null;
+    limit?: number;
+    signal?: AbortSignal;
+  } = {},
+): Promise<QuizSessionListResponse> {
+  const params = new URLSearchParams();
+  if (opts.status) params.set('status', opts.status);
+  if (opts.cursor) params.set('cursor', String(opts.cursor));
+  if (opts.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return jsonFetch<QuizSessionListResponse>(`/api/quiz/sessions${qs ? `?${qs}` : ''}`, {
+    signal: opts.signal,
+  });
 }
 
 export function submitQuizSession(sessionId: number): AsyncGenerator<QuizSubmitSseFrame> {
