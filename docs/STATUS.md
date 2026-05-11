@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-11
+last_updated: 2026-05-12
 purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指向其他文档。
 ---
 
@@ -23,13 +23,15 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 最新状态:
 
-- 本轮完成 **Context Cache 接入 Quiz/Judge**:共享 chunks 前缀、LLM messages 下发、DashScope `cache_control`、`cache_creation_input_tokens` 审计。
-- 本轮保存提交主题:`feat: add context cache to quiz judge`;push 后 working tree 应清空。
-- 最新已推提交主题:`fix: stabilize answer judge tool scoring flow`。
+- 本轮完成 **M2 quiz/session 前端入口**:`/quiz` 可出题、答题、保存草稿、提交 Judge、展示三层评分 evidence。
+- 本轮完成 session 恢复与历史回看:`GET /api/quiz/sessions/{id}`、`GET /api/quiz/sessions`、`/quiz?session=4` 可恢复真实已评分 session。
+- 本轮完成前端 dogfood polish:本地样例模式、最近练习列表、Coverage/Fidelity/Depth 结构化展示、出题/评分进度摘要。
+- Context Cache 已验证 provider-side 命中,但因 5 分钟 TTL 不适合当前一次性答题流,已默认关闭显式 `cache_control`;后续多轮讨论面试题时再打开。
+- 最新功能提交主题:`feat: summarize quiz progress UI`;push 后 working tree 应清空。
 - M2 retrieval quiz pipeline 代码已提交:`103d882 feat: add m2 retrieval quiz pipeline`。
 - M2.1 Agentic RAG 文档已提交:`fd892fa docs: add agentic interview coach roadmap`。
 - M2 AnswerJudge 初版已落地:三层 evidence prompt / agent / submit SSE / Python 算分 / fabricated 锁顶。
-- 真实验收:出题 + 保存答案通过;Judge 已补 hard timeout、tool-use 评分稳定化与 Context Cache 接入;仍需用户手动跑 migration + 快速端到端验证。
+- 真实验收:用户已跑 `/quiz` 主题 `Langfuse Prompt 版本管理`,session #4 出题 / 保存 / Judge 评分 / `/quiz?session=4` 恢复通过。
 - GitHub Actions 已改为**手动触发**(`workflow_dispatch`),push 不再自动跑 lint / tests / build。
 - 本地开发形态改为**Docker Postgres + 本机 API**;避免 api 容器 rebuild 与 compose key 映射坑。
 
@@ -48,7 +50,8 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 - **M2 schema / retrieval / quiz pipeline 初版**:0017 migration、quiz router、query rewriter、retrieval pipeline、reranker、quiz service 编排已入库。
 - **M2 AnswerJudge 初版**:`answer_judge` schema / prompt / agent、`answer_service.submit_session_sse`、三层分 + session 汇总、答题草稿 / abandon 端点已入库。
-- **百炼 Context Cache 已接入 Quiz/Judge**:session chunks 走稳定公共前缀;QuizGenerator / AnswerJudge 复用同一渲染函数;`llm_calls` 记录 `cached_tokens` 与 `cache_creation_input_tokens`。
+- **M2 quiz/session UI 已落地**:`/quiz` 支持主题出题、答题、草稿保存、提交评分、结构化 evidence、样例模式、最近练习与 session 恢复。
+- **百炼 Context Cache 代码已接入但默认关闭**:保留稳定 chunks 前缀渲染与审计字段;后续多轮面试讨论再开启显式 cache。
 - **M2.1 Agentic RAG 方向锁定**:`InterviewCoachAgent` 不做泛化多 Agent,只做面试状态机:检索 → 出题 → 等答 → 评分 → 决策 → 追问 / 总结。
 - **CI 策略调整**:所有 GitHub workflow 改为手动触发,避免 push 自动跑测试和邮件通知。
 
@@ -56,12 +59,12 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **M2 Context Cache 验收**:用户手动跑 alembic upgrade + 一次 Quiz/Judge smoke,核对 `llm_calls.cached_tokens` / `cache_creation_input_tokens` 和评分返回。
+1. **M2 收口检查**:用户手动再走 `/quiz` 样例、最近练习、真实出题/评分;若 OK,可按"MX 完成了"流程收 M2。
 
 备选:
 
-- 做 quiz/session 前端入口,把当前后端 pipeline 接到可演示 UI。
 - 补 Langfuse trace 颗粒度:query rewrite / hybrid / rerank / parent-doc / quiz generation。
+- 把评分结果页进一步接 recall markdown / 下载。
 - 开始 M2.1 `InterviewCoachAgent` 状态机。
 - 用户手动跑后,根据失败日志修 M2 pipeline。
 
@@ -93,6 +96,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **[来自 M2] 简历单条记录**:岗位类 query 只拼当前简历 + JD 子集,不做多简历 UX。
 - **[来自 M2] 岗位类 query 必须三源融合**:不要把岗位类降级成普通主题类 query。
 - **[来自 M2] Context Cache 不是会话记忆**:请求仍需带必要上下文;cache 只优化重复公共前缀的 provider 侧计算 / 计费。
+- **[来自 M2] Context Cache 当前默认关闭**:一次性答题流不依赖 5 分钟 TTL;等 M2.1 多轮面试讨论再开启显式 cache。
 - **[来自 M2] 本地开发优先 Docker Postgres + 本机 API**:api 容器需额外处理 `DASHSCOPE_API_KEY` 映射,日常避免走全 compose。
 - **[来自 M2.1] Agent 不做炫技多 Agent**:只做与面试陪练闭环直接相关的状态机、工具、分支、恢复、评测。
 
