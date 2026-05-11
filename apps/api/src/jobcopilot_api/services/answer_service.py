@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -82,7 +82,7 @@ class _JudgeTask:
     user_answer: str
     question: GeneratedQuestion
     chunks: list[QuizGenChunkInput]
-    source_chunk_ids: list[int]
+    prompt_chunk_ids: list[int]
 
 
 async def save_draft(
@@ -168,7 +168,7 @@ async def submit_session_sse(
             judged = _map_and_validate_output(
                 output=judged,
                 reference_points=task.question.reference_points,
-                source_chunk_ids=task.source_chunk_ids,
+                prompt_chunk_ids=task.prompt_chunk_ids,
                 lookup_ref_map=_lookup_ref_map(llm_result),
             )
             scores = _compute_scores(judged, task.question.reference_points)
@@ -364,64 +364,110 @@ async def _load_judge_tasks(
         if len(question_by_id) != len(set(question_ids)):
             raise JudgeIntegrityError("session_answers 引用了不存在的 question")
 
-        all_chunk_ids = list(
-            dict.fromkeys(
-                chunk_id
-                for q in question_by_id.values()
-                for chunk_id in q.source_chunk_ids
-            )
+        prompt_chunk_ids = _prompt_chunk_ids_for_judge(
+            quiz_session=quiz_session,
+            questions=[question_by_id[answer.question_id] for answer in answers],
         )
-        if not all_chunk_ids:
-            raise JudgeIntegrityError("questions.source_chunk_ids 不能为空")
+        if not prompt_chunk_ids:
+            raise JudgeIntegrityError(
+                "quiz_session.retrieved_chunk_ids / questions.source_chunk_ids 不能为空"
+            )
         chunks = list(
             (
                 await session.execute(
-                    sa.select(NoteChunk).where(NoteChunk.id.in_(all_chunk_ids))
+                    sa.select(NoteChunk).where(NoteChunk.id.in_(prompt_chunk_ids))
                 )
             )
             .scalars()
             .all()
         )
         chunk_by_id = {c.id: c for c in chunks}
-        if len(chunk_by_id) != len(set(all_chunk_ids)):
-            raise JudgeIntegrityError("questions.source_chunk_ids 引用了不存在的 chunk")
+        if len(chunk_by_id) != len(set(prompt_chunk_ids)):
+            raise JudgeIntegrityError(
+                "quiz_session.retrieved_chunk_ids / questions.source_chunk_ids "
+                "引用了不存在的 chunk"
+            )
 
         note_ids = list({chunk.note_id for chunk in chunks})
         note_titles = await fetch_note_titles(session, note_ids)
+        prompt_chunks = [
+            _chunk_to_input(chunk_by_id[chunk_id], note_titles)
+            for chunk_id in prompt_chunk_ids
+        ]
 
         tasks: list[_JudgeTask] = []
         for answer in answers:
             question = question_by_id[answer.question_id]
-            source_chunk_ids = list(question.source_chunk_ids)
-            local_question = _question_to_local(question)
-            local_chunks = [
-                _chunk_to_input(chunk_by_id[chunk_id], note_titles)
-                for chunk_id in source_chunk_ids
-            ]
+            local_question = _question_to_local(question, prompt_chunk_ids)
             tasks.append(
                 _JudgeTask(
                     answer_id=answer.id,
                     order_index=answer.order_index,
                     user_answer=answer.user_answer or "",
                     question=local_question,
-                    chunks=local_chunks,
-                    source_chunk_ids=source_chunk_ids,
+                    chunks=prompt_chunks,
+                    prompt_chunk_ids=prompt_chunk_ids,
                 )
             )
         return tasks
 
 
-def _question_to_local(question: Question) -> GeneratedQuestion:
+def _prompt_chunk_ids_for_judge(
+    *,
+    quiz_session: QuizSession,
+    questions: list[Question],
+) -> list[int]:
+    """Use the session retrieval order so Judge shares Quiz's cache prefix."""
+    prompt_chunk_ids = _unique_int_ids(quiz_session.retrieved_chunk_ids or [])
+    question_chunk_ids = _unique_int_ids(
+        chunk_id
+        for question in questions
+        for chunk_id in _question_chunk_ids(question)
+    )
+    seen = set(prompt_chunk_ids)
+    for chunk_id in question_chunk_ids:
+        if chunk_id not in seen:
+            prompt_chunk_ids.append(chunk_id)
+            seen.add(chunk_id)
+    return prompt_chunk_ids
+
+
+def _unique_int_ids(values: Iterable[Any]) -> list[int]:
+    out: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        try:
+            chunk_id = int(value)
+        except (TypeError, ValueError) as e:
+            raise JudgeIntegrityError(f"chunk id 非法:{value!r}") from e
+        if chunk_id not in seen:
+            out.append(chunk_id)
+            seen.add(chunk_id)
+    return out
+
+
+def _question_chunk_ids(question: Question) -> list[int]:
+    ids: list[int] = []
+    ids.extend(question.source_chunk_ids)
+    ids.extend(question.reference_chunk_ids)
+    for point in question.reference_points:
+        ids.extend(point.get("evidence_chunk_ids", []))
+    return ids
+
+
+def _question_to_local(
+    question: Question,
+    prompt_chunk_ids: list[int],
+) -> GeneratedQuestion:
     """DB id 存储形态 → AnswerJudge prompt 的局部 [N] 编号形态。"""
-    source_chunk_ids = list(question.source_chunk_ids)
     db_to_local = {
-        chunk_id: idx for idx, chunk_id in enumerate(source_chunk_ids, start=1)
+        chunk_id: idx for idx, chunk_id in enumerate(prompt_chunk_ids, start=1)
     }
 
     def to_local(chunk_id: int) -> int:
         if chunk_id not in db_to_local:
             raise JudgeIntegrityError(
-                f"question {question.id} 引用了非 source chunk:{chunk_id}"
+                f"question {question.id} 引用了非 prompt chunk:{chunk_id}"
             )
         return db_to_local[chunk_id]
 
@@ -442,10 +488,12 @@ def _question_to_local(question: Question) -> GeneratedQuestion:
     return GeneratedQuestion(
         type=question.type,
         prompt=question.prompt,
-        source_chunk_ids=list(range(1, len(source_chunk_ids) + 1)),
+        source_chunk_ids=[
+            to_local(int(chunk_id)) for chunk_id in question.source_chunk_ids
+        ],
         reference_answer=question.reference_answer,
         reference_chunk_ids=[
-            to_local(chunk_id) for chunk_id in question.reference_chunk_ids
+            to_local(int(chunk_id)) for chunk_id in question.reference_chunk_ids
         ],
         reference_points=points,
     )
@@ -474,11 +522,11 @@ def _map_and_validate_output(
     *,
     output: AnswerJudgeOutput,
     reference_points: list[ReferencePoint],
-    source_chunk_ids: list[int],
+    prompt_chunk_ids: list[int],
     lookup_ref_map: dict[int, int],
 ) -> AnswerJudgeOutput:
     _validate_coverage(output, reference_points)
-    _validate_fidelity(output, source_chunk_ids, lookup_ref_map)
+    _validate_fidelity(output, prompt_chunk_ids, lookup_ref_map)
     _validate_depth(output)
 
     data = output.model_dump(mode="json")
@@ -488,7 +536,7 @@ def _map_and_validate_output(
             continue
         claim["chunk_ids"] = _map_claim_chunk_ids(
             claim.get("chunk_ids", []),
-            source_chunk_ids=source_chunk_ids,
+            prompt_chunk_ids=prompt_chunk_ids,
             lookup_ref_map=lookup_ref_map,
         )
     return AnswerJudgeOutput.model_validate(data)
@@ -511,7 +559,7 @@ def _validate_coverage(
 
 def _validate_fidelity(
     output: AnswerJudgeOutput,
-    source_chunk_ids: list[int],
+    prompt_chunk_ids: list[int],
     lookup_ref_map: dict[int, int],
 ) -> None:
     claims = output.fidelity_evidence.claims
@@ -524,7 +572,7 @@ def _validate_fidelity(
         if claim.label != "fabricated":
             _map_claim_chunk_ids(
                 claim.chunk_ids,
-                source_chunk_ids=source_chunk_ids,
+                prompt_chunk_ids=prompt_chunk_ids,
                 lookup_ref_map=lookup_ref_map,
             )
 
@@ -532,22 +580,22 @@ def _validate_fidelity(
 def _map_claim_chunk_ids(
     raw_ids: list[int],
     *,
-    source_chunk_ids: list[int],
+    prompt_chunk_ids: list[int],
     lookup_ref_map: dict[int, int],
 ) -> list[int]:
-    max_local_id = len(source_chunk_ids)
+    max_local_id = len(prompt_chunk_ids)
     lookup_chunk_ids = set(lookup_ref_map.values())
     mapped: list[int] = []
     for raw_id in raw_ids:
         chunk_id = int(raw_id)
         if 1 <= chunk_id <= max_local_id:
-            mapped.append(source_chunk_ids[chunk_id - 1])
+            mapped.append(prompt_chunk_ids[chunk_id - 1])
             continue
         if chunk_id in lookup_ref_map:
             mapped.append(lookup_ref_map[chunk_id])
             continue
         if chunk_id > max_local_id and (
-            chunk_id in source_chunk_ids or chunk_id in lookup_chunk_ids
+            chunk_id in prompt_chunk_ids or chunk_id in lookup_chunk_ids
         ):
             mapped.append(chunk_id)
             continue

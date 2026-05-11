@@ -43,6 +43,7 @@ class DummyScript:
     tokens_in: int = 0
     tokens_out: int = 0
     cached_tokens: int = 0
+    cache_creation_input_tokens: int = 0
     error: BaseException | None = None
 
 
@@ -61,6 +62,7 @@ class DummyProvider(Provider):
         tokens_in: int = 0,
         tokens_out: int = 0,
         cached_tokens: int = 0,
+        cache_creation_input_tokens: int = 0,
     ) -> None:
         self._queue.append(
             ProviderResponse(
@@ -68,6 +70,7 @@ class DummyProvider(Provider):
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 cached_tokens=cached_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
             )
         )
 
@@ -83,6 +86,7 @@ class DummyProvider(Provider):
                 tokens_in=script.tokens_in,
                 tokens_out=script.tokens_out,
                 cached_tokens=script.cached_tokens,
+                cache_creation_input_tokens=script.cache_creation_input_tokens,
             )
 
     @classmethod
@@ -94,7 +98,8 @@ class DummyProvider(Provider):
               "content": "...",
               "tokens_in": 120,
               "tokens_out": 8,
-              "cached_tokens": 0
+              "cached_tokens": 0,
+              "cache_creation_input_tokens": 0
             }
         """
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -104,6 +109,9 @@ class DummyProvider(Provider):
             tokens_in=int(data.get("tokens_in", 0)),
             tokens_out=int(data.get("tokens_out", 0)),
             cached_tokens=int(data.get("cached_tokens", 0)),
+            cache_creation_input_tokens=int(
+                data.get("cache_creation_input_tokens", 0)
+            ),
         )
         return provider
 

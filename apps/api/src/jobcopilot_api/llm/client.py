@@ -56,6 +56,8 @@ content + usage so existing aggregation (cost / logger) is unaffected.
 
 Used by `resume_drafter` for live preview SSE; other agents pass `None`."""
 
+ChatMessage = dict[str, Any]
+
 # ---------- Provider layer (thin SDK wrapper) ----------
 
 
@@ -69,6 +71,7 @@ class ProviderRequest:
     timeout_s: float
     max_tokens: int = 4096
     temperature: float | None = None  # 5-AGENT §2.2:agent 显式传不依赖默认
+    messages: list[ChatMessage] | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +80,7 @@ class ProviderResponse:
     tokens_in: int
     tokens_out: int
     cached_tokens: int
+    cache_creation_input_tokens: int = 0
 
 
 class Provider(Protocol):
@@ -122,6 +126,8 @@ class LLMResult:
     """True iff this result came from `CacheStore` (no upstream call). On
     cache hit `cost_cny`/`tokens_*` are zeroed — analytics that want
     "would-have-cost" should reconstruct from `llm_response_cache.response`."""
+    cache_creation_input_tokens: int = 0
+    """Provider-side explicit cache creation input tokens, if reported."""
     metadata: dict[str, Any] = field(default_factory=dict)
     """Agent-specific runtime metadata that should not be persisted in
     `llm_calls`, e.g. tool ref-id maps used by a service post-processor."""
@@ -137,6 +143,7 @@ class LLMRequest:
     tier: Tier
     system: str
     user: str
+    messages: list[ChatMessage] | None = None
     response_schema: type[BaseModel] | None = None
     cache_system: bool = True
     timeout_s: float | None = None
@@ -163,6 +170,7 @@ class LLMClient(Protocol):
         tier: Tier,
         system: str,
         user: str,
+        messages: list[ChatMessage] | None = None,
         response_schema: type[BaseModel] | None = None,
         cache_system: bool = True,
         timeout_s: float | None = None,
@@ -224,12 +232,56 @@ def _augment_with_schema(user: str, schema: type[BaseModel]) -> str:
     return f"{user}\n\nRespond with a single JSON object that matches this schema:\n{schema_json}"
 
 
+def _augment_messages_with_schema(
+    messages: list[ChatMessage],
+    schema: type[BaseModel],
+) -> list[ChatMessage]:
+    schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False, indent=2)
+    return [
+        *messages,
+        {
+            "role": "user",
+            "content": (
+                "Respond with a single JSON object that matches this schema:\n"
+                f"{schema_json}"
+            ),
+        },
+    ]
+
+
 def _retry_prompt(user: str, schema: type[BaseModel], bad_content: str) -> str:
     schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False, indent=2)
     return (
         f"{user}\n\n"
         f"{_SCHEMA_RETRY_PREAMBLE}{schema_json}\n\n"
         f"Your previous (invalid) response was:\n{bad_content}"
+    )
+
+
+def _retry_messages(
+    messages: list[ChatMessage],
+    schema: type[BaseModel],
+    bad_content: str,
+) -> list[ChatMessage]:
+    schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False, indent=2)
+    return [
+        *messages,
+        {
+            "role": "user",
+            "content": (
+                f"{_SCHEMA_RETRY_PREAMBLE}{schema_json}\n\n"
+                f"Your previous (invalid) response was:\n{bad_content}"
+            ),
+        },
+    ]
+
+
+def _messages_cache_key_text(messages: list[ChatMessage]) -> str:
+    return json.dumps(
+        messages,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     )
 
 
@@ -258,6 +310,7 @@ class _CallAccumulator:
     tokens_in: int = 0
     tokens_out: int = 0
     cached_tokens: int = 0
+    cache_creation_input_tokens: int = 0
     content: str = ""
     parsed: BaseModel | None = None
     schema_attempt: int = 0  # 0 first try, 1 retry-with-schema-reminder
@@ -306,8 +359,9 @@ class BaseLLMClient:
         *,
         feature: str,
         tier: Tier,
-        system: str,
-        user: str,
+        system: str = "",
+        user: str = "",
+        messages: list[ChatMessage] | None = None,
         response_schema: type[BaseModel] | None = None,
         cache_system: bool = True,
         timeout_s: float | None = None,
@@ -320,7 +374,7 @@ class BaseLLMClient:
         prompt_version_id: int | None = None,
         on_token: OnTokenCallback | None = None,
     ) -> LLMResult:
-        del cache_system  # ADR-0004 D2: semantic placeholder, no SDK toggle today
+        del cache_system  # ADR-0004 D2: explicit cache markers live in messages.
         cfg = tier_to_model(tier)
         effective_timeout = timeout_s if timeout_s is not None else cfg.default_timeout_s
         effective_max_tokens = max_tokens if max_tokens is not None else cfg.default_max_tokens
@@ -329,13 +383,25 @@ class BaseLLMClient:
         response_format: dict[str, Any] | None = (
             {"type": "json_object"} if response_schema is not None else None
         )
+        first_messages = (
+            _augment_messages_with_schema(messages, response_schema)
+            if messages is not None and response_schema is not None
+            else messages
+        )
         first_user = (
-            _augment_with_schema(user, response_schema) if response_schema is not None else user
+            _augment_with_schema(user, response_schema)
+            if messages is None and response_schema is not None
+            else user
+        )
+        cache_key_user = (
+            _messages_cache_key_text(first_messages)
+            if first_messages is not None
+            else first_user
         )
         cache_key = compute_cache_key(
             model=cfg.model,
-            system=system,
-            user=first_user,
+            system="" if first_messages is not None else system,
+            user=cache_key_user,
             response_format=response_format,
             thinking_mode=cfg.thinking_mode,
             prompt_version_id=prompt_version_id,
@@ -375,6 +441,7 @@ class BaseLLMClient:
                         timeout_s=effective_timeout,
                         max_tokens=effective_max_tokens,
                         temperature=temperature,
+                        messages=first_messages,
                     ),
                     on_token=on_token,
                 )
@@ -389,12 +456,21 @@ class BaseLLMClient:
                             ProviderRequest(
                                 model=cfg.model,
                                 system=system,
-                                user=_retry_prompt(user, response_schema, acc.content),
+                                user=(
+                                    _retry_prompt(user, response_schema, acc.content)
+                                    if messages is None
+                                    else ""
+                                ),
                                 response_format=response_format,
                                 thinking_mode=cfg.thinking_mode,
                                 timeout_s=effective_timeout,
                                 max_tokens=effective_max_tokens,
                                 temperature=temperature,
+                                messages=(
+                                    _retry_messages(messages, response_schema, acc.content)
+                                    if messages is not None
+                                    else None
+                                ),
                             ),
                             on_token=on_token,
                         )
@@ -458,8 +534,9 @@ class BaseLLMClient:
                 feature=feature,
                 prompt_version_id=prompt_version_id,
                 request={
-                    "system": system,
-                    "user": first_user,
+                    "system": system if first_messages is None else "",
+                    "user": first_user if first_messages is None else "",
+                    "messages": first_messages,
                     "response_format": response_format,
                     "thinking_mode": cfg.thinking_mode,
                 },
@@ -468,6 +545,7 @@ class BaseLLMClient:
                     "tokens_in": acc.tokens_in,
                     "tokens_out": acc.tokens_out,
                     "cached_tokens": acc.cached_tokens,
+                    "cache_creation_input_tokens": acc.cache_creation_input_tokens,
                 },
             )
 
@@ -497,6 +575,7 @@ class BaseLLMClient:
         acc.tokens_in += resp.tokens_in
         acc.tokens_out += resp.tokens_out
         acc.cached_tokens += resp.cached_tokens
+        acc.cache_creation_input_tokens += resp.cache_creation_input_tokens
         acc.content = resp.content
 
     @staticmethod
@@ -521,6 +600,7 @@ class BaseLLMClient:
             model=cfg.model,
             tokens_in=acc.tokens_in,
             cached_tokens=acc.cached_tokens,
+            cache_creation_input_tokens=acc.cache_creation_input_tokens,
             tokens_out=acc.tokens_out,
         )
         return LLMResult(
@@ -529,6 +609,7 @@ class BaseLLMClient:
             tokens_in=acc.tokens_in,
             tokens_out=acc.tokens_out,
             cached_tokens=acc.cached_tokens,
+            cache_creation_input_tokens=acc.cache_creation_input_tokens,
             cost_cny=cost,
             latency_ms=latency_ms,
             model=cfg.model,

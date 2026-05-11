@@ -4,7 +4,7 @@ config(5-AGENT_DESIGN §2.1 / §2.2 / §3):
 - model: qwen3.6-flash(Tier.CHEAP)
 - thinking: off(出题靠 chunks 内容重组,不需复杂推理)
 - temperature: 0.3(降随机性,要稳定结构)
-- prompt name/version: quiz_generator v1.0(详见 prompts.py)
+- prompt name/version: quiz_generator v1.1(详见 prompts.py)
 
 agent 是薄壳:渲染 USER 段 → 调 LLMClient(BaseLLMClient 内置 retry / cache /
 schema 校验 / cost 计算)→ 返回 LLMResult。
@@ -21,8 +21,11 @@ from __future__ import annotations
 from jobcopilot_api.agents.quiz_generator.prompts import (
     PROMPT_NAME,
     SYSTEM,
+    render_cache_fallback_user,
+    render_task,
     render_user,
 )
+from jobcopilot_api.agents.context_cache import build_chunk_cache_messages
 from jobcopilot_api.infra.llm import get_llm_client
 from jobcopilot_api.llm.client import LLMClient, LLMResult
 from jobcopilot_api.llm.tiers import Tier
@@ -50,11 +53,29 @@ async def run(
         chunks=inp.chunks,
         question_count=inp.question_count,
     )
+    messages = [
+        *build_chunk_cache_messages(inp.chunks),
+        {"role": "system", "content": SYSTEM},
+        {
+            "role": "user",
+            "content": render_task(
+                query=inp.query,
+                question_count=inp.question_count,
+            ),
+        },
+    ]
     return await client.complete(
         feature=PROMPT_NAME,
         tier=Tier.CHEAP,
         system=SYSTEM,
-        user=user,
+        user=render_cache_fallback_user(
+            query=inp.query,
+            chunks=inp.chunks,
+            question_count=inp.question_count,
+        )
+        if llm is None
+        else user,
+        messages=messages,
         response_schema=QuizGenOutput,
         temperature=TEMPERATURE,
     )

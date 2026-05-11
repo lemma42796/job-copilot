@@ -53,6 +53,7 @@ def _to_record(result: LLMResult) -> LlmCall:
         thinking_mode=result.thinking_mode,
         tokens_in=result.tokens_in,
         cached_tokens=result.cached_tokens,
+        cache_creation_input_tokens=result.cache_creation_input_tokens,
         tokens_out=result.tokens_out,
         cost_cny=result.cost_cny,
         latency_ms=result.latency_ms,

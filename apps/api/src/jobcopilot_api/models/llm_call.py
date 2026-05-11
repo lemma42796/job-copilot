@@ -29,6 +29,11 @@ class LlmCall(Base, IDMixin):
 
     tokens_in: Mapped[int] = mapped_column(Integer, nullable=False)
     cached_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    cache_creation_input_tokens: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default="0",
+    )
     tokens_out: Mapped[int] = mapped_column(Integer, nullable=False)
 
     cost_cny: Mapped[Decimal] = mapped_column(Numeric(10, 6), nullable=False)

@@ -4,7 +4,7 @@ config(5-AGENT_DESIGN §2.1 / §2.2):
 - model: qwen3.6-flash
 - thinking: off(M2 dogfood:thinking on 在 AnswerJudge 长 prompt 下不收尾)
 - temperature: 0.2
-- prompt name/version: answer_judge v1.1
+- prompt name/version: answer_judge v1.2
 """
 
 from __future__ import annotations
@@ -36,8 +36,11 @@ from jobcopilot_api.agents.answer_judge.prompts import (
     PROMPT_NAME,
     SYSTEM,
     SYSTEM_WITH_LOOKUP_TOOL,
+    render_cache_fallback_user,
+    render_task,
     render_user,
 )
+from jobcopilot_api.agents.context_cache import build_chunk_cache_messages
 from jobcopilot_api.infra.llm import get_llm_client
 from jobcopilot_api.llm.client import LLMClient, LLMResult
 from jobcopilot_api.llm.db_logger import DBCallLogger
@@ -109,6 +112,7 @@ class _UsageAccumulator:
     tokens_in: int = 0
     tokens_out: int = 0
     cached_tokens: int = 0
+    cache_creation_input_tokens: int = 0
     content: str = ""
 
 
@@ -132,11 +136,29 @@ async def run(
         chunks=inp.chunks,
         user_answer=inp.user_answer,
     )
+    messages = [
+        *build_chunk_cache_messages(inp.chunks),
+        {"role": "system", "content": SYSTEM},
+        {
+            "role": "user",
+            "content": render_task(
+                question=inp.question,
+                user_answer=inp.user_answer,
+            ),
+        },
+    ]
     return await client.complete(
         feature=PROMPT_NAME,
         tier=Tier.CHEAP,
         system=SYSTEM,
-        user=user,
+        user=render_cache_fallback_user(
+            question=inp.question,
+            chunks=inp.chunks,
+            user_answer=inp.user_answer,
+        )
+        if llm is None
+        else user,
+        messages=messages,
         response_schema=AnswerJudgeOutput,
         temperature=TEMPERATURE,
     )
@@ -156,16 +178,18 @@ async def _run_with_lookup_tool(
     tool_state = _ToolRunState()
     parsed: AnswerJudgeOutput | None = None
 
-    user = _augment_with_schema(
-        render_user(
-            question=inp.question,
-            chunks=inp.chunks,
-            user_answer=inp.user_answer,
-        )
-    )
     messages: list[dict[str, Any]] = [
+        *build_chunk_cache_messages(inp.chunks),
         {"role": "system", "content": SYSTEM_WITH_LOOKUP_TOOL},
-        {"role": "user", "content": user},
+        {
+            "role": "user",
+            "content": _schema_instruction()
+            + "\n\n"
+            + render_task(
+                question=inp.question,
+                user_answer=inp.user_answer,
+            ),
+        },
     ]
     schema_retry_used = False
     lookup_retry_count = 0
@@ -474,13 +498,13 @@ def _tool_call_to_dict(tool_call: Any) -> dict[str, Any]:
     }
 
 
-def _augment_with_schema(user: str) -> str:
+def _schema_instruction() -> str:
     schema_json = json.dumps(
         AnswerJudgeOutput.model_json_schema(),
         ensure_ascii=False,
         indent=2,
     )
-    return f"{user}\n\nRespond with a single JSON object that matches this schema:\n{schema_json}"
+    return f"Respond with a single JSON object that matches this schema:\n{schema_json}"
 
 
 def _schema_retry_prompt(bad_content: str) -> str:
@@ -572,6 +596,7 @@ def _absorb_usage(usage: _UsageAccumulator, resp: Any) -> None:
     usage.tokens_in += int(getattr(resp_usage, "prompt_tokens", 0) or 0)
     usage.tokens_out += int(getattr(resp_usage, "completion_tokens", 0) or 0)
     usage.cached_tokens += _read_cached_tokens(resp_usage)
+    usage.cache_creation_input_tokens += _read_cache_creation_input_tokens(resp_usage)
 
 
 def _read_cached_tokens(usage: Any) -> int:
@@ -582,6 +607,16 @@ def _read_cached_tokens(usage: Any) -> int:
     if cached is None:
         return 0
     return int(cached)
+
+
+def _read_cache_creation_input_tokens(usage: Any) -> int:
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is None:
+        return 0
+    created = getattr(details, "cache_creation_input_tokens", None)
+    if created is None:
+        return 0
+    return int(created)
 
 
 def _build_result(
@@ -600,10 +635,12 @@ def _build_result(
         tokens_in=usage.tokens_in,
         tokens_out=usage.tokens_out,
         cached_tokens=usage.cached_tokens,
+        cache_creation_input_tokens=usage.cache_creation_input_tokens,
         cost_cny=cost_for(
             model=model,
             tokens_in=usage.tokens_in,
             cached_tokens=usage.cached_tokens,
+            cache_creation_input_tokens=usage.cache_creation_input_tokens,
             tokens_out=usage.tokens_out,
         ),
         latency_ms=int((monotonic() - started) * 1000),

@@ -58,8 +58,8 @@ OpenAI 兼容接口标准支持 `temperature` 参数(可直接传)。各 agent �
 | name | version | system_text | user_template |
 |------|---------|-------------|---------------|
 | `query_rewriter` | `v1.0` | (见 §2.7) | (见 §2.7) |
-| `quiz_generator` | `v1.0` | (见 §3.3) | (见 §3.4) |
-| `answer_judge` | `v1.0` | (见 §4.3) | (见 §4.4) |
+| `quiz_generator` | `v1.1` | (见 §3.3) | (见 §3.4) |
+| `answer_judge` | `v1.2` | (见 §4.3) | (见 §4.4) |
 
 代码加载 prompt 走 `evals/judge.py` 同款 `LoadedPrompt`(见 v1 `evals/judge_prompts.py` 风格),**写死 version pin**,prompt 改了 bump version + 历史 questions / session_answers 留旧 version 字段不回算。
 
@@ -71,7 +71,7 @@ Quiz / Judge 调用都走 `llm_response_cache`(v1 alembic 0015)。cache_key 用 
 
 注意:这是**完整请求 → 完整响应**缓存,适合评测 / dogfood 重跑同 fixture;不解决"同一批 chunks 在不同任务(prompt 不同)里重复作为输入"的成本 / 延迟。
 
-### 2.4.2 百炼 Context Cache(待落地)
+### 2.4.2 百炼 Context Cache(已落地到 Quiz/Judge)
 
 qwen3.6-flash 支持 Context Cache。它不是 LLM 的持久记忆:每次请求仍要让模型在当前上下文里"看到"必要内容;缓存只是在 provider 侧对**重复公共前缀**减少重复计算和计费。
 
@@ -81,63 +81,54 @@ qwen3.6-flash 支持 Context Cache。它不是 LLM 的持久记忆:每次请求�
 - **显式缓存**:`messages[*].content` 用数组形式,在稳定长文本 content 上加 `{"cache_control": {"type": "ephemeral"}}`;最少 1024 tokens;单次请求最多 4 个 marker;有效期 5 分钟且命中后刷新;显式 / 隐式互斥。
 - **接口覆盖**:OpenAI 兼容 Chat Completions、DashScope 原生、Anthropic Messages 都支持显式 / 隐式缓存;OpenAI 兼容 Responses 走 Session 缓存。当前项目用的是**OpenAI 兼容 Chat**(`langfuse.openai.AsyncOpenAI` + 百炼 compatible-mode),不需要为了 cache 切 DashScope 原生接口。
 
-M2 Quiz → Judge 的缓存目标:
+M2 Quiz → Judge 的当前实现:
 
-1. 出题与评分都需要同一批 source chunks,但两次 LLM call 语义不同,不能靠应用层 response cache 命中。
-2. 把"本 session 固定 chunks"放在 messages 前部,形成稳定公共前缀;出题 / 评分的动态任务说明放在后部。
-3. chunks 长度 ≥ 1024 tokens 时给 chunks content 加 `cache_control: {"type":"ephemeral"}`;短 chunks 只依赖隐式缓存,避免为小上下文引入额外结构复杂度。
-4. QuizGenerator 第一次请求创建/命中 chunks cache;AnswerJudge 后续请求复用同一 chunks 前缀,降低 Judge 延迟和输入成本。
+1. 出题与评分都需要同一批 session chunks,但两次 LLM call 语义不同,不能靠应用层 response cache 命中。
+2. `agents/context_cache.py` 统一渲染"本 session 固定 chunks"公共前缀;QuizGenerator / AnswerJudge 都先放这条 prefix message,再放各自 system / task message。
+3. chunks 文本达到阈值时,prefix content 使用数组形式并加 `cache_control: {"type":"ephemeral"}`;短上下文保持普通 string,避免为了小 prompt 引入额外结构。
+4. Judge service 优先使用 `quiz_sessions.retrieved_chunk_ids` 的完整顺序组装评分上下文,保证 Judge 与 Quiz 的 `[N]` 编号前缀一致;老 session 若缺 audit 字段,再追加题目引用过的 chunks 做兼容。
+5. `LLMClient.complete()` / `ProviderRequest` 支持可选 `messages`;旧 `system/user` 调用保留,便于其他 agent 渐进迁移。
+6. DashscopeProvider 直接下发 messages content array,并读取 `cached_tokens` / `cache_creation_input_tokens`;`llm_calls.cache_creation_input_tokens` 用于审计创建缓存的输入 tokens。
 
-目标 messages 结构示意(不是当前实现):
+QuizGenerator messages 结构:
 
 ```json
 [
-  {"role": "system", "content": "你是 JobCopilot 技术面试助手。"},
   {
-    "role": "user",
+    "role": "system",
     "content": [
       {
         "type": "text",
-        "text": "以下是本 session 固定笔记 chunks...\n[1] ...\n[2] ...",
+        "text": "JobCopilot session fixed note chunks...\n[1] ...\n[2] ...",
         "cache_control": {"type": "ephemeral"}
       }
     ]
   },
-  {"role": "user", "content": "任务:基于上述 chunks 出题..."}
+  {"role": "system", "content": "quiz_generator SYSTEM"},
+  {"role": "user", "content": "查询主题 + question_count 动态任务"}
 ]
 ```
 
-评分时前两条 message 必须尽量逐字一致,第三条再放题目 / reference_points / 用户答案:
+AnswerJudge messages 结构。第一条 prefix message 必须与 QuizGenerator 逐字一致,后面再放评分 system / 题目 / reference_points / 用户答案:
 
 ```json
 [
-  {"role": "system", "content": "你是 JobCopilot 技术面试助手。"},
   {
-    "role": "user",
+    "role": "system",
     "content": [
       {
         "type": "text",
-        "text": "以下是本 session 固定笔记 chunks...\n[1] ...\n[2] ...",
+        "text": "JobCopilot session fixed note chunks...\n[1] ...\n[2] ...",
         "cache_control": {"type": "ephemeral"}
       }
     ]
   },
-  {"role": "user", "content": "任务:对这道题评分..."}
+  {"role": "system", "content": "answer_judge SYSTEM_WITH_LOOKUP_TOOL"},
+  {"role": "user", "content": "schema instruction + 题目/reference_points/用户答案"}
 ]
 ```
 
-当前代码差距:
-
-- `LLMClient.complete()` 只接 `system: str` + `user: str`,不能表达多条 messages / content array / cache_control。
-- `DashscopeProvider` 虽然名字叫 Dashscope,实际走 OpenAI compatible Chat,目前固定构造两条 string messages。
-- `ProviderResponse` 只读 `cached_tokens`,未读 `cache_creation_input_tokens`;审计表也没有缓存创建 tokens 字段。
-
-落地顺序:
-
-1. 扩展 LLMClient/ProviderRequest:允许传 `messages` 或 `cache_prefix` 结构,保留旧 `system/user` 便于渐进迁移。
-2. DashscopeProvider 支持 content array + `cache_control`,并读取 `cached_tokens` / `cache_creation_input_tokens`。
-3. QuizGenerator / AnswerJudge 共用同一个 chunks 渲染函数,保证 cache 前缀稳定。
-4. Judge 仍保留 service 层单题 hard timeout;Context Cache 是降延迟/成本,不是失败控制。
+注意:Context Cache 是降延迟 / 输入成本,不是失败控制。Judge 仍保留 service 层单题 hard timeout 与 fabricated claim tool-use 验证。
 
 ## 2.5 反幻觉锚点(全 Agent 共享)
 
@@ -252,7 +243,7 @@ class RetrievedChunk:
 
 - **0 命中守门由 retrieval pipeline 负责**:command 走到 QuizGenerator 时 `len(chunks) ≥ 阈值`(PRD Q-10),不需 QuizGenerator 自己再判
 - **上限 ≈ 10 + parent-doc 扩展**:reranker 后 top 10 + parent-doc 扩展,通常 ~10-20 chunks 喂 LLM。单 chunk ≈ 200-500 tokens,落 qwen3.6-flash 大 context 安全区
-- **chunks 含 heading_path / note_title 元数据**:USER 段渲染时一并传给 LLM,反幻觉锚点(LLM 知道每段出自笔记的什么位置)+ 出题时可在题干提示主题上下文
+- **chunks 含 heading_path / note_title 元数据**:Context Cache prefix 渲染时一并传给 LLM,反幻觉锚点(LLM 知道每段出自笔记的什么位置)+ 出题时可在题干提示主题上下文
 
 ## 3.2 输出
 
@@ -274,7 +265,7 @@ class GeneratedQuestion:
 
 reference_points 的 schema 见 3-DATA_MODEL §6.1。
 
-## 3.3 SYSTEM prompt(`quiz_generator` v1.0)
+## 3.3 SYSTEM prompt(`quiz_generator` v1.1)
 
 ```
 你是为程序员设计技术面试题的 Agent。任务:基于用户的查询主题 + 笔记片段(chunks),
@@ -284,7 +275,7 @@ reference_points 的 schema 见 3-DATA_MODEL §6.1。
 
 1. 题目必须能用提供的 chunks 回答 — 任何超出 chunks 的内容不允许出现在题干 / reference 里
 2. 题目主题必须贴用户 query — 跑题(如用户问"多线程"你出题问"垃圾回收")算严重错误
-3. 每道题必须给 source_chunk_ids:出题用到的 chunks 编号(对应 USER 段 [N] 标号),数组里的顺序就是被引用的语义顺序
+3. 每道题必须给 source_chunk_ids:出题用到的 chunks 编号(对应上下文 chunks 的 [N] 标号),数组里的顺序就是被引用的语义顺序
 4. reference_chunk_ids ⊆ source_chunk_ids,且 reference_answer 文本里**必须用 [N] 引用每个 reference_chunk_id**
 5. 题型仅两类:
    - open_ended:开放式 — 讲过程 / 原理 / trade-off / 对比
@@ -333,15 +324,40 @@ reference_points 的 schema 见 3-DATA_MODEL §6.1。
   ]
 }
 
-注:source_chunk_ids 数组里的 int 必须是 USER 段 [N] 标号(从 1 起算,**不是** DB id)— service 层会把 [N] 还原成 DB id 落库。
+注:source_chunk_ids 数组里的 int 必须是上下文 chunks 的 [N] 标号(从 1 起算,**不是** DB id)— service 层会把 [N] 还原成 DB id 落库。
 ```
 
-## 3.4 USER 模板(`quiz_generator` v1.0)
+## 3.4 Messages 模板(`quiz_generator` v1.1)
 
 ```
+system(prefix):
+JobCopilot session fixed note chunks. These chunks are user notes and the factual context for the following task. Do not answer yet; read and reuse the chunk ids exactly as written.
+
+retrieval pipeline chunks(共 {chunk_count} 个,已按相关性排序):
+
+[1] note: {note_title_1} | folder: {folder_path_1} | heading: {heading_path_1}
+{content_1}
+
+...
+
+system:
+{quiz_generator SYSTEM}
+
+user(task):
 查询主题:{user_query}
 
-retrieval pipeline 产出的 chunks(共 {chunk_count} 个,已按相关性排序):
+要求出 {question_count} 道题,主题贴查询主题,内容锚定前文 chunks。
+```
+
+兼容旧 client / 测试 fallback 时,会把 prefix + task 合并到单个 `user` 文本。
+
+渲染示例(query = "考考我多线程",出 5 题):
+
+```
+system(prefix):
+JobCopilot session fixed note chunks...
+
+retrieval pipeline chunks(共 2 个,已按相关性排序):
 
 [1] note: {note_title_1} | folder: {folder_path_1} | heading: {heading_path_1}
 {content_1}
@@ -349,31 +365,9 @@ retrieval pipeline 产出的 chunks(共 {chunk_count} 个,已按相关性排序)
 [2] note: {note_title_2} | folder: {folder_path_2} | heading: {heading_path_2}
 {content_2}
 
-...
-
-要求出 {question_count} 道题,主题贴查询主题,内容锚定上述 chunks。
-```
-
-渲染示例(query = "考考我多线程",出 5 题):
-
-```
+user(task):
 查询主题:考考我多线程
-
-retrieval pipeline 产出的 chunks(共 8 个,已按相关性排序):
-
-[1] note: Java 并发深入 | folder: Java/并发 | heading: synchronized > 锁升级
-## 锁升级
-synchronized 在 JDK 1.6 后引入了锁升级:无锁 → 偏向锁 → 轻量级锁 → 重量级锁。
-偏向锁假设只有一个线程会进入同步块,通过 mark word 记录线程 id...
-
-[2] note: Java 并发深入 | folder: Java/并发 | heading: ReentrantLock > AQS
-## AQS
-AbstractQueuedSynchronizer 提供模板方法 + state 字段...
-
-[3] note: 操作系统笔记 | folder: 操作系统 | heading: 进程调度 > 死锁
-...
-
-要求出 5 道题,主题贴查询主题,内容锚定上述 chunks。
+要求出 5 道题,主题贴查询主题,内容锚定前文 chunks。
 ```
 
 ## 3.5 service 层后处理
@@ -381,7 +375,7 @@ AbstractQueuedSynchronizer 提供模板方法 + state 字段...
 LLM 输出 JSON 后,service 层(`apps/api/src/jobcopilot_api/services/quiz_service.py`)做:
 
 1. **Pydantic 校验**:不合 schema → retry 1 次
-2. **`[N]` → DB id 映射**:USER 段构建 chunks 时记录 `[1] = chunk.id=5001` 的映射,output 里所有 source_chunk_ids / reference_chunk_ids / evidence_chunk_ids 替换为 DB id
+2. **`[N]` → DB id 映射**:上下文 chunks 构建时记录 `[1] = chunk.id=5001` 的映射,output 里所有 source_chunk_ids / reference_chunk_ids / evidence_chunk_ids 替换为 DB id
 3. **完整性校验**:
    - `len(questions) == question_count`
    - 每题 `source_chunk_ids ⊆ provided chunk ids`
@@ -418,7 +412,7 @@ class AnswerJudgeOutput:
 
 **Judge 不输出三层分数**,Python 端按 evidence 列表 label 算分(详见 §4.5)。Judge 只填 `score_raw` 自评浮点(0-1),仅审计用。
 
-## 4.3 SYSTEM prompt(`answer_judge` v1.0)
+## 4.3 SYSTEM prompt(`answer_judge` v1.2)
 
 ```
 你是评估程序员技术问答的 Judge Agent。三层评分:
@@ -488,12 +482,29 @@ class AnswerJudgeOutput:
   }
 }
 
-注:claims 里 chunk_ids / coverage_evidence 里没有 chunk_ids 字段(point 已经有 evidence_chunk_ids 了,Judge 不需要重复)。
+注:claims 里的 chunk_ids 默认写上下文 chunks 的 [N] 标号;若采用工具结果作为证据,写工具返回的 ref_id。不要写数据库 id。
 ```
 
-## 4.4 USER 模板(`answer_judge` v1.0)
+## 4.4 Messages 模板(`answer_judge` v1.2)
 
 ```
+system(prefix):
+JobCopilot session fixed note chunks. These chunks are user notes and the factual context for the following task. Do not answer yet; read and reuse the chunk ids exactly as written.
+
+retrieval pipeline chunks(共 {chunk_count} 个,已按相关性排序):
+
+[1] note: {note_title_1} | folder: {folder_path_1} | heading: {heading_path_1}
+{content_1}
+
+...
+
+system:
+{answer_judge SYSTEM_WITH_LOOKUP_TOOL}
+
+user(task):
+Respond with a single JSON object that matches this schema:
+{AnswerJudgeOutput JSON Schema}
+
 题目:{question_prompt}
 题型:{question_type}
 
@@ -504,18 +515,11 @@ reference_points:
 reference_answer:
 {reference_answer}
 
-chunks(共 {chunk_count} 个):
-
-[1] folder: {folder_path_1} | heading: {heading_path_1} (level {level_1})
-{content_1}
-
-[2] ...
-
 用户答案:
 {user_answer}
 ```
 
-注意:USER 段里的 chunk 编号 `[N]` 跟 reference_points 里 evidence_chunk_ids 引用的编号必须**一致** — service 层渲染 USER 时复用 QuizGenerator 出题时的 [N] → DB id 映射(从 questions 表里 source_chunk_ids 顺序还原)。
+注意:prefix 里的 chunk 编号 `[N]` 跟 reference_points 里 evidence_chunk_ids 引用的编号必须**一致** — service 层优先复用 `quiz_sessions.retrieved_chunk_ids` 的 session 顺序还原 [N] → DB id 映射,确保 Quiz 与 Judge 的 cache prefix 稳定。
 
 ## 4.5 总分计算(Python SSoT)
 
@@ -930,7 +934,7 @@ retrieve_context
 | §7.1 评委即被评者 | LLM 自评 LLM 偏高 +5-10pp | **不适用**:v2 评委是 LLM,被评者是人类答题文本;无自评关系。kappa 仍守门(测 Judge vs 人类标注一致性),不达标改 prompt 不切模型 |
 | §8.2 Prompt 是产品代码 | 没版本号 → 无法回退 / ablation | §2.3 prompt 落 `prompt_versions` 表,改一次 bump version,questions / session_answers 留旧 version 字段 |
 | §8.3 信任输入差异化 | 一刀切 retrieval | QuizGenerator 吃节点 prefix 全量 chunks(完整性);AnswerJudge 只吃 source_chunk_ids 那批(相关性聚焦) |
-| §8.4 USER 段是权威指令位 | 鼓励性文案 = 命令 | SYSTEM 写硬约束,USER 段只放数据(chunks / 题 / 用户答),不放 hint |
+| §8.4 动态 user message 是权威指令位 | 鼓励性文案 = 命令 | SYSTEM 写硬约束,user message 只放任务数据(chunks / 题 / 用户答),不放 hint |
 | §1.2 Drafter 镜像 JD | 把候选人没有的技能抄进简历 | ResumeAdvisor §7.2 硬约束 #1 + service 层 FORBIDDEN_PATTERNS 拦截"建议改写为 X"句式 |
 | §1.4 ProfileParser description 幻觉 | 从 bullets[0] 改写复述 | JdParser §5.2 硬约束 #1:只抽 JD 文本明确出现的内容,不"行业常识"补全 |
 | §5.1 JDParser OR 误抽 AND | "熟悉 X 或 Y" 误抽成"X+Y 合一" | JdParser §5.2 硬约束 #4 显式警告 |
@@ -953,7 +957,7 @@ retrieve_context
 | Temperature | DashScope 默认,不暴露 | prompt 端约束逼近低温度 |
 | Prompt 版本号 | DB `prompt_versions` 表,改一次 bump | questions / session_answers 留旧 version |
 | LLM cache | `(prompt_version, system_hash, user_hash, model)` | dogfood 重跑成本 ≈ 0 |
-| chunk 编号 | USER 段用 `[N]`(1-based),service 层映射 DB id | LLM 友好 + 数据库无关 |
+| chunk 编号 | 上下文 prefix 用 `[N]`(1-based),service 层映射 DB id | LLM 友好 + 数据库无关 |
 | 反幻觉 | 反向警告,不写鼓励语 | 沿用 §1.3 / §8.4 |
 | 算分位置 | Python 算,LLM 只给 label + 自评 score_raw | LLM 算术不可信;权重 SSoT 在代码 |
 | Judge JSON schema | 严格,Pydantic 校验,retry ≤ 1 | 失败抛 `llm_call_failed` |

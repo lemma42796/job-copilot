@@ -23,12 +23,13 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 最新状态:
 
-- `main` 已完成 M2 AnswerJudge + cache 文档改动提交;push 后 working tree 应清空。
-- 最新本地提交主题:`feat: add m2 answer judge scoring flow`。
+- 本轮完成 **Context Cache 接入 Quiz/Judge**:共享 chunks 前缀、LLM messages 下发、DashScope `cache_control`、`cache_creation_input_tokens` 审计。
+- 本轮保存提交主题:`feat: add context cache to quiz judge`;push 后 working tree 应清空。
+- 最新已推提交主题:`fix: stabilize answer judge tool scoring flow`。
 - M2 retrieval quiz pipeline 代码已提交:`103d882 feat: add m2 retrieval quiz pipeline`。
 - M2.1 Agentic RAG 文档已提交:`fd892fa docs: add agentic interview coach roadmap`。
 - M2 AnswerJudge 初版已落地:三层 evidence prompt / agent / submit SSE / Python 算分 / fabricated 锁顶。
-- 真实验收:出题 + 保存答案通过;submit 进入 `judging order_index=0` 后仅 heartbeat,未写 `judged_at`;需补 Judge 超时 / cache 优化。
+- 真实验收:出题 + 保存答案通过;Judge 已补 hard timeout、tool-use 评分稳定化与 Context Cache 接入;仍需用户手动跑 migration + 快速端到端验证。
 - GitHub Actions 已改为**手动触发**(`workflow_dispatch`),push 不再自动跑 lint / tests / build。
 - 本地开发形态改为**Docker Postgres + 本机 API**;避免 api 容器 rebuild 与 compose key 映射坑。
 
@@ -47,7 +48,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 - **M2 schema / retrieval / quiz pipeline 初版**:0017 migration、quiz router、query rewriter、retrieval pipeline、reranker、quiz service 编排已入库。
 - **M2 AnswerJudge 初版**:`answer_judge` schema / prompt / agent、`answer_service.submit_session_sse`、三层分 + session 汇总、答题草稿 / abandon 端点已入库。
-- **百炼 Context Cache 设计沉淀**:qwen3.6-flash 支持 OpenAI-compatible Chat 显式 cache;后续把 session chunks 放稳定公共前缀,Quiz / Judge 复用。
+- **百炼 Context Cache 已接入 Quiz/Judge**:session chunks 走稳定公共前缀;QuizGenerator / AnswerJudge 复用同一渲染函数;`llm_calls` 记录 `cached_tokens` 与 `cache_creation_input_tokens`。
 - **M2.1 Agentic RAG 方向锁定**:`InterviewCoachAgent` 不做泛化多 Agent,只做面试状态机:检索 → 出题 → 等答 → 评分 → 决策 → 追问 / 总结。
 - **CI 策略调整**:所有 GitHub workflow 改为手动触发,避免 push 自动跑测试和邮件通知。
 
@@ -55,14 +56,13 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **M2 Judge 稳定性**:给单题 Judge 加 service 层 hard timeout + SSE `judge_call_failed`,同时为 Quiz/Judge 接百炼 Context Cache。
+1. **M2 Context Cache 验收**:用户手动跑 alembic upgrade + 一次 Quiz/Judge smoke,核对 `llm_calls.cached_tokens` / `cache_creation_input_tokens` 和评分返回。
 
 备选:
 
-- 补 `lookup_in_notes_global` tool use,Judge 标 fabricated 前强制查全笔记。
-- 瘦身 AnswerJudge 输入:评分优先吃题目 + reference_points,chunks 作为稳定 cache 前缀或按需 lookup。
 - 做 quiz/session 前端入口,把当前后端 pipeline 接到可演示 UI。
 - 补 Langfuse trace 颗粒度:query rewrite / hybrid / rerank / parent-doc / quiz generation。
+- 开始 M2.1 `InterviewCoachAgent` 状态机。
 - 用户手动跑后,根据失败日志修 M2 pipeline。
 
 # 已锁定关键决策

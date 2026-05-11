@@ -788,6 +788,11 @@ LLM 一次调用基于 aggregated_requirements 输出的 markdown,**不约束严
 | `llm_calls` | alembic 0006 | LLM 调用成本 audit(出题 / 评分 / 嵌入) |
 | `llm_response_cache` | alembic 0015 | 同 prompt 重跑命中缓存,降本 |
 
+`llm_calls` 在 v2 里继续演进,但仍归这张成本 audit 表:
+
+- alembic 0018 增加 `metadata JSONB NOT NULL DEFAULT '{}'`:记录 Judge lookup 工具次数、ref_id → chunk_id 映射、未验证 fabricated claim 等运行期元数据。
+- alembic 0019 增加 `cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0`:记录 provider-side Context Cache 首次创建时的输入 tokens,与已有 `cached_tokens` 分开审计 / 计费。
+
 `char_ngrams(text)` SQL 函数(alembic 0014)也保留 — `note_chunks.content_tsv` 直接复用。
 
 # 10. 迁移路径(v1 → v2)

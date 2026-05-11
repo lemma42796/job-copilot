@@ -17,6 +17,7 @@ class Pricing:
 
     in_: Decimal
     cached_in: Decimal
+    cache_creation_in: Decimal
     out: Decimal
 
 
@@ -25,6 +26,7 @@ _TABLE: dict[str, Pricing] = {
     "qwen3.6-flash": Pricing(
         in_=Decimal("0.6"),
         cached_in=Decimal("0.12"),
+        cache_creation_in=Decimal("0.75"),
         out=Decimal("7.2"),
     ),
     # qwen3.6-plus: 实测后回填 (ADR-0003 §「负面」第 4 条)
@@ -45,21 +47,25 @@ def cost_for(
     tokens_in: int,
     cached_tokens: int,
     tokens_out: int,
+    cache_creation_input_tokens: int = 0,
 ) -> Decimal:
     """Compute total cost in CNY.
 
-    Uncached input tokens are billed at `in_`, cached portion at `cached_in`,
-    output always at `out`. Returns Decimal(0) for unknown models — the
-    caller still gets a valid LLMResult; the missing-model condition is
-    recorded by surrounding logging instead of raising here.
+    Uncached input tokens are billed at `in_`, cached hits at `cached_in`,
+    explicit cache writes at `cache_creation_in`, output always at `out`.
+    Returns Decimal(0) for unknown models — the caller still gets a valid
+    LLMResult; the missing-model condition is recorded by surrounding logging
+    instead of raising here.
     """
     pricing = _TABLE.get(model)
     if pricing is None:
         return Decimal("0")
 
-    uncached_in = max(tokens_in - cached_tokens, 0)
+    creation_in = max(cache_creation_input_tokens, 0)
+    uncached_in = max(tokens_in - cached_tokens - creation_in, 0)
     return (
         Decimal(uncached_in) * pricing.in_
         + Decimal(cached_tokens) * pricing.cached_in
+        + Decimal(creation_in) * pricing.cache_creation_in
         + Decimal(tokens_out) * pricing.out
     ) / _PER_MILLION

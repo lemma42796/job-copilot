@@ -63,6 +63,16 @@ def _read_cached_tokens(usage: Any) -> int:
     return int(cached)
 
 
+def _read_cache_creation_input_tokens(usage: Any) -> int:
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is None:
+        return 0
+    created = getattr(details, "cache_creation_input_tokens", None)
+    if created is None:
+        return 0
+    return int(created)
+
+
 class DashscopeProvider(Provider):
     def __init__(self, *, api_key: str, base_url: str = DASHSCOPE_BASE_URL) -> None:
         if not api_key:
@@ -77,7 +87,9 @@ class DashscopeProvider(Provider):
     ) -> ProviderResponse:
         kwargs: dict[str, Any] = {
             "model": request.model,
-            "messages": [
+            "messages": request.messages
+            if request.messages is not None
+            else [
                 {"role": "system", "content": request.system},
                 {"role": "user", "content": request.user},
             ],
@@ -120,12 +132,19 @@ class DashscopeProvider(Provider):
         content = choice.message.content or ""
         usage = resp.usage
         if usage is None:  # pragma: no cover - DashScope always returns usage
-            return ProviderResponse(content=content, tokens_in=0, tokens_out=0, cached_tokens=0)
+            return ProviderResponse(
+                content=content,
+                tokens_in=0,
+                tokens_out=0,
+                cached_tokens=0,
+                cache_creation_input_tokens=0,
+            )
         return ProviderResponse(
             content=content,
             tokens_in=int(usage.prompt_tokens),
             tokens_out=int(usage.completion_tokens),
             cached_tokens=_read_cached_tokens(usage),
+            cache_creation_input_tokens=_read_cache_creation_input_tokens(usage),
         )
 
     async def _complete_stream(
@@ -146,6 +165,7 @@ class DashscopeProvider(Provider):
         tokens_in = 0
         tokens_out = 0
         cached_tokens = 0
+        cache_creation_input_tokens = 0
         try:
             stream = await self._client.chat.completions.create(**stream_kwargs)
             async for chunk in stream:
@@ -153,6 +173,9 @@ class DashscopeProvider(Provider):
                     tokens_in = int(chunk.usage.prompt_tokens)
                     tokens_out = int(chunk.usage.completion_tokens)
                     cached_tokens = _read_cached_tokens(chunk.usage)
+                    cache_creation_input_tokens = _read_cache_creation_input_tokens(
+                        chunk.usage
+                    )
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -185,4 +208,5 @@ class DashscopeProvider(Provider):
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             cached_tokens=cached_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
         )

@@ -1,14 +1,15 @@
-"""AnswerJudge prompts — `answer_judge` v1.1(5-AGENT_DESIGN §4.3 / §4.4)。"""
+"""AnswerJudge prompts — `answer_judge` v1.2(5-AGENT_DESIGN §4.3 / §4.4)。"""
 
 from __future__ import annotations
 
+from jobcopilot_api.agents.context_cache import render_chunk_cache_text
 from jobcopilot_api.schemas.agents.quiz_generator import (
     GeneratedQuestion,
     QuizGenChunkInput,
 )
 
 PROMPT_NAME = "answer_judge"
-PROMPT_VERSION = "v1.1"
+PROMPT_VERSION = "v1.2"
 
 SYSTEM = """你是评估程序员技术问答的 Judge Agent。三层评分:
 
@@ -77,7 +78,7 @@ SYSTEM = """你是评估程序员技术问答的 Judge Agent。三层评分:
   }
 }
 
-注:claims 里的 chunk_ids 默认写 USER 段 [N] 标号;若采用工具结果作为证据,
+注:claims 里的 chunk_ids 默认写上下文 chunks 的 [N] 标号;若采用工具结果作为证据,
 写工具返回的 ref_id。不要写数据库 id。"""
 
 TOOL_SYSTEM_APPENDIX = """
@@ -94,7 +95,7 @@ lookup_in_notes_global(claim) 验证一次。流程:
 4. 没匹配上,才标 fabricated
 
 不要为 supported / inferred 的 claim 调工具。每个用户答案最多 5 次工具调用。
-本题原始 chunks 仍用 [N] 编号;工具返回的全库 chunks 带 ref_id。如果你采用
+前文上下文 chunks 仍用 [N] 编号;工具返回的全库 chunks 带 ref_id。如果你采用
 工具结果作为证据,claims[].chunk_ids 写工具返回的 ref_id,不要写 chunk_id。"""
 
 SYSTEM_WITH_LOOKUP_TOOL = f"{SYSTEM}{TOOL_SYSTEM_APPENDIX}"
@@ -142,4 +143,42 @@ def render_user(
         f"{chunks_section}\n\n"
         "用户答案:\n"
         f"{user_answer}"
+    )
+
+
+def render_task(
+    *,
+    question: GeneratedQuestion,
+    user_answer: str,
+) -> str:
+    points = []
+    for p in question.reference_points:
+        evidence_ids = ", ".join(f"[{n}]" for n in p.evidence_chunk_ids)
+        points.append(
+            f'- {p.id} (weight={p.weight:.2f}): "{p.text}",'
+            f"支撑 chunks: {evidence_ids}"
+        )
+
+    points_section = "\n".join(points)
+    return (
+        f"题目:{question.prompt}\n"
+        f"题型:{question.type}\n\n"
+        "reference_points:\n"
+        f"{points_section}\n\n"
+        "reference_answer:\n"
+        f"{question.reference_answer}\n\n"
+        "用户答案:\n"
+        f"{user_answer}"
+    )
+
+
+def render_cache_fallback_user(
+    *,
+    question: GeneratedQuestion,
+    chunks: list[QuizGenChunkInput],
+    user_answer: str,
+) -> str:
+    return (
+        f"{render_chunk_cache_text(chunks)}\n\n"
+        f"{render_task(question=question, user_answer=user_answer)}"
     )

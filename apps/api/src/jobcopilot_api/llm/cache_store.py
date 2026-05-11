@@ -1,7 +1,8 @@
 """CacheStore — LLM response 客户端缓存(S21 子任务 4-B)。
 
-DashScope 没有 Anthropic 那种 server-side prompt caching;评测和 dogfood
-阶段重复跑同 prompt 成本线性放大,客户端 response cache 直接降一个数量级。
+Provider 侧 Context Cache 只省共享前缀输入成本;评测和 dogfood 阶段重复跑同
+prompt 仍会产生输出成本。客户端 response cache 直接缓存完整响应,用于相同
+请求的零上游调用复用。
 
 设计与 `CallLogger` 同形:Protocol + Postgres 实现 + Noop 默认。`PostgresCacheStore`
 用**独立** `async_sessionmaker`(与请求链路的 session 隔离),业务事务回滚不

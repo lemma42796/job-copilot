@@ -1,13 +1,14 @@
-"""System-prompt cache contract (ADR-0004 D2).
+"""Provider-side context cache contract (ADR-0004 D2).
 
-DashScope's OpenAI-compatible endpoint enables prompt cache by default and
-exposes no SDK toggle, so the `cache_system: bool` parameter on
-`LLMClient.complete` is a *semantic* placeholder kept for forward
-compatibility with future providers.
+DashScope's OpenAI-compatible endpoint can reuse a prefix marked with
+`cache_control`. The `cache_system: bool` parameter on `LLMClient.complete`
+is still a *semantic* placeholder kept for forward compatibility with
+future providers.
 
-What actually drives cache hits is the **prefix-stable** rule below. Hit
-rate is reported back via `LLMResult.cached_tokens` (read from
-`response.usage.prompt_tokens_details.cached_tokens`).
+What actually drives cache hits is the **prefix-stable** rule below. Hits
+are reported via `LLMResult.cached_tokens`; first-write cache creation is
+reported via `LLMResult.cache_creation_input_tokens` when the provider
+includes it.
 """
 
 from __future__ import annotations
@@ -15,14 +16,13 @@ from __future__ import annotations
 PREFIX_STABLE_GUIDANCE = """\
 To maximize prompt-cache hits with provider-side caching:
 
-1. Build the system message from constants only — no timestamps, request
-   IDs, user names, or any per-call dynamic content.
-2. Put dynamic context in the user message instead. The cache key is the
-   tokenized system message prefix; even a single character drift kills
-   the hit.
-3. Order matters. If you must concatenate multiple system fragments, do
-   them in a fixed order so the resulting string is byte-identical across
-   calls of the same agent.
+1. Put the large reusable context in the earliest message prefix and mark
+   that text with `cache_control` when the provider supports explicit
+   context cache.
+2. Keep that prefix byte-stable — no timestamps, request IDs, user names,
+   or task-specific wording before the cache marker.
+3. Put dynamic task instructions after the shared prefix. Even a single
+   character drift in the cached prefix kills the hit.
 
 `LLMClient.complete(cache_system=False)` is reserved for the rare case
 where the system block legitimately must be unique per call (e.g. an
