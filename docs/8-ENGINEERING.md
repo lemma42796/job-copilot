@@ -1,13 +1,13 @@
 ---
 title: ENGINEERING - JobCopilot v2(仓库结构 / 工具链 / CI / 迁移 / 本地开发 / 部署)
 owner: lemma42796
-last_updated: 2026-05-10
-purpose: 锁工程基线 — 一个新协作者按本文从零跑通项目,改完代码不破坏 CI,改 schema 不破坏迁移,改 prompt 不破坏评测
+last_updated: 2026-05-11
+purpose: 锁工程基线 — 一个新协作者按本文从零跑通项目,知道本地验证入口、手动 CI、迁移、部署与协作约束
 ---
 
 # 1. 一句话总览
 
-monorepo:**Python uv workspace**(`apps/api`)+ **pnpm workspace**(`apps/web` / `packages/schemas` / `evals`),Python 一套(ruff + mypy + pytest),JS 一套(biome + tsc + 各包自带 test),Alembic 单 head,docker compose 6 服务本地起。CI 跑 6 条 workflow:lint / test-api / test-web / type-sync / docker-smoke / eval(M0 期间是手动触发,M2 数据集到位后再放开自动)。
+monorepo:**Python uv workspace**(`apps/api`)+ **pnpm workspace**(`apps/web` / `packages/schemas` / `evals`),Python 一套(ruff + mypy + pytest),JS 一套(biome + tsc + 各包自带 test),Alembic 单 head,docker compose 6 服务本地起。GitHub Actions 保留 6 条 workflow,但全部只支持手动触发(`workflow_dispatch`),push / PR 不自动跑。
 
 # 2. 仓库结构
 
@@ -195,23 +195,21 @@ PR 必填:
 
 > **说明**:PR 描述里讲 "为什么"。"什么" git diff 自己看,"为什么" diff 看不出来。
 
-# 6. CI 流水线
+# 6. 手动 CI 流水线
 
-`.github/workflows/` 6 条,各自独立 cancel-in-progress(同一 PR push 多次只跑最后一次):
+`.github/workflows/` 6 条,全部只在 GitHub Actions UI 手动点 **Run workflow** 时触发。这样保留远端闸门入口,但避免每次 push 自动跑测试 / 发邮件。
 
-## 6.1 lint.yml — 全员体检(每次 push / PR)
+## 6.1 lint.yml — 全员体检(手动)
 
 3 个 job 并行:
 
 - **python**:`uv sync --frozen --package jobcopilot-api --extra dev` → ruff check + ruff format --check + mypy
 - **web**:pnpm install + biome check + tsc(web + schemas 两个 package)
-- **model-id-lint**:grep 防 stale 模型 ID 误用(`qwen-vl / qwen-plus / qwen-flash / qwen-max` 等 v1 历史命名禁入新代码 / 新文档;`docs/slices/` 历史归档豁免)
+- **model-id-lint**:grep 防 stale 模型 ID 误用(旧 `qwen` 视觉 / plus / flash / max 命名禁入新代码 / 新文档;`docs/slices/` 历史归档豁免)
 
-> **为什么单独有 model-id-lint**:S21 W8 真出过 bug — 半年前的注释 / 文档里残留 `qwen-vl-plus`,新人改代码时复制粘贴推到生产。grep CI = 工程化的"永久约束 19"(qwen3.6-flash 唯一)。
+> **为什么单独有 model-id-lint**:S21 W8 真出过 bug — 半年前的注释 / 文档里残留旧视觉 plus 模型名,新人改代码时复制粘贴推到生产。grep workflow = 工程化的"永久约束 19"(qwen3.6-flash 唯一)。
 
 ## 6.2 test-api.yml — 后端单测 / 集成测
-
-paths 触发:`apps/api/**` / `pyproject.toml` / `uv.lock`
 
 - pytest + coverage,**fail_under: 70**(`pyproject.toml` 已锁)
 - 集成测用 `testcontainers[postgres]>=4.8.2` 拉真 PG(LESSONS §7.5 之类:不 mock DB,跟生产同 schema)
@@ -219,22 +217,16 @@ paths 触发:`apps/api/**` / `pyproject.toml` / `uv.lock`
 
 ## 6.3 test-web.yml — 前端 build
 
-paths 触发:`apps/web/**` / `packages/schemas/**`
-
 - `pnpm --filter @jobcopilot/web build`(NEXT_TELEMETRY_DISABLED=1)
 - 不跑 e2e — playwright 留到 M3 dashboard 联调时再起 workflow
 
 ## 6.4 type-sync.yml — OpenAPI 漂移防线
 
-paths 触发:`apps/api/**` / `packages/schemas/**`
-
 - 起一个 API server → curl `/v1/openapi.json` → `pnpm gen:api` 重生 → `git diff --exit-code packages/schemas/src/api.ts`
-- 任何 router 改动忘 regen schema → CI 红
-- **说明**:后端 schema 跟前端类型用同一份 source of truth(OpenAPI),CI 防"后端改了字段但前端 API 类型没同步"
+- 任何 router 改动忘 regen schema → 手动 workflow 会红
+- **说明**:后端 schema 跟前端类型用同一份 source of truth(OpenAPI),手动 type-sync 防"后端改了字段但前端 API 类型没同步"
 
 ## 6.5 docker-smoke.yml — 镜像可起 + 联通
-
-paths 触发:`docker/**` / `docker-compose.yml` / `apps/api/**` / `apps/web/**`
 
 - `docker compose build api web` → `docker compose up -d postgres api web`
 - 等 api healthcheck 通过(60 次 × 2s 重试)
@@ -244,22 +236,23 @@ paths 触发:`docker/**` / `docker-compose.yml` / `apps/api/**` / `apps/web/**`
 
 ## 6.6 eval.yml — prompt 防回归
 
-**M0 期间 manual trigger 不 push 自动跑**,M2 数据集到 50 条 + Δ ≤ -2pp 比对脚本就位时再放开 push / pull_request。理由:dataset 不稳定 + 跑一次烧钱 + 评测 kappa 没达标前数字本身不可信。
+保持手动触发。理由:dataset 不稳定 + 跑一次烧钱 + 评测 kappa 没达标前数字本身不可信。
 
-- 5 个 suite(hybrid_search / quiz_generator / answer_judge / jd_aggregator / resume_advisor)各自 1 个 job
+- 6 个 suite(hybrid_search / quiz_generator / answer_judge / interview_coach / jd_aggregator / resume_advisor)各自 1 个 job
 - 用 `DASHSCOPE_API_KEY_EVAL` GH secret(跟主 key 分账,跑炸了不影响 dev)
 - 报告 `evals/reports/<suite>/latest.json` 上传 artifact,留存 14 天
 
-## 6.7 CI 触发矩阵
+## 6.7 手动 workflow 选择
 
-| 改了什么 | 触发哪些 workflow |
+| 想验证什么 | 手动运行哪些 workflow |
 |--------|-----------------|
-| `apps/api/src/**` Python 代码 | lint / test-api / type-sync(若改了 router)/ docker-smoke |
-| `apps/web/src/**` TS / TSX | lint / test-web / docker-smoke |
-| `packages/schemas/src/**` | lint / test-web / type-sync |
-| `docker/**` / `docker-compose.yml` | docker-smoke |
-| `apps/api/.../prompts/**` | (manual)eval — M2 后自动 |
-| `docs/**` / `*.md` | 不触发 CI(只跑 model-id-lint via lint.yml 里的 grep) |
+| Python lint / type | lint |
+| 后端测试 / migration | test-api |
+| 前端 build | test-web |
+| OpenAPI → schemas 漂移 | type-sync |
+| Docker compose 可起 | docker-smoke |
+| prompt / eval 防回归 | eval |
+| 文档改动 | 通常不跑;如担心模型 ID 残留,手动跑 lint |
 
 # 7. Alembic 迁移
 
@@ -424,9 +417,9 @@ langfuse:
 
 | 层 | 工具 | 跑哪些 | CI |
 |----|------|------|-----|
-| **单测** | pytest(`tests/unit/**`)| pure function / service 不连 DB / agent prompt render 校验 / pydantic schema | test-api 每次 push |
-| **集成测** | pytest + testcontainers(`tests/integration/**`,标 `@pytest.mark.integration`)| 真 PG + 真 alembic upgrade + service 完整路径(routers / services / models)| test-api 每次 push |
-| **评测** | pnpm eval(`evals/suites/**`)| 真 LLM call + dataset.jsonl + Cohen's kappa | manual / M2 后自动(eval.yml) |
+| **单测** | pytest(`tests/unit/**`)| pure function / service 不连 DB / agent prompt render 校验 / pydantic schema | 手动 test-api |
+| **集成测** | pytest + testcontainers(`tests/integration/**`,标 `@pytest.mark.integration`)| 真 PG + 真 alembic upgrade + service 完整路径(routers / services / models)| 手动 test-api |
+| **评测** | pnpm eval(`evals/suites/**`)| 真 LLM call + dataset.jsonl + Cohen's kappa | 手动 eval |
 | **e2e** | playwright(M3 起)| 浏览器跑用户路径(笔记上传 → 出题 → 答题 → 评分)| manual M3 后 |
 
 测试覆盖率门槛:`pyproject.toml` `fail_under = 70`,触发 `--cov-fail-under=70`。**不追求 90+** — 单测覆盖率假高有,LLM call 路径(agents/)放 70 比较诚实(走集成测 + 评测兜底)。
@@ -435,7 +428,7 @@ langfuse:
 
 **永久约束(STATUS.md `[来自 M1]`)**:v2 阶段所有后续切片**一律不产出 unit / integration / e2e 测试文件**。STATUS.md 列出的测试 TODO 也不主动开工,需求由用户验完显式追加。
 
-- v1 已写好的测试**保留不删**(`tests/unit` / `tests/integration` / `evals/suites/`),CI 跑(`test-api.yml` 沿用)
+- v1 已写好的测试**保留不删**(`tests/unit` / `tests/integration` / `evals/suites/`),需要时手动跑 `test-api.yml`
 - 新切片仅产出业务代码 + 评测 dataset(评测 dataset 不算"测试代码",是 prompt 防回归资产)
 - 自动化校验(`pytest` / `mypy` / `ruff` / `pnpm typecheck` / `pnpm lint` / `pnpm build` / `playwright` / `curl localhost:* probe` 等)由用户手动跑;AI 助手改完代码**不主动启动**任何自动化校验,只口头描述期望(URL / 操作步骤 / 期望看到的字段或数字),让用户在浏览器或终端自己验
 
@@ -447,12 +440,12 @@ langfuse:
 
 - 改 prompt 必须 bump 版本号:`<agent>_v<X.Y.Z>.j2`(`answer_judge_v1.0.0.j2`)
 - 旧版**保留**(便于回退 + ablation 跑老 prompt 对比新 prompt)
-- 每类 bug 进 `evals/suites/<agent>/dataset.jsonl` 防回归(JDParser v1 历史 26 类 bug → 26 条 fixture,M0 后扩到 v2 5 个 suite)
-- prompt 改完跑全套 evals(M2 后自动,M0-M1 期间手动)+ 报告快照存 `evals/reports/<suite>/latest.json`
+- 每类 bug 进 `evals/suites/<agent>/dataset.jsonl` 防回归(JDParser v1 历史 26 类 bug → 26 条 fixture,M0 后扩到 v2 6 个 suite)
+- prompt 改完由用户手动跑对应 eval workflow / 本地 eval 命令,报告快照存 `evals/reports/<suite>/latest.json`
 
 ## 10.3 LLM-as-Judge 可靠性(6-EVAL 详)
 
-- Judge 用 qwen3.6-plus(thinking on),evaluatee 用 qwen3.6-flash(防"评委即被评者"自评高 5-10pp)
+- v2 评委是 LLM、被评者是人类答题文本或人类简历,不存在 LLM 评 LLM 自评关系;模型统一用 qwen3.6-flash,可靠性靠人工标注 + kappa 守门
 - 每季度 50 条人工复核 → Cohen's kappa(`evals/kappa.py`),`κ ≥ 0.7` 才放心用
 - κ < 0.7 触发 Judge prompt 改版 + 历史结果重跑(标"Judge v1.0.x 评的,可信度待验证")
 
@@ -590,16 +583,16 @@ STATUS.md "已锁定的关键决策"表 = 不再返工的清单。如果有理�
 | migration 纪律 | model 改必有 revision;集成测跑真 alembic upgrade(不 create_all)| 防 model / migration 漂移 |
 | docker compose 服务数 | 6(postgres / api / web / caddy / langfuse / langfuse-db) | 业务 PG 跟 Langfuse PG 分实例 |
 | Langfuse 部署 | 自部署不上 LangSmith(数据不出本地) | 详见 2-TECH §6 |
-| CI 触发策略 | 6 条独立 workflow + paths 过滤 + concurrency cancel | 改文档不烧 CI |
-| eval workflow | M0-M1 manual 触发,M2 数据集到位再放开 push | 防"dataset 不稳定 + 烧钱 + kappa 没达标数字不可信"三件 |
-| model-id-lint | grep CI 防 stale 模型 ID 误用 | 永久约束 19(qwen3.6-flash 唯一)的工程化兜底 |
+| CI 触发策略 | 6 条 workflow 全部 `workflow_dispatch` 手动触发 | push / PR 不自动跑,避免打扰 |
+| eval workflow | 始终手动触发 | 防"dataset 不稳定 + 烧钱 + kappa 没达标数字不可信"三件 |
+| model-id-lint | 手动 lint workflow 内 grep 防 stale 模型 ID 误用 | 永久约束 19(qwen3.6-flash 唯一)的工程化兜底 |
 | 模型版本 | qwen3.6-flash 一把抓(文本 + 图像 + tool use) | 简化模型路由(2-TECH §3) |
 | LLM SDK | OpenAI Python SDK(via 百炼兼容)+ langfuse.openai 自动 instrument | LLM 调用零额外埋点(**例外**:embeddings 要手动包 generation,见 §11.1)|
 | commit 风格 | feat / fix / docs / refactor / chore 前缀英文,描述中文随意 | 不加 Co-Author / 不写 Generated with Claude Code / Generated with Codex |
 | tag 策略 | 里程碑末态打 `v0.X-MX-end`,切片不打 | 避免 tag 噪音 |
 | 文档 SSoT | docs/ 9 份核心 + STATUS + LESSONS | 永久约束在 STATUS.md;踩坑细节追加 LESSONS.md |
 | ADR 阈值 | 跨里程碑架构决策才开 ADR,下一个编号 0007 | 单切片设计走 STATUS 锁定决策表 |
-| 测试纪律(v2)| **不写新测试代码**(unit / integration / e2e 都不写);v1 已写测试保留;CI 沿用 | §10.1.5 详述;dogfood 单用户体量,真实场景验比 mock unit 更直观 |
+| 测试纪律(v2)| **不写新测试代码**(unit / integration / e2e 都不写);v1 已写测试保留;远端 workflow 手动跑 | §10.1.5 详述;dogfood 单用户体量,真实场景验比 mock unit 更直观 |
 | 自动化校验 | AI 助手改完代码**不主动启动** pytest / mypy / ruff / typecheck / lint / build / playwright / curl probe;只口头描述期望让用户验 | 用户显式说"跑闸门"等指令例外 |
 | Reranker langfuse | 同 embedder,**不在 auto-patch 范围**,要手动包 generation | 5-AGENT §2.7.5 + memory `reference_aliyun_dashscope_rerank.md` |
 

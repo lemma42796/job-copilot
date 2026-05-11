@@ -150,7 +150,7 @@ Docs: http://localhost:8000/v1/docs   # 开发模式
 | FastAPI / SQLAlchemy 2.x async | 全异步 IO | `docs/8-ENGINEERING` |
 | Next.js 15 + RSC + TS | 服务端组件 + Tanstack Query | `apps/web/` |
 | Docker Compose 一键部署 | postgres + api + web + caddy + Langfuse | `docker-compose.yml` |
-| 工程纪律(CI / Lint) | ruff / mypy / typecheck / build 强制门槛 | `docs/8-ENGINEERING` |
+| 工程纪律(手动闸门) | ruff / mypy / typecheck / build / tests 保留手动入口 | `docs/8-ENGINEERING` |
 
 ---
 

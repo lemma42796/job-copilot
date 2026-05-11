@@ -33,7 +33,7 @@
 
 - **中文为主**,代码示例与 schema 标识符为英文
 - **不估工时**(不写小时数 / 天数 / Week 汇总)
-- **不加 Co-Author**(git commit / PR body 一律省略 `Co-Authored-By: Codex` 与 "Generated with Codex" 注脚)
+- **不加 Co-Author**(git commit / PR body 一律省略任何 `Co-Authored-By` 与 "Generated with ..." AI 工具注脚)
 - 文档元数据头格式见已完成文档,严格遵循
 - 每份文档末尾写"不在本文档范围"指向相关文档
 - 路线图写在 `docs/7-ROADMAP.md`(MX 粒度);只有真正跨里程碑的架构决策才另立 ADR(下一个编号 0007,v2 起)

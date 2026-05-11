@@ -645,7 +645,7 @@ evals/suites/
 | 模块分层 | routers / services / agents / llm / models / schemas | services 不直接调 LLM,走 agents/ |
 | ORM | SQLAlchemy 2.x async,**不写 relationship** | ADR-0005 D1 |
 | Embed worker | 后台 asyncio 单进程轮询;不上 redis / celery | MVP 量小;M4+ SaaS 再说 |
-| LangGraph | 仅 M3(多轮追问) | MVP 单 agent 直接调 llm.client,简单 |
+| LangGraph | M2.1 起用于 `InterviewCoachAgent` 状态机;M3 扩 SR / 三源岗位流 | M2 仍由 service 直接编排,先把 RAG/Judge 闭环打稳 |
 | 错误分层 | routers 转协议 / services 集中分发 / agents 不吞 | 沿用 LESSONS §8.6 |
 | 错误码命名 | snake_case + 出处明确 | 同 v1 JobCopilotError |
 | SSE 实现 | sse-starlette + 前端 lib/sse.ts | 永久约束 #21 |

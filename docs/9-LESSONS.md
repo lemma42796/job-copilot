@@ -86,14 +86,14 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 - **症状**:从 M2 到 M3 W8,retrieval 模块没有任何召回率量化。bug 1.1 暴露后才意识到"我们不知道当前 retrieve_for_match 召回到底多准"
 - **根因**:M2 评测扎根阶段优先做了 jd_extract / profile_extract,retrieval 套件被推后但一直没起
 - **修法**:子任务 4-A 顺手做 `evals/suites/retrieval/` 20 对 ground-truth(人工标"应该召回哪些 chunks"),量化 `Recall@10 / NDCG@10`,跑 v0(纯向量) vs v1(hybrid + RRF) ablation
-- **沉淀**:[STATUS.md 下一刀 4-A](STATUS.md)。**教训**:RAG 模块没量化召回率 = 在裸奔,bug 1.1 是必然会出现的
+- **沉淀**:v1 子任务 4-A。**教训**:RAG 模块没量化召回率 = 在裸奔,bug 1.1 是必然会出现的
 
 ## 3.3 中文向量召回对专有名词不稳
 
 - **症状**:dogfood 时 JD 写"LangGraph 经验",候选人 chunks 里有"LangChain / LangGraph 实战",纯 pgvector cosine 召回不到该 chunk(被其他语义相近的内容挤出 Top-K)
 - **根因**:中文专有名词(LangGraph / Kubernetes / TypeScript)在 embedding 空间里没有强 anchor,纯向量召回不稳。**Hybrid search(BM25 + 向量)是中文场景的合格线**
 - **修法**:子任务 4-A — Postgres `tsvector`(zhparser/pg_jieba 中文分词) + pgvector 双路召回,application 层 RRF 融合(`1/(k+rank)`,k=60)
-- **沉淀**:[STATUS.md 下一刀 4-A](STATUS.md)
+- **沉淀**:v1 子任务 4-A
 
 ---
 
@@ -210,11 +210,11 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 
 # 7. 评测 / 部署
 
-## 7.1 LLM-as-Judge "评委即被评者"偏差(预防设计)
+## 7.1 LLM-as-Judge "评委即被评者"偏差(v1 教训)
 
-- **预期问题**:Judge 跟 evaluatee 是同一个模型(都用 qwen3.6-flash)时自评偏高 5-10pp
-- **修法**:子任务 4-C 设计上 Judge 用 qwen3.6-plus(thinking on),evaluatee 是 qwen3.6-flash;每季度抽 50 条人工复核计算 Cohen's kappa(`κ = (po - pe)/(1 - pe)`,**pe 这一项是关键** — 直接用 accuracy 反映可靠性会高估),要求 ≥ 0.7;低于阈值触发 Judge prompt 改版 + 历史结果重跑
-- **沉淀**:[STATUS.md 下一刀 4-C](STATUS.md)。**教训**:LLM-as-Judge 落地必须配可靠性验证,否则评测数字本身不可信
+- **v1 预期问题**:Judge 跟 evaluatee 都是 LLM 产物时,同模型自评容易偏高 5-10pp
+- **v1 当时修法**:Judge 与 evaluatee 分模型,并每季度抽 50 条人工复核计算 Cohen's kappa(`κ = (po - pe)/(1 - pe)`,**pe 这一项是关键** — 直接用 accuracy 反映可靠性会高估),低于阈值触发 Judge prompt 改版 + 历史结果重跑。**v2 不沿用分模型**:评委是 LLM、被评者是人类答题文本 / 人类简历,统一 qwen3.6-flash,仍用 kappa 守门。
+- **教训**:LLM-as-Judge 落地必须配可靠性验证,否则评测数字本身不可信。v2 详见 `docs/5-AGENT_DESIGN.md` §2.1 与 `docs/6-EVAL_PLAN.md`。
 
 ## 7.2 uv workspace 装 apps/api 新依赖必须 `--all-packages`
 
@@ -381,7 +381,7 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 
 跑批量 LLM 调用(评测 dataset / 一键分析 / dogfood pipeline 等)**前**必须先校验:
 
-1. **模型 ID 对**:用项目锁定 ID(`qwen3.6-flash` v2 唯一),不要复制粘贴 v1 历史的 `qwen-vl-plus` / `qwen-plus`(8-ENGINEERING §6.1 model-id-lint CI 也防这条,但**本地跑评测 / 脚本绕过 CI**)
+1. **模型 ID 对**:用项目锁定 ID(`qwen3.6-flash` v2 唯一),不要复制粘贴 v1 历史的旧视觉 / plus 模型名(8-ENGINEERING §6.1 model-id-lint 也防这条,但**本地跑评测 / 脚本绕过 workflow**)
 2. **Provider 接口实际存在**:`curl /models` 或 `curl /api/v1/services/...` 验证当前可用 + 当前模型 ID 在列表里(2026-05-09 百炼 reranker 选型时差点踩 — `gte-rerank-v2` 2026-05-30 下线,印象推荐没踩 dry-run 的话上线就崩)
 3. **schema / prompt 完整跑通**:**单样本 dry-run**(只跑 dataset 第 1 条,看输出 schema / Pydantic 校验 / `[N]` 编号 / token 用量是否符合预期),**通过**了再放开全量
 

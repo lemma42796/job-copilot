@@ -9,7 +9,7 @@ uv run --project apps/api uvicorn jobcopilot_api.main:app --port 8000
 # 2. regenerate
 pnpm gen:api
 
-# 3. verify no drift in CI
+# 3. verify no drift locally or via manual Type Sync workflow
 git diff --exit-code packages/schemas/src/api.ts
 ```
 
