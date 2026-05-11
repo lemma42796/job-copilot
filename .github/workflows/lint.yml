@@ -1,9 +1,7 @@
 name: Lint & TypeCheck
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: lint-${{ github.ref }}

@@ -1,11 +1,7 @@
 name: Type Sync (OpenAPI → schemas)
 
 on:
-  pull_request:
-    paths:
-      - "apps/api/**"
-      - "packages/schemas/**"
-      - ".github/workflows/type-sync.yml"
+  workflow_dispatch:
 
 concurrency:
   group: type-sync-${{ github.ref }}

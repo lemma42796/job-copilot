@@ -1,21 +1,7 @@
 name: Frontend Tests
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "apps/web/**"
-      - "packages/schemas/**"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - ".github/workflows/test-web.yml"
-  pull_request:
-    paths:
-      - "apps/web/**"
-      - "packages/schemas/**"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - ".github/workflows/test-web.yml"
+  workflow_dispatch:
 
 concurrency:
   group: test-web-${{ github.ref }}

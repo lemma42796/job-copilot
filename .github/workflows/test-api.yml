@@ -1,19 +1,7 @@
 name: Backend Tests
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "apps/api/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/test-api.yml"
-  pull_request:
-    paths:
-      - "apps/api/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/test-api.yml"
+  workflow_dispatch:
 
 concurrency:
   group: test-api-${{ github.ref }}

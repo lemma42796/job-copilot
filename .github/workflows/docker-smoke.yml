@@ -1,14 +1,6 @@
 name: Docker Smoke
 
 on:
-  pull_request:
-    paths:
-      - "docker/**"
-      - "docker-compose.yml"
-      - "apps/api/**"
-      - "apps/web/**"
-      - "packages/schemas/**"
-      - ".github/workflows/docker-smoke.yml"
   workflow_dispatch:
 
 concurrency:
