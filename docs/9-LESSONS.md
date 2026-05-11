@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 工程踩坑录(Lessons Learned)
 owner: lemma42796
-last_updated: 2026-05-08
+last_updated: 2026-05-11
 purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因 + 解决方案,按主题分 8 类。每条字段统一为「症状 / 根因 / 修法 / 沉淀」,链接详细切片归档,作为面向外部读者(招聘 / 协作者 / 博客读者)的索引视图。
 ---
 
@@ -253,6 +253,9 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 - **qwen3.6 系列整体是多模态视觉模型**:同一个 model id(`qwen3.6-flash`)同时吃文本 / 图像 / tool use,不需要切 vision-only 变体
 - **流式响应**:走 OpenAI 标准 `stream=True` + delta token chunk 协议
 - **JSON 强制输出**:走 `response_format={"type": "json_object"}`,Qwen 兼容良好(~95% 合规)
+- **Context Cache 不是会话记忆**:多轮对话仍要把历史 / chunks 放进本次请求上下文;cache 只复用公共前缀的 provider 侧计算和计费。不要误以为"第一次发过 chunks,第二次模型自己记得"。
+- **qwen3.6-flash 支持 cache 缓存**:OpenAI 兼容 Chat / DashScope 原生 / Anthropic Messages 支持显式与隐式缓存;Responses API 走 Session 缓存。项目当前走 OpenAI 兼容 Chat,无需为 cache 迁移到 DashScope 原生。
+- **显式 cache 形态**:`messages[*].content` 改数组,在稳定长文本 content 上加 `cache_control: {"type":"ephemeral"}`;最少 1024 tokens,最多 4 个 marker,有效期 5 分钟。Quiz / Judge 应把 session chunks 放到稳定公共前缀,动态任务放后面。
 - **联网搜索**:本项目**禁用**(`extra_body={"enable_search": False}` 显式关)— Quiz / Judge 必须严格基于用户笔记 chunks,联网会引入超笔记范围内容,直接撞 §1.1 假阳性
 
 **教训**:OpenAI 兼容接口 ≠ 100% 等价于官方 OpenAI。Qwen 特有的 thinking / search 等能力走 `extra_body` 透传,**不是 OpenAI 标准参数,切换到真 OpenAI 会被忽略或报错**。多 provider 抽象的真实成本见 §8.7。

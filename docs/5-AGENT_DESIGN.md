@@ -65,7 +65,79 @@ OpenAI 兼容接口标准支持 `temperature` 参数(可直接传)。各 agent �
 
 ## 2.4 LLM cache
 
+### 2.4.1 应用层 response cache
+
 Quiz / Judge 调用都走 `llm_response_cache`(v1 alembic 0015)。cache_key 用 `(prompt_version, system_text_hash, user_text_hash, model_id)`。dogfood 反复跑同 dataset 时命中率很高,成本接近 0。
+
+注意:这是**完整请求 → 完整响应**缓存,适合评测 / dogfood 重跑同 fixture;不解决"同一批 chunks 在不同任务(prompt 不同)里重复作为输入"的成本 / 延迟。
+
+### 2.4.2 百炼 Context Cache(待落地)
+
+qwen3.6-flash 支持 Context Cache。它不是 LLM 的持久记忆:每次请求仍要让模型在当前上下文里"看到"必要内容;缓存只是在 provider 侧对**重复公共前缀**减少重复计算和计费。
+
+百炼当前可用模式:
+
+- **隐式缓存**:自动开启、无法关闭;按公共前缀匹配,命中率不确定;命中 tokens 按输入价折扣计费。适合无改造先吃一部分收益。
+- **显式缓存**:`messages[*].content` 用数组形式,在稳定长文本 content 上加 `{"cache_control": {"type": "ephemeral"}}`;最少 1024 tokens;单次请求最多 4 个 marker;有效期 5 分钟且命中后刷新;显式 / 隐式互斥。
+- **接口覆盖**:OpenAI 兼容 Chat Completions、DashScope 原生、Anthropic Messages 都支持显式 / 隐式缓存;OpenAI 兼容 Responses 走 Session 缓存。当前项目用的是**OpenAI 兼容 Chat**(`langfuse.openai.AsyncOpenAI` + 百炼 compatible-mode),不需要为了 cache 切 DashScope 原生接口。
+
+M2 Quiz → Judge 的缓存目标:
+
+1. 出题与评分都需要同一批 source chunks,但两次 LLM call 语义不同,不能靠应用层 response cache 命中。
+2. 把"本 session 固定 chunks"放在 messages 前部,形成稳定公共前缀;出题 / 评分的动态任务说明放在后部。
+3. chunks 长度 ≥ 1024 tokens 时给 chunks content 加 `cache_control: {"type":"ephemeral"}`;短 chunks 只依赖隐式缓存,避免为小上下文引入额外结构复杂度。
+4. QuizGenerator 第一次请求创建/命中 chunks cache;AnswerJudge 后续请求复用同一 chunks 前缀,降低 Judge 延迟和输入成本。
+
+目标 messages 结构示意(不是当前实现):
+
+```json
+[
+  {"role": "system", "content": "你是 JobCopilot 技术面试助手。"},
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "以下是本 session 固定笔记 chunks...\n[1] ...\n[2] ...",
+        "cache_control": {"type": "ephemeral"}
+      }
+    ]
+  },
+  {"role": "user", "content": "任务:基于上述 chunks 出题..."}
+]
+```
+
+评分时前两条 message 必须尽量逐字一致,第三条再放题目 / reference_points / 用户答案:
+
+```json
+[
+  {"role": "system", "content": "你是 JobCopilot 技术面试助手。"},
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "以下是本 session 固定笔记 chunks...\n[1] ...\n[2] ...",
+        "cache_control": {"type": "ephemeral"}
+      }
+    ]
+  },
+  {"role": "user", "content": "任务:对这道题评分..."}
+]
+```
+
+当前代码差距:
+
+- `LLMClient.complete()` 只接 `system: str` + `user: str`,不能表达多条 messages / content array / cache_control。
+- `DashscopeProvider` 虽然名字叫 Dashscope,实际走 OpenAI compatible Chat,目前固定构造两条 string messages。
+- `ProviderResponse` 只读 `cached_tokens`,未读 `cache_creation_input_tokens`;审计表也没有缓存创建 tokens 字段。
+
+落地顺序:
+
+1. 扩展 LLMClient/ProviderRequest:允许传 `messages` 或 `cache_prefix` 结构,保留旧 `system/user` 便于渐进迁移。
+2. DashscopeProvider 支持 content array + `cache_control`,并读取 `cached_tokens` / `cache_creation_input_tokens`。
+3. QuizGenerator / AnswerJudge 共用同一个 chunks 渲染函数,保证 cache 前缀稳定。
+4. Judge 仍保留 service 层单题 hard timeout;Context Cache 是降延迟/成本,不是失败控制。
 
 ## 2.5 反幻觉锚点(全 Agent 共享)
 

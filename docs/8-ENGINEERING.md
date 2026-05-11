@@ -78,6 +78,8 @@ JobCopilot/
 # Python
 uv sync --all-packages                      # 装根 + workspace member 全部(LESSONS §7.2:漏 --all-packages = ImportError)
 uv sync --package jobcopilot-api --extra dev    # CI 用(只装 api + dev,省 cache)
+docker compose up -d postgres              # 推荐本地开发形态:只用 Docker 跑业务 Postgres
+uv run uvicorn jobcopilot_api.main:app --port 8000   # 本机跑 API,直接读根目录 .env 的 JOBCOPILOT_* 变量
 uv run pytest -q                            # 跑所有后端测(快,默认收紧输出)
 uv run ruff check .                         # lint
 uv run ruff format --check .                # format check(CI)/ uv run ruff format . 写回(本地)
@@ -114,6 +116,10 @@ LANGFUSE_SALT=<32 字节随机串>
 # 评测专用 key(CI secret;跟主 key 分开,防额度互踩)
 DASHSCOPE_API_KEY_EVAL=sk-...
 ```
+
+本地推荐 **Docker Postgres + 本机 API**:Postgres 用 `pgvector/pgvector:pg16` 省去本机装扩展;API 用 `uv run uvicorn ...` 直接读 `JOBCOPILOT_DASHSCOPE_API_KEY`,不用 rebuild 容器。
+
+注意:当前 `docker-compose.yml` 的 api service 通过外层 `DASHSCOPE_API_KEY` 映射到容器内 `JOBCOPILOT_DASHSCOPE_API_KEY`;根目录 `.env` 若只写 `JOBCOPILOT_DASHSCOPE_API_KEY`,直接 `docker compose up api` 会让容器内 key 为空。除非明确要复刻完整 compose 部署,开发时优先本机 API。
 
 `.env.example` 跟着结构走、不带值,且要在 PR 里同步(PR 模板 "影响面" 那条)。
 

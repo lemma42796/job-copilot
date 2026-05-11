@@ -1,8 +1,8 @@
 """Quiz REST + SSE 端点(M2,4-API_SPEC §4.1 / §4.6)。
 
 router 自身 prefix `/quiz`;main.py include 时挂 `/api` 前缀,实际端点路径
-= `/api/quiz/*`。M2 第 4 步只实现 POST /api/quiz/sessions(SSE 出题);
-GET / PUT / submit / abandon 端点(§4.2-§4.5)挂账 M2 第 7 步答题流程。
+= `/api/quiz/*`。当前实现 M2 出题、答题草稿、提交评分、放弃会话端点。
+GET /api/quiz/sessions/{id} 详情查询另切片补。
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from jobcopilot_api.errors import (
     QueryTooLongError,
 )
 from jobcopilot_api.infra.db import get_sessionmaker
-from jobcopilot_api.schemas.quiz import QuizSessionCreateIn
-from jobcopilot_api.services import quiz_service
+from jobcopilot_api.schemas.quiz import AnswerDraftIn, QuizSessionCreateIn
+from jobcopilot_api.services import answer_service, quiz_service
 
 router = APIRouter(tags=["quiz"], prefix="/quiz")
 
@@ -51,3 +51,44 @@ async def create_session(payload: QuizSessionCreateIn) -> EventSourceResponse:
     return EventSourceResponse(
         quiz_service.start_session_sse(sessionmaker, payload)
     )
+
+
+@router.put(
+    "/sessions/{session_id}/answers/{order_index}",
+    summary="保存单题答案草稿",
+)
+async def save_answer(
+    session_id: int,
+    order_index: int,
+    payload: AnswerDraftIn,
+) -> dict[str, bool]:
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        await answer_service.save_draft(
+            session,
+            session_id=session_id,
+            order_index=order_index,
+            payload=payload,
+        )
+    return {"ok": True}
+
+
+@router.post(
+    "/sessions/{session_id}/submit",
+    summary="提交答题会话并触发 Judge 评分(SSE)",
+)
+async def submit_session(session_id: int) -> EventSourceResponse:
+    sessionmaker = get_sessionmaker()
+    return EventSourceResponse(
+        answer_service.submit_session_sse(sessionmaker, session_id)
+    )
+
+
+@router.post(
+    "/sessions/{session_id}/abandon",
+    summary="放弃答题会话",
+)
+async def abandon_session(session_id: int) -> dict:
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        return await answer_service.abandon_session(session, session_id)

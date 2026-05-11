@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from jobcopilot_api.schemas.agents.quiz_generator import (
     GeneratedQuestion,
-    NoteChunkRef,
+    QuizGenChunkInput,
     ReferencePoint,
 )
 
@@ -21,7 +21,7 @@ class CoveragePoint(BaseModel):
 
 class CoverageEvidence(BaseModel):
     points: list[CoveragePoint]
-    score_raw: float
+    score_raw: float = Field(ge=0, le=1)
     reasoning: str
 
 
@@ -33,7 +33,7 @@ class FidelityClaim(BaseModel):
 
 class FidelityEvidence(BaseModel):
     claims: list[FidelityClaim]
-    score_raw: float
+    score_raw: float = Field(ge=0, le=1)
     reasoning: str
 
 
@@ -44,13 +44,13 @@ class DepthDimension(BaseModel):
 
 class DepthEvidence(BaseModel):
     dimensions: dict[str, DepthDimension]  # keys: tradeoff / why / boundary
-    score_raw: float
+    score_raw: float = Field(ge=0, le=1)
     reasoning: str
 
 
 class AnswerJudgeInput(BaseModel):
     question: GeneratedQuestion
-    chunks: list[NoteChunkRef]
+    chunks: list[QuizGenChunkInput]
     user_answer: str
 
 

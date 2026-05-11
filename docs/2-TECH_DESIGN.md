@@ -71,7 +71,7 @@ monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind
 | 全文搜索 | tsvector + char_ngrams SQL 函数 | 沿用 v1 alembic 0014 |
 | LLM SDK | OpenAI Python SDK 走百炼 OpenAI 兼容接口 | base_url=`https://dashscope.aliyuncs.com/compatible-mode/v1`;`from langfuse.openai import OpenAI` 自动 instrument(只覆盖 chat/completions/responses;embeddings 要手动包 generation,见 STATUS 永久约束) |
 | LLM 模型 | qwen3.6-flash(多模态:文本 + 图像 + tool use 一把抓);thinking 按 agent 决定 | 详见 5-AGENT §2.1;qwen3.6 系列整体是视觉模型 |
-| LLM cache | `llm_response_cache` 表 + 4-B cache layer | 沿用 v1 alembic 0015 |
+| LLM cache | 两层:应用层 `llm_response_cache` + 百炼 Context Cache(待接) | response cache 缓完整请求/响应;Context Cache 缓重复公共前缀,详见 5-AGENT §2.4 |
 | Embedding | text-embedding-v4(1024 维) | 沿用 v1 |
 | Agent 编排 | M2 仍是 service 直接编排;M2.1 起上 LangGraph `InterviewCoachAgent` 状态机;M3 扩 SR / 三源岗位流 | LangGraph checkpointer 序列化坑见 LESSONS §2.1 |
 | SSE | `sse-starlette.EventSourceResponse` | 沿用 v1;前端走 `web/lib/sse.ts`(永久约束 #21)|
@@ -650,6 +650,7 @@ evals/suites/
 | 错误码命名 | snake_case + 出处明确 | 同 v1 JobCopilotError |
 | SSE 实现 | sse-starlette + 前端 lib/sse.ts | 永久约束 #21 |
 | LLM cache | 全 agent 经过 llm_response_cache | 评测路径不禁(EVAL_PLAN §2.4)|
+| 百炼 Context Cache | M2 优先接 OpenAI compatible Chat 的显式 cache,不切 DashScope 原生接口 | qwen3.6-flash 支持 cache;把 session chunks 放稳定公共前缀,Quiz / Judge 复用;仍需传上下文,cache 不是记忆 |
 | 部署 | docker compose 本地 | postgres / api / web / caddy / langfuse / langfuse-db 六服务 |
 | Tracing 选型 | Langfuse 自部署 | LLM-native + 数据不出本地;详见 §6 |
 | Tool use 范围 | 仅 AnswerJudge 用 `lookup_in_notes_global`;Quiz / Embedder / JdParser / JdAggregator / ResumeAdvisor 不用 | 直击 LESSONS §1.1 假阳性,精准不滥用 |
@@ -660,6 +661,7 @@ evals/suites/
 | 简历存储模型 | 单条记录(全库一行 resumes);无"简历库 / 多份切换" | 一个人就一份简历;岗位类 query 拼"这一份 + 选定 JD 子集"已够 |
 | M3 岗位类三源融合 | retrieval_pipeline 多走两路:简历单条全文 + 用户选定 JD 子集职责/要求,合并喂 quiz_generator | 重点考"简历写了 JD 也要"交集 + "JD 强要 简历没写"缺口 |
 | LLM SDK | OpenAI Python SDK(via 百炼兼容接口)| Langfuse OpenAI wrapper(chat 自动 instrument,embedding 手动);langfuse SDK 锁 <3.0(server v2 不支持 OTLP);env mirror 必须早于 routers import — 见 STATUS 永久约束 |
+| Context Cache 代码改造 | 扩 `LLMClient.complete` / `ProviderRequest` 支持 messages content array + `cache_control`;ProviderResponse 读 `cache_creation_input_tokens` | 当前只有 `system: str` + `user: str`,无法表达显式缓存 marker;落地细节见 5-AGENT §2.4.2 |
 | qwen3.6-flash 多模态 | 文本 / 图像 / tool use 一把抓,JD 截图 + 简历 PDF 共用 | 简化模型路由 |
 | thinking 按 agent | 默认 off;评分 / 综合判断类显式 on(详见 5-AGENT §2.1) | 节省 reasoning_tokens 成本 |
 | JD 累积型 | jds 表跨时间累积,parsed_payload 上传即落库 | 类比笔记;不做 batch 概念 |
