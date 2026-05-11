@@ -1,19 +1,19 @@
 ---
-title: AGENT DESIGN - JobCopilot v2(QuizGenerator + AnswerJudge + QueryRewriter prompt 全文 + 输出 schema)
+title: AGENT DESIGN - JobCopilot v2(QueryRewriter + QuizGenerator + AnswerJudge + InterviewCoachAgent)
 owner: lemma42796
-last_updated: 2026-05-09
-purpose: 锁核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / 模型路由 / 版本号策略
+last_updated: 2026-05-11
+purpose: 锁核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / Agentic RAG 编排 / 模型路由 / 版本号策略
 ---
 
 # 1. 一句话总览
 
-核心 Agent + M3 编排器:
+核心 Agent + Agentic RAG 编排器:
 
 - **QueryRewriter(M2)**:吃用户聊天框 query → 扩成同义/相邻概念集,喂给全库 hybrid search(retrieval pipeline 第一段)
 - **QuizGenerator**:吃 query + retrieved chunks(retrieval pipeline 输出)→ 出 N 道题(open_ended + definition 自动配比)+ reference_answer + reference_points
 - **AnswerJudge**:吃(题, reference, chunks, 用户答案)→ 输出三层 evidence(coverage / fidelity / depth)
+- **InterviewCoachAgent(M2.1)**:LangGraph session root orchestrator,串起检索 → 出题 → 等答 → 评分 → 追问 → 总结;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不是多 Agent 数量
 - **JdParser / JdAggregator(M2.5)** + **ResumeAdvisor(M3)**:JD / 简历相关
-- **FollowupOrchestrator (M3)**:LangGraph 多轮追问,基于第一轮 evidence 的薄弱处生 1-2 轮追问
 
 # 2. 通用约定
 
@@ -34,7 +34,7 @@ purpose: 锁核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / 模型路
 | 学习路径生成 | **off** | 模板化输出 |
 | 截图 OCR(Qwen 多模态)| **off** | 纯文本提取 |
 | ResumeAdvisor(简历诊断)| **on** | 综合 JD 通用要求 + 简历段落判断 |
-| FollowupOrchestrator(M3 多轮追问)| **on** | 多轮 reasoning 必需 |
+| InterviewCoachAgent(M2.1 编排决策)| **on** | 追问分支 / 下一步决策需要 reasoning;不参与出题事实生成 |
 | Embedder(text-embedding-v4)| N/A | 不是聊天模型 |
 
 **默认 off 的代价收益**:thinking 输出的 reasoning_tokens 计入 output token 计费,关掉省成本和延迟。需要 reasoning 的 agent 显式开;粗粒度调度(关 thinking 跑完 dogfood,kappa 不达标再考虑开)是 OK 的。
@@ -761,37 +761,93 @@ for s in suggestions:
 
 `anchored_count / (anchored_count + unanchored_count) ≥ 0.7` — 不达标说明 prompt / chunker 有问题(LLM 找不到 resume_position 锚点的比例过高),触发 prompt 改版。
 
-# 8. M3:多轮追问 Agent(LangGraph)
+# 8. M2.1:InterviewCoachAgent(Agentic RAG 编排)
 
-`apps/api/src/jobcopilot_api/agents/followup_orchestrator/`(M3 启动前补)。
+M2.1 把 M2 的 RAG 出题闭环升级成 **Agentic RAG 面试教练**。设计目标不是堆多个 Agent,而是让一次 session 具备:
+
+- **状态**:跨多题 / 多轮追问保存上下文
+- **工具**:可查笔记、查 source chunks、记录 session、后续接入 knowledge_gap
+- **分支**:根据 Coverage / Fidelity / Depth evidence 决定追问或进入下一题
+- **记忆**:M3 接入 SR 后把薄弱 heading_path 写入长期弱点
+- **评测**:流程型样本可复现追问 / 不追问 / fabricated / 恢复
+- **可恢复**:用户退出后能从 `wait_user_answer` 继续
+
+`apps/api/src/jobcopilot_api/agents/interview_coach/`(M2.1 启动前补)。M2.1 只编排已有 Agent,不重写 QuizGenerator / AnswerJudge prompt。
 
 State:
 
 ```python
 @dataclass
-class FollowupState:
+class InterviewCoachState:
     session_id: int
-    current_question: GeneratedQuestion
-    user_answers: list[str]               # 第 0 轮 + 每轮追问后的答
+    query: str
+    query_type: Literal["topic", "job", "auto"]
+    expanded_queries: list[str]
+    retrieved_chunk_ids: list[int]
+    questions: list[GeneratedQuestion]
+    current_question_index: int
+    user_answers: list[str]
     judge_evidences: list[AnswerJudgeOutput]
-    interviewer_followups: list[str]      # 每轮追问的题干
-    final_score: float | None
+    interviewer_followups: list[str]
+    next_action: Literal["ask_next", "followup", "summarize", "finish"]
+    final_summary: str | None
 ```
 
 Nodes:
 
 ```
-generate_question → wait_user_answer → judge_layer1
-   → branch: 追问 if (coverage_score < 60) AND (≥1 个 depth 维度 covered=false)
-       ├ generate_followup → wait_user_answer → judge_layer2 → score_aggregate
-       └ score_aggregate(单轮)
+retrieve_context
+  → generate_question
+  → wait_user_answer
+  → judge_answer
+  → decide_next_action
+      ├ generate_followup → wait_user_answer → judge_answer → summarize_session
+      ├ generate_question(next question)
+      └ summarize_session → finish_session
 ```
 
-触发条件依据:**两条同时满足**才追问 — coverage < 60 表示笔记内容没覆盖到位(有"补"的价值),depth 至少缺一维表示有"挖深度"的空间。两条任一不满足说明用户已答得够好,追问只会让用户烦。预期触发率 30-50%(M3 dogfood 实测后调阈值)。
+## 8.1 工具边界
 
-约束:**最多 1 轮追问**(第 0 轮原始题 + 至多 1 轮追问),防 LLM 死循环;追问完直接 score_aggregate,不再判要不要二轮。
+| Tool | 用途 | M2.1 状态 |
+|------|------|----------|
+| `search_notes(query)` | 主题检索,底层复用 retrieval pipeline | 必做 |
+| `lookup_claim_in_notes(claim)` | Judge 标 fabricated 前验证 | 必做(复用 §4.7) |
+| `get_source_chunks(question_id)` | 展开题目引用,供追问 / UI 对照 | 必做 |
+| `record_session_summary(session_id)` | 写 `notes/_recall/{session_id}.md` | 必做 |
+| `update_knowledge_gap(...)` | 写弱点与 SR 队列 | M3 接入,M2.1 只留接口 |
 
-详细 prompt + state schema 在 M3 启动前补 — MVP 不做。
+工具不是给 LLM 任意调用的开放工具市场,每个 tool 都对应产品闭环里的明确动作。
+
+## 8.2 追问分支策略
+
+`decide_next_action` 只做有限状态决策:
+
+- `coverage_score < 60` → 追问漏掉的 reference point
+- `fabricated_ratio > 0.3` → 追问"依据来自哪里",把用户拉回笔记证据
+- depth 缺 `tradeoff / why / boundary` 任一维度 → 深挖一轮
+- 否则进入下一题或总结
+
+约束:**单题最多 1 轮追问**。追问完直接总结当前题,不再递归判断第二轮,防止 Agent 自主循环。
+
+## 8.3 不做的"伪高级 Agent"
+
+明确不做:
+
+- `PlannerAgent / ResearcherAgent / CriticAgent / ExecutorAgent` 泛化多 Agent 互聊
+- 自主浏览网页、自动改笔记、自动写简历文案、自动投递
+- 与面试陪练无关的开放式长任务规划
+
+判断标准:如果一个 Agent / tool 不能改善"找出用户不会的知识点并追问",就不进 M2.1。
+
+## 8.4 评测与可观测
+
+- Langfuse trace 根节点按 `session_id` 聚合,完整链路:`retrieve_context → generate_question → wait_user_answer → judge_answer → decide_next_action → generate_followup? → summarize_session`
+- `evals/suites/interview_coach/` 收流程型样本,至少覆盖:
+  - 答得好 → 不追问
+  - 漏 reference point → 追问
+  - fabricated ratio 高 → 依据追问
+  - 用户中途退出 → 从 `wait_user_answer` 恢复
+- 指标先用流程准确率(是否走到人工期望分支),不直接用 kappa;Judge 的 label 可靠性仍由 `answer_judge` suite 守门
 
 # 9. v1 教训如何应用
 
@@ -819,8 +875,9 @@ generate_question → wait_user_answer → judge_layer1
 | QueryRewriter | M2 retrieval pipeline 第一段;扩 ≤5 项,首项必为原 query;失败回退原 query 不阻塞 | 见 §2.7 |
 | Reranker | cross-encoder(本地 / 百炼 reranker 接口),非 LLM 调用,不进 prompt_versions | 见 §2.7.5 + PRD Q-07 |
 | query 形态 | M2 仅主题类;M3 加岗位类(三源融合)+ 空 query(SR 系统自选) | 见 PRD §5.2 + 7-ROADMAP M3 |
+| Agent 编排深度 | M2.1 上 `InterviewCoachAgent` 状态机;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不做泛化多 Agent 互聊 | 见 §8 |
 | 简历存储 | 单条记录(全库一行 resumes),无"简历库 / 多份切换";岗位类 query 拼"这一份 + 选定 JD 子集" | 一个人就一份简历;PRD §6 锁定 |
-| 多轮追问触发(M3) | `coverage < 60 AND ≥1 depth 维度 covered=false`,最多 1 轮 | 两条同时满足才追问;预期触发率 30-50% |
+| 多轮追问触发(M2.1) | `coverage_score < 60` / `fabricated_ratio > 0.3` / depth 缺维度 任一触发,单题最多 1 轮 | 追问是面试教练核心能力,但禁止自主循环 |
 | Temperature | DashScope 默认,不暴露 | prompt 端约束逼近低温度 |
 | Prompt 版本号 | DB `prompt_versions` 表,改一次 bump | questions / session_answers 留旧 version |
 | LLM cache | `(prompt_version, system_hash, user_hash, model)` | dogfood 重跑成本 ≈ 0 |
@@ -853,5 +910,5 @@ generate_question → wait_user_answer → judge_layer1
 - 表 schema(reference_points / coverage_evidence 等 JSONB) → `docs/3-DATA_MODEL.md` §6
 - API 端点 / SSE 事件 → `docs/4-API_SPEC.md`
 - evals/suites/{quiz_generator, answer_judge}/ dataset / kappa 算法实现 → `docs/6-EVAL_PLAN.md`
-- service 层 / LangGraph 编排细节 → `docs/2-TECH_DESIGN.md`
+- service 层 / LangGraph 编排落地 → `docs/2-TECH_DESIGN.md`
 - 仓库目录 / prompt_versions 表怎么填 → `docs/8-ENGINEERING.md`

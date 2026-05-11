@@ -1,13 +1,13 @@
 ---
 title: TECH DESIGN - JobCopilot v2(架构 / 模块分层 / 数据流 / 错误处理)
 owner: lemma42796
-last_updated: 2026-05-09
+last_updated: 2026-05-11
 purpose: 锁系统架构、技术栈、模块边界、核心数据流、错误处理分层、v1 沿用 / 砍除清单
 ---
 
 # 1. 一句话总览
 
-monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind + Monaco** 前端,**LLM 走阿里云百炼 OpenAI 兼容接口 + qwen3.6-flash 多模态**(thinking 按 agent 决定),LangGraph 仅 M3 用。慢请求(出题 / 评分 / JD 一键分析 / 简历诊断)走 SSE,embedder 走后台 worker。
+monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind + Monaco** 前端,**LLM 走阿里云百炼 OpenAI 兼容接口 + qwen3.6-flash 多模态**(thinking 按 agent 决定),M2.1 起用 LangGraph 编排 InterviewCoachAgent 状态机。慢请求(出题 / 评分 / JD 一键分析 / 简历诊断)走 SSE,embedder 走后台 worker。
 
 # 2. 系统架构
 
@@ -28,7 +28,7 @@ monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind
 │  │  notes       │←→│  notes_svc   │←→│  quiz_generator    │    │
 │  │  quiz        │  │  chunk_svc   │  │  answer_judge      │    │
 │  │  dashboard   │  │  quiz_svc    │  │  embedder          │    │
-│  │  (SSE)       │  │  answer_svc  │  │  followup (M3)     │    │
+│  │  (SSE)       │  │  answer_svc  │  │  interview_coach   │    │
 │  └──────────────┘  │  search_svc  │  └─────────┬──────────┘    │
 │                    │  gap_svc(M3) │            │ llm/          │
 │                    └──────┬───────┘            ▼               │
@@ -73,7 +73,7 @@ monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind
 | LLM 模型 | qwen3.6-flash(多模态:文本 + 图像 + tool use 一把抓);thinking 按 agent 决定 | 详见 5-AGENT §2.1;qwen3.6 系列整体是视觉模型 |
 | LLM cache | `llm_response_cache` 表 + 4-B cache layer | 沿用 v1 alembic 0015 |
 | Embedding | text-embedding-v4(1024 维) | 沿用 v1 |
-| Agent 编排 | MVP 单 Agent 直接调 llm.client;M3 上 LangGraph(多轮追问)| LangGraph checkpointer 序列化坑见 LESSONS §2.1 |
+| Agent 编排 | M2 仍是 service 直接编排;M2.1 起上 LangGraph `InterviewCoachAgent` 状态机;M3 扩 SR / 三源岗位流 | LangGraph checkpointer 序列化坑见 LESSONS §2.1 |
 | SSE | `sse-starlette.EventSourceResponse` | 沿用 v1;前端走 `web/lib/sse.ts`(永久约束 #21)|
 | 前端框架 | Next.js 14 App Router + React 18 | 沿用 v1 |
 | 前端样式 | Tailwind 自己写,无组件库 | macOS 风(PRD §9)|
@@ -108,6 +108,7 @@ apps/api/src/jobcopilot_api/
 │   ├── query_rewriter.py           # M2:LLM 改写 query(短词 → 同义/相邻概念集),走 llm.client + cache
 │   ├── reranker.py                 # M2:cross-encoder rerank(top 50 → top 10),选型见 PRD Q-07
 │   ├── quiz_service.py             # 出题编排(调 quiz_generator agent + 落库)
+│   ├── interview_service.py        # M2.1:InterviewCoachAgent session 编排 / checkpoint / SSE
 │   ├── answer_service.py           # 答题落库 + 算分 + finalize session
 │   ├── jd_service.py               # M2.5:JD 上传(立即调 jd_parser)+ 一键分析编排(map-reduce + Python 重算频次)
 │   ├── resume_service.py           # M3:简历入库 + 段落 chunker
@@ -132,7 +133,7 @@ apps/api/src/jobcopilot_api/
 │   │   ├── agent.py                # 包含 forbidden_pattern 后处理校验
 │   │   ├── prompts.py
 │   │   └── forbidden_patterns.py   # 替写文案漏洞检测正则集
-│   └── followup_orchestrator/      # M3 LangGraph
+│   └── interview_coach/            # M2.1 LangGraph:状态机 + 工具 + 追问分支
 ├── llm/                            # LLM 客户端(改造:DashScope SDK → OpenAI Python SDK)
 │   ├── client.py                   # LLMClient + cache + retry(走 base_url 兼容接口)
 │   ├── cache.py / cache_key.py / cache_store.py
@@ -156,7 +157,7 @@ apps/api/src/jobcopilot_api/
 ├── schemas/                        # Pydantic IO 校验(REST + SSE 事件 + agent IO)
 │   ├── notes.py / quiz.py / dashboard.py
 │   ├── jd.py / resume.py
-│   ├── agents/{quiz_generator, answer_judge, jd_parser, jd_aggregator, resume_advisor, followup}.py
+│   ├── agents/{quiz_generator, answer_judge, interview_coach, jd_parser, jd_aggregator, resume_advisor}.py
 │   └── sse.py                      # SSE 事件 schema(详见 4-API_SPEC §2.3)
 ├── prompts/                        # Prompt 加载器(沿用 v1 LoadedPrompt)
 ├── evals/                          # 评测框架(沿用 v1)

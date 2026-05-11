@@ -1,8 +1,8 @@
 ---
 title: ROADMAP - JobCopilot v2
 owner: lemma42796
-last_updated: 2026-05-10
-purpose: 5 个里程碑 + 退出标准 + 下一刀
+last_updated: 2026-05-11
+purpose: 6 个里程碑 + 退出标准 + 下一刀
 ---
 
 # 节奏总览
@@ -11,8 +11,9 @@ purpose: 5 个里程碑 + 退出标准 + 下一刀
 M0    仓库改造 + 文档重写                                                    ✅
 M1    笔记入库 + chunker + 树形导航 + Langfuse 起步                          ✅
 M2    聊天框主题类 query → 全库 RAG → 出题 + Judge 三层评分 + Judge tool use ← 当前
+M2.1  InterviewCoachAgent: Agentic RAG 面试状态机 + 工具调用 + 追问分支
 M2.5  JD 累积上传 + 一键分析 + 学习路径(独立有价值)
-M3    弱点跟踪 + SR(空 query 系统自选)+ 多轮追问 + 岗位类出题(三源融合)+ 简历诊断
+M3    弱点跟踪 + SR(空 query 系统自选)+ 岗位类出题(三源融合)+ 简历诊断
 ```
 
 不估工时,只讲依赖顺序与最佳实践。每个 M 完成 → DoD 跑通 → 提交 commit + 推 GitHub release tag。
@@ -98,6 +99,58 @@ M3    弱点跟踪 + SR(空 query 系统自选)+ 多轮追问 + 岗位类出题(
 - [ ] `scripts/eval_hybrid_search.py` 跑通,**ablation 三路**(vector-only / lex-only / hybrid)各自 recall@5 / recall@10 / mrr 都出数,**hybrid recall@5 ≥ 0.85 / recall@10 ≥ 0.95 / mrr ≥ 0.6**(从 M1 挂账继承,详见 6-EVAL §7);数据集 30 条 (query, expected_chunk_ids),query 来源全部为**主题类 query 真实场景**(例 "考考我多线程" / "缓存一致性" / "Java 集合 ArrayList vs LinkedList" 等 30 条),不再用"节点路径拼接"假 query
 - [ ] Langfuse 按 session_id 过滤能看到完整 trace 树(query rewriting → hybrid → rerank → parent-doc → 出题 → 工具 → 评分嵌套)
 
+# M2.1:InterviewCoachAgent(Agentic RAG 面试状态机)
+
+## 范围
+
+M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",但**不做泛化多 Agent 炫技**。高级感来自跨多轮任务的状态、工具、分支、记忆、评测、可恢复,不是 Agent 数量。
+
+- **LangGraph 状态机**:`InterviewCoachAgent` 作为 session root orchestrator,串起 retrieval pipeline / QuizGenerator / AnswerJudge / 追问 / session 总结
+- **State**:
+  - `session_id / query / query_type`
+  - `retrieved_chunk_ids / expanded_queries`
+  - `questions / current_question_index`
+  - `user_answers[] / judge_results[] / followups[]`
+  - `next_action / final_summary`
+- **Nodes**:
+  - `retrieve_context`:复用 M2 retrieval pipeline
+  - `generate_question`:复用 QuizGenerator
+  - `wait_user_answer`:人类输入暂停点,支持续写
+  - `judge_answer`:复用 AnswerJudge + lookup tool
+  - `decide_next_action`:按 evidence 决定下一步
+  - `generate_followup`:只针对当前题追问一轮
+  - `summarize_session`:输出题 / 答 / 评 / reference / 弱点摘要
+  - `finish_session`:落库 + SSE done
+- **Tools**:
+  - `search_notes(query)`:笔记库检索
+  - `lookup_claim_in_notes(claim)`:Judge 标 fabricated 前验证
+  - `get_source_chunks(question_id)`:展开题目引用
+  - `record_session_summary(session_id)`:写 session 沉淀
+  - `update_knowledge_gap(...)`:M3 接入,本阶段先留接口不做 SR 排期
+- **分支策略**:
+  - `coverage_score < 60` → 追问基础概念 / 漏掉的 reference point
+  - `fabricated_ratio > 0.3` → 追问依据来源,提示用户回到笔记证据
+  - depth 缺 `tradeoff / why / boundary` 任一维度 → 深挖一轮
+  - 单题最多 1 轮追问,整场 session 不做无限自主循环
+- **可观测**:Langfuse trace 根节点按 `session_id` 聚合,能看到 `retrieve → generate → judge → decide → followup → summarize`
+- **失败恢复**:wait_user_answer 是人类暂停点;LLM / reranker / tool 失败按 M2 降级策略走,状态机必须能在已完成节点后恢复
+
+明确不做:
+
+- Planner / Researcher / Critic / Executor 这类泛化多 Agent 互聊
+- 自主浏览网页 / 自动改笔记 / 自动投递 / 自动写简历文案
+- 长链路开放式任务规划(超过本产品"面试陪练"边界)
+
+## 退出标准(DoD)
+
+- [ ] M2 端到端 session 改由 `InterviewCoachAgent` 编排,用户体验不退化
+- [ ] 第一题答漏 reference point 后触发 1 轮追问;答得好时直接下一题或结束
+- [ ] `fabricated_ratio > 0.3` 场景能追问"依据来自哪里",不直接进入下一题
+- [ ] 用户中途退出后重新进入,能从 `wait_user_answer` 状态恢复
+- [ ] Langfuse trace 能按 session_id 看到完整状态机节点和每个工具调用
+- [ ] `evals/suites/interview_coach/` 至少 10 条流程型样本,覆盖追问 / 不追问 / fabricated / 中途恢复四类
+- [ ] README / 简历可表述为"Agentic RAG 面试教练",并能现场演示一轮追问
+
 # M2.5:JD 累积上传 + 一键分析 + 学习路径
 
 ## 范围
@@ -124,11 +177,11 @@ M3    弱点跟踪 + SR(空 query 系统自选)+ 多轮追问 + 岗位类出题(
 - [ ] 200 条 JD 一键分析总成本 ≤ ¥1.0,LLM cache 命中率 ≥ 50%(重跑场景)
 - [ ] Langfuse 按 jd_analysis_id 过滤能看完整 map-reduce trace
 
-# M3:弱点跟踪 + SR + 多轮追问 + 岗位类出题(三源融合)+ 简历诊断
+# M3:弱点跟踪 + SR + 岗位类出题(三源融合)+ 简历诊断
 
 ## 范围
 
-### 笔记复习增强(SR + dashboard + 多轮追问 + 空 query 系统自选)
+### 笔记复习增强(SR + dashboard + 空 query 系统自选)
 
 - **knowledge_gap 表**:`(folder_path, heading_path, error_count, last_score, next_review_at)`,每次 session 评分后 upsert
 - **SR 简化算法**:
@@ -137,10 +190,7 @@ M3    弱点跟踪 + SR(空 query 系统自选)+ 多轮追问 + 岗位类出题(
   - < 60 → next_review_at = today + 1d
 - **dashboard UI**:首页显示 "今日复习" + 知识点弱点排行 + 历史 session 列表
 - **空 query → 系统自选**:用户在聊天框输入"来模拟面试吧" / 留空 → SR 调度从 knowledge_gap 弱点排行选 1 个 heading_path 末段当 query → 走 M2 主题类 RAG 流程出题(复用 M2 pipeline,仅 query 来源从用户改成系统)
-- **多轮追问 Agent**(LangGraph):
-  - State:`current_question / user_answers[] / interviewer_followups[] / score`
-  - Nodes:出题 → 等答 → 判断要不要追问(`coverage < 60 AND ≥1 depth 维度 covered=false`)→ 追问 → 等答 → 评分
-  - 最多 1 轮追问
+- **InterviewCoachAgent 扩展**:复用 M2.1 状态机,把 `update_knowledge_gap` 接到真实 SR 队列;空 query 时由 SR 选题后进入同一编排
 
 ### 岗位类 query 出题(三源融合检索)
 
@@ -171,7 +221,7 @@ M3    弱点跟踪 + SR(空 query 系统自选)+ 多轮追问 + 岗位类出题(
 
 - [ ] dogfood 1 个月,每周 3+ session,弱点排行收敛(同一知识点 3 次后正确率 +30pp)
 - [ ] 空 query → SR 自选跑通:聊天框输"来模拟面试吧" → 系统从弱点排行选主题 → 出题,Langfuse trace 能看到 SR 选中的 heading_path
-- [ ] 多轮追问跑通:第一轮答漏 trade-off → 系统追问 → 用户补充 → 评分
+- [ ] M2.1 追问分支接入 SR:第一轮答漏 trade-off → 系统追问 → 用户补充 → 更新对应 knowledge_gap
 - [ ] dashboard 数据准确(SR 推送的题确实是到期的)
 
 ### 岗位类 query 出题

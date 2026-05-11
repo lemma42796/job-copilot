@@ -77,7 +77,7 @@ JobCopilot 把你的笔记当成私人题库,模拟真面试的强度反问你 �
 | **知识点弱点跟踪** | 用 `folder_path / heading_path` 作 ground truth tag,无需 LLM 抽 | `docs/3-DATA_MODEL` |
 | **Prompt Cache** | sha256(prompt+schema) → cache_key,自动失效,异常降级 miss | `docs/2-TECH_DESIGN` |
 | **Spaced Repetition** | 简化版 SM-2 思路 + 一行 SQL 排期 | `docs/3-DATA_MODEL` |
-| **多轮 Agent(M3)** | LangGraph 状态机:出题 → 答 → 追问 → 评分 | `docs/5-AGENT_DESIGN` |
+| **Agentic RAG 面试教练(M2.1)** | LangGraph 状态机:检索 → 出题 → 等答 → 评分 → 决策 → 追问 / 总结 | `docs/5-AGENT_DESIGN` / `docs/7-ROADMAP` |
 | **可观测** | 每次响应附 trace_id,LLM 调用全量入库 `llm_calls` | `docs/2-TECH_DESIGN` |
 | **本地优先** | docker compose 一键起 + BYOK,数据不出机器 | `docs/1-PRD` |
 
@@ -121,7 +121,7 @@ Docs: http://localhost:8000/v1/docs   # 开发模式
 | [`docs/3-DATA_MODEL.md`](docs/3-DATA_MODEL.md) | 数据模型:notes / chunks / questions / sessions / answers / knowledge_gap |
 | [`docs/4-API_SPEC.md`](docs/4-API_SPEC.md) | API 规范:REST + SSE 端点、错误码、流式协议 |
 | [`docs/5-AGENT_DESIGN.md`](docs/5-AGENT_DESIGN.md) | Agent 设计:QuizGenerator / AnswerJudge 输入输出 + Prompt 全文 |
-| [`docs/6-EVAL_PLAN.md`](docs/6-EVAL_PLAN.md) | 评测计划:answer_judge / quiz_generate suite + Cohen's kappa |
+| [`docs/6-EVAL_PLAN.md`](docs/6-EVAL_PLAN.md) | 评测计划:hybrid_search / quiz_generator / answer_judge / interview_coach 等 suite |
 | [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md) | M0 / M1 / M2 / M2.5 / M3 节奏与退出标准 |
 | [`docs/8-ENGINEERING.md`](docs/8-ENGINEERING.md) | 工程规范:仓库结构、Python+TS 规范、CI/CD |
 | [`docs/9-LESSONS.md`](docs/9-LESSONS.md) | 工程踩坑录(8 大类 ~30 条) |
@@ -135,7 +135,7 @@ Docs: http://localhost:8000/v1/docs   # 开发模式
 | 招聘考点 | 本项目证据 | 文档 / 代码定位 |
 |---------|-----------|----------------|
 | LLM 应用工程化端到端落地 | 8 份设计文档 + ROADMAP + 工程踩坑录 | `docs/` |
-| Agent 编排(LangGraph 状态机) | 多轮追问面试编排(M3) | `docs/5-AGENT_DESIGN` |
+| Agent 编排(LangGraph 状态机) | InterviewCoachAgent:状态 / 工具 / 分支 / 记忆 / 评测 / 恢复 | `docs/5-AGENT_DESIGN` / `docs/7-ROADMAP` |
 | RAG 工程(混合检索 + 重排) | hybrid search:pgvector + tsvector + RRF + char n-gram | `docs/5-AGENT_DESIGN` / `apps/api/src/jobcopilot_api/services/retrieval_pipeline.py` |
 | Prompt 工程 + 版本管理 | Prompt 即代码,Jinja2 模板 + `prompt_versions` 表 | `apps/api/src/jobcopilot_api/agents/*/prompts.py` |
 | 反幻觉 / 引用追溯 | quiz_generator 强约束 source_chunk_ids;answer_judge fidelity 层 | `docs/5-AGENT_DESIGN` |
@@ -164,14 +164,15 @@ Docs: http://localhost:8000/v1/docs   # 开发模式
 
 ## 路线图
 
-5 个阶段(详见 [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md)):
+6 个阶段(详见 [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md)):
 
 ```
 M0  仓库改造 + 文档重写
 M1  笔记入库(.md 上传 + Web 编辑器)+ chunker + 树形导航
 M2  聊天框主题 query → 全库 RAG → 出题 + LLM Judge 三层评分
+M2.1 InterviewCoachAgent → Agentic RAG 面试状态机 + 追问分支
 M2.5 JD 累积上传 + 一键分析 + 学习路径
-M3  弱点跟踪 + SR 队列 + 多轮追问 Agent + 岗位类三源出题 + 简历诊断
+M3  弱点跟踪 + SR 队列 + 岗位类三源出题 + 简历诊断
 ```
 
 ---

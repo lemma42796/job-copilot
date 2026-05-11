@@ -1,23 +1,24 @@
 ---
-title: EVAL PLAN - JobCopilot v2(三个评测套件 + Cohen's kappa 守门)
+title: EVAL PLAN - JobCopilot v2(评测套件 + Cohen's kappa 守门)
 owner: lemma42796
-last_updated: 2026-05-08
+last_updated: 2026-05-11
 purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、不达标处理流程
 ---
 
 # 1. 一句话总览
 
-五套评测,每套对应一个 DoD:
+六套评测,每套对应一个 DoD:
 
 | Suite | M? DoD | 守什么 | 阈值 |
 |-------|--------|-------|------|
 | `hybrid_search` | M1 | 节点查 chunks 召回率 | recall@5 ≥ 0.85 |
 | `quiz_generator` | M2 | 出题结构合规 + type_mix 决策合理 | 合规率 ≥ 0.95 / type_mix 一致率 ≥ 0.7 |
 | `answer_judge` | M2 | 三层 label 跟人工标注一致性 | Cohen's `κ ≥ 0.7`(三层独立) |
+| `interview_coach` | M2.1 | Agent 状态机是否走到人工期望分支 | branch accuracy ≥ 0.8 / recovery case 全过 |
 | `jd_aggregator` | M2.5 | 同义合并准确 + 频次重算正确 | F1 ≥ 0.85 / freq MAE ≤ 0.03 |
 | `resume_advisor` | M3 | anchored ratio + 锚点正确率 + 永不替写文案 | anchored ≥ 0.7 / forbidden 触发率 ≤ 0.05 |
 
-不达标 → 改 prompt(bump version) + 重跑全套,**不切模型**(沿用 5-AGENT_DESIGN §2.1)。
+不达标 → 改 prompt(bump version) / 分支阈值 / 状态机逻辑 + 重跑全套,**不切模型**(沿用 5-AGENT_DESIGN §2.1)。
 
 # 2. 通用约定
 
@@ -32,7 +33,16 @@ evals/
 │   ├── quiz_generator/
 │   │   ├── dataset.jsonl
 │   │   └── README.md
-│   └── answer_judge/
+│   ├── answer_judge/
+│   │   ├── dataset.jsonl
+│   │   └── README.md
+│   ├── interview_coach/
+│   │   ├── dataset.jsonl
+│   │   └── README.md
+│   ├── jd_aggregator/
+│   │   ├── dataset.jsonl
+│   │   └── README.md
+│   └── resume_advisor/
 │       ├── dataset.jsonl
 │       └── README.md
 ├── reports/                       # 跑评测产物(.gitignored)
@@ -48,7 +58,10 @@ scripts/ 在 `apps/api/scripts/`(沿用 v1):
 apps/api/scripts/
 ├── eval_hybrid_search.py
 ├── eval_quiz_generator.py
-└── eval_answer_judge.py
+├── eval_answer_judge.py
+├── eval_interview_coach.py
+├── eval_jd_aggregator.py
+└── eval_resume_advisor.py
 ```
 
 ## 2.2 dataset.jsonl 通用约定

@@ -1,7 +1,7 @@
 ---
 title: PRD - JobCopilot v2(给学计算机的人的全流程工具)
 owner: lemma42796
-last_updated: 2026-05-09
+last_updated: 2026-05-11
 status: M2(M0/M1 收口,出题入口由"节点点击"改为"聊天框 query")
 purpose: 锁产品边界、目标用户、用户故事、NSM、不在范围
 ---
@@ -126,6 +126,8 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 │  用户答(笔记面板隐藏 — active recall 强约束;答完恢复)         │
 │     ↓ AnswerJudge(thinking on,三层评分 + lookup tool)          │
 │  Coverage / Fidelity / Depth + 加权总分                          │
+│     ↓ M2.1 InterviewCoachAgent 决策                                │
+│  答得好 → 下一题 / 总结;漏点 / 编造 / 深度不足 → 最多追问一轮 │
 │     ↓                                                              │
 │  session 沉淀 + knowledge_gap 更新                                │
 │     ↓ SR 队列排期                                                  │
@@ -158,6 +160,7 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 ## 5.2 出题与答题
 
 - **US-5(M2,主题类 query)**:作为用户,我可以在聊天框输入一个主题("考考我多线程" / "缓存一致性"),系统从全笔记库 RAG 找最相关 chunks(query rewriting → hybrid + RRF → reranker → parent-doc 扩展),出 3-10 道题。**0 命中(笔记里没这主题)直接报错,不兜底放宽**
+- **US-5a(M2.1,Agentic 面试教练)**:作为用户,我答完一道题后,系统不只是打分,还会基于 Coverage / Fidelity / Depth evidence 决定下一步:答得好进入下一题;漏关键点 / 编造依据 / 深度不足时最多追问一轮。追问必须基于原题的 `source_chunk_ids`,不允许脱离笔记自由发挥
 - **US-5b(M3,岗位类 query)**:作为用户,我可以输入岗位描述("模拟一面 Java 后端" / "应聘字节后端实习"),系统拼**三源**(笔记 RAG + 我那一份简历全文 + 我选定的 JD 子集职责/要求)出题,**重点考"简历写了 JD 也要"的交集 + "JD 强要求简历没写"的缺口**(直击"自己不会的也往简历上写,问到答不出"问题)
 - **US-5c(M3,空 query / 系统自选)**:作为用户,我可以输入"来模拟面试吧"或留空,系统按 SR 弱点排行自选一个主题,然后走主题类 RAG 流程出题
 - **US-6**:作为用户,题型分两类:**开放式**("解释 synchronized 的锁升级过程")+ **八股**("synchronized 的轻量级锁是怎么实现的?")。MVP 不做代码题 / 系统设计题。M3 岗位类多一种 "**项目深挖题**"(基于简历项目段落,问技术选型 / 难点 / 量化数据)
@@ -198,6 +201,10 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 - US-9 / US-10 / US-11(评分沉淀)
 - US-12 / 13 / 14 简化版(不做美观 dashboard,只做 SQL 查询 + 列表)
 
+## M2.1(Agentic RAG 面试教练)
+
+- **US-5a**:用 `InterviewCoachAgent` 状态机编排 M2 出题 / 等答 / 评分 / 追问 / 总结;把"一次性 RAG 出题"升级为可恢复、可观测、可评测的面试流程
+
 ## M2.5(独立小里程碑)
 
 - US-15 ~ US-18 全做(JD 累积上传 + 一键分析 + 学习路径)
@@ -207,7 +214,7 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 - **US-5b(岗位类 query)+ US-5c(空 query 系统自选)**
 - 完整弱点 dashboard UI
 - session 历史回看
-- LangGraph 多轮追问 Agent(基于第一轮答案出追问)
+- M2.1 `InterviewCoachAgent` 接入 SR / 岗位类三源出题
 - US-19 ~ US-21(简历诊断,两方锚点严格)
 
 ## 明确不做(MVP / M2 / M3 都不做)
@@ -276,6 +283,7 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 | 简历存储 | **单条记录**,不做"简历库 / 多份切换" | 一个人就一份简历;岗位类 query 拼"这一份 + 选定 JD 子集"已够 |
 | 题型 | 开放式 + 八股 两类(M3 岗位类多 "**项目深挖题**") | 不做代码 / 系统设计 / 选择题 |
 | 评分 | LLM-as-Judge 三层(Coverage / Fidelity / Depth) | 权重在 Python,不让 Judge 算 |
+| Agent 编排 | M2.1 `InterviewCoachAgent` 状态机 | 高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复;不做泛化多 Agent 互聊 |
 | 简历诊断锚点 | 两方严格(JD req + 简历位置),**永不输出改写文案** | 避开 v1 失败模式;只做诊断让用户自己写 |
 | LLM 模型 | qwen3.6-flash(多模态 + 文本一把抓) | Quiz / Judge / 截图 / JD 解析 / 简历诊断 共用 |
 | LLM thinking | **按 agent 决定,默认 off** | 评分类 / 综合判断类 on,出题 / 解析类 off — 详见 5-AGENT |
@@ -284,7 +292,7 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 | Tracing | Langfuse 自部署 | 数据不出本地;详见 2-TECH §6 |
 | Tool use | AnswerJudge `lookup_in_notes_global` | 反假阳性 |
 | 数据存储 | Postgres 16(pgvector + tsvector)| 沿用 v1 ADR-0002 |
-| Agent 编排 | M3 才用 LangGraph(多轮追问);MVP 单 Agent | |
+| LangGraph 使用时机 | M2.1 起用 LangGraph 编排面试状态机;M3 扩 SR / 三源岗位流 | |
 | UI 风格 | macOS 风(Tailwind 自己写,不引组件库) | |
 | 部署 | 本地 docker compose(api / web / postgres / langfuse / langfuse-db 五服务)| MVP 单用户 |
 
