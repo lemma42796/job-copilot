@@ -43,6 +43,7 @@ type SaveState =
 
 type ProgressItem = {
   id: string;
+  group: 'quiz' | 'judge';
   label: string;
   detail?: string;
 };
@@ -333,6 +334,7 @@ function problemMessage(err: unknown): string {
 
 function progressLabel(progress: QuizProgress): ProgressItem {
   const label = PHASE_LABELS[progress.phase] ?? progress.phase;
+  const group = progress.phase === 'judging' ? 'judge' : 'quiz';
   const details: string[] = [];
   if (progress.expanded_queries?.length) details.push(progress.expanded_queries.join(' / '));
   if (typeof progress.candidate_count === 'number') details.push(`${progress.candidate_count} 个候选`);
@@ -341,13 +343,14 @@ function progressLabel(progress: QuizProgress): ProgressItem {
   if (typeof progress.order_index === 'number') details.push(`第 ${progress.order_index + 1} 题`);
   return {
     id: `${progress.phase}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    group,
     label,
     detail: details.join(' · ') || undefined,
   };
 }
 
 function appendProgress(items: ProgressItem[], next: ProgressItem): ProgressItem[] {
-  return [...items.slice(-8), next];
+  return [...items.slice(-16), next];
 }
 
 function scoreTone(score: number): string {
@@ -559,6 +562,14 @@ export default function QuizPage() {
     () => questions.filter((q) => (answers[q.order_index] ?? '').trim()).length,
     [answers, questions],
   );
+  const quizProgressItems = useMemo(
+    () => progressItems.filter((item) => item.group === 'quiz'),
+    [progressItems],
+  );
+  const judgeProgressItems = useMemo(
+    () => progressItems.filter((item) => item.group === 'judge'),
+    [progressItems],
+  );
 
   const canStart = query.trim().length > 0 && (stage === 'idle' || stage === 'submitted');
   const controlsLocked = stage !== 'idle' && stage !== 'submitted';
@@ -627,7 +638,17 @@ export default function QuizPage() {
     setQuestions(restoredQuestions);
     setAnswers(restoredAnswers);
     setProgressItems([
-      { id: `restored-${detail.id}`, label: `恢复 Session #${detail.id}`, detail: detail.query },
+      { id: `restored-${detail.id}`, group: 'quiz', label: '题目已恢复', detail: `Session #${detail.id}` },
+      ...(finalScores
+        ? [
+            {
+              id: `restored-score-${detail.id}`,
+              group: 'judge' as const,
+              label: '评分已恢复',
+              detail: `总分 ${roundedScore(finalScores.total)}`,
+            },
+          ]
+        : []),
     ]);
     setTypeMix(restoredQuestions.length ? typeMixFromQuestions(restoredQuestions) : null);
     setQuestionResults(restoredResults);
@@ -653,8 +674,8 @@ export default function QuizPage() {
     setQuestions(SAMPLE_QUIZ.questions);
     setAnswers(SAMPLE_QUIZ.answers);
     setProgressItems([
-      { id: 'sample-session', label: '样例 Session', detail: SAMPLE_QUIZ.query },
-      { id: 'sample-result', label: '评分完成', detail: '本地样例' },
+      { id: 'sample-session', group: 'quiz', label: '样例题目', detail: SAMPLE_QUIZ.query },
+      { id: 'sample-result', group: 'judge', label: '样例评分', detail: '本地样例' },
     ]);
     setTypeMix(SAMPLE_QUIZ.typeMix);
     setQuestionResults(SAMPLE_QUIZ.results);
@@ -751,7 +772,7 @@ export default function QuizPage() {
     setQuestionResults({});
     setFinalResult(null);
     setSaveState({ kind: 'idle' });
-    setProgressItems([{ id: 'start', label: '准备出题' }]);
+    setProgressItems([{ id: 'start', group: 'quiz', label: '准备出题' }]);
     savedAnswersRef.current = {};
 
     let ok = false;
@@ -769,6 +790,7 @@ export default function QuizPage() {
           setProgressItems((items) =>
             appendProgress(items, {
               id: `session-${frame.data.resource_id}`,
+              group: 'quiz',
               label: `Session #${frame.data.resource_id}`,
               detail: frame.data.query,
             }),
@@ -782,6 +804,7 @@ export default function QuizPage() {
           setProgressItems((items) =>
             appendProgress(items, {
               id: `question-${frame.data.order_index}`,
+              group: 'quiz',
               label: `第 ${frame.data.order_index + 1} 题已就绪`,
               detail: frame.data.question.type === 'definition' ? '八股' : '开放题',
             }),
@@ -827,7 +850,9 @@ export default function QuizPage() {
     setRunError(null);
     setQuestionResults({});
     setFinalResult(null);
-    setProgressItems((items) => appendProgress(items, { id: 'submit-start', label: '提交评分' }));
+    setProgressItems((items) =>
+      appendProgress(items, { id: 'submit-start', group: 'judge', label: '提交评分' }),
+    );
 
     let ok = false;
     try {
@@ -837,6 +862,7 @@ export default function QuizPage() {
           setProgressItems((items) =>
             appendProgress(items, {
               id: 'judge-started',
+              group: 'judge',
               label: 'Judge 已开始',
               detail: `${frame.data.total_questions} 题`,
             }),
@@ -854,6 +880,7 @@ export default function QuizPage() {
           setProgressItems((items) =>
             appendProgress(items, {
               id: `judge-done-${frame.data.order_index}`,
+              group: 'judge',
               label: `第 ${frame.data.order_index + 1} 题评分完成`,
               detail: `总分 ${roundedScore(frame.data.scores.total)}`,
             }),
@@ -1036,23 +1063,26 @@ export default function QuizPage() {
               <span className="text-xs font-medium text-muted">进度</span>
               {sessionId ? <span className="text-xs text-muted">#{sessionId}</span> : null}
             </div>
-            <ol className="space-y-2">
-              {progressItems.length === 0 ? (
-                <li className="text-xs text-muted">等待开始</li>
-              ) : (
-                progressItems.map((item) => (
-                  <li key={item.id} className="flex gap-2 text-xs">
-                    <span className="mt-[5px] size-1.5 rounded-full bg-accent" aria-hidden="true" />
-                    <span className="min-w-0">
-                      <span className="block truncate text-foreground">{item.label}</span>
-                      {item.detail ? (
-                        <span className="block truncate text-muted">{item.detail}</span>
-                      ) : null}
-                    </span>
-                  </li>
-                ))
-              )}
-            </ol>
+            <div className="space-y-2">
+              <ProgressSummary
+                title="出题流程"
+                items={quizProgressItems}
+                active={stage === 'generating'}
+                done={questions.length > 0}
+                meta={
+                  questions.length
+                    ? `${questions.length} 题 · ${typeMix ? `开放 ${typeMix.open_ended} / 八股 ${typeMix.definition}` : '已生成'}`
+                    : undefined
+                }
+              />
+              <ProgressSummary
+                title="评分流程"
+                items={judgeProgressItems}
+                active={stage === 'submitting'}
+                done={stage === 'submitted'}
+                meta={finalResult ? `总分 ${roundedScore(finalResult.scores.total)}` : undefined}
+              />
+            </div>
           </div>
         </div>
       </aside>
@@ -1160,6 +1190,58 @@ function EmptyState({ stage }: { stage: Stage }) {
         <p className="mt-3 text-sm text-muted">{busy ? '正在整理笔记上下文…' : '等待主题'}</p>
       </div>
     </div>
+  );
+}
+
+function ProgressSummary({
+  title,
+  items,
+  active,
+  done,
+  meta,
+}: {
+  title: string;
+  items: ProgressItem[];
+  active: boolean;
+  done: boolean;
+  meta?: string;
+}) {
+  const visibleItems = items.slice(-2);
+  const status = active ? '进行中' : done ? '完成' : '等待';
+  return (
+    <section className="rounded-lg border border-border bg-[var(--color-system-gray-6)] px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs font-medium text-foreground">{title}</span>
+        <span
+          className={cn(
+            'text-[11px] font-medium',
+            active
+              ? 'text-accent'
+              : done
+                ? 'text-[var(--color-success-fg)]'
+                : 'text-muted',
+          )}
+        >
+          {status}
+        </span>
+      </div>
+      {meta ? <div className="mt-1 truncate text-[11px] text-muted">{meta}</div> : null}
+      {visibleItems.length ? (
+        <ol className="mt-2 space-y-1">
+          {visibleItems.map((item) => (
+            <li key={item.id} className="flex gap-2 text-[11px]">
+              <span className="mt-[6px] size-1 rounded-full bg-accent" aria-hidden="true" />
+              <span className="min-w-0">
+                <span className="block truncate text-foreground">{item.label}</span>
+                {item.detail ? <span className="block truncate text-muted">{item.detail}</span> : null}
+              </span>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <div className="mt-2 text-[11px] text-muted">还没有开始</div>
+      )}
+    </section>
   );
 }
 
