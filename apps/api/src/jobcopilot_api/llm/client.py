@@ -68,6 +68,7 @@ class ProviderRequest:
     thinking_mode: bool
     timeout_s: float
     max_tokens: int = 4096
+    temperature: float | None = None  # 5-AGENT §2.2:agent 显式传不依赖默认
 
 
 @dataclass(frozen=True)
@@ -137,6 +138,7 @@ class LLMRequest:
     cache_system: bool = True
     timeout_s: float | None = None
     max_tokens: int | None = None
+    temperature: float | None = None
     user_id: int | None = None
     trace_id: str | None = None
     related_entity: str | None = None
@@ -162,6 +164,7 @@ class LLMClient(Protocol):
         cache_system: bool = True,
         timeout_s: float | None = None,
         max_tokens: int | None = None,
+        temperature: float | None = None,
         user_id: int | None = None,
         trace_id: str | None = None,
         related_entity: str | None = None,
@@ -306,6 +309,7 @@ class BaseLLMClient:
         cache_system: bool = True,
         timeout_s: float | None = None,
         max_tokens: int | None = None,
+        temperature: float | None = None,
         user_id: int | None = None,
         trace_id: str | None = None,
         related_entity: str | None = None,
@@ -332,6 +336,7 @@ class BaseLLMClient:
             response_format=response_format,
             thinking_mode=cfg.thinking_mode,
             prompt_version_id=prompt_version_id,
+            temperature=temperature,
         )
 
         success = False
@@ -366,6 +371,7 @@ class BaseLLMClient:
                         thinking_mode=cfg.thinking_mode,
                         timeout_s=effective_timeout,
                         max_tokens=effective_max_tokens,
+                        temperature=temperature,
                     ),
                     on_token=on_token,
                 )
@@ -385,6 +391,7 @@ class BaseLLMClient:
                                 thinking_mode=cfg.thinking_mode,
                                 timeout_s=effective_timeout,
                                 max_tokens=effective_max_tokens,
+                                temperature=temperature,
                             ),
                             on_token=on_token,
                         )

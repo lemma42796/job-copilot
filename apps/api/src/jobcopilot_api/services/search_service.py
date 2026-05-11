@@ -18,8 +18,6 @@ RRF_K / HYBRID_PER_PATH_K 常量在本文件,dogfood 后调动作只改这里。
 
 from __future__ import annotations
 
-import asyncio
-
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -92,21 +90,18 @@ async def _hybrid_search(
     lex_query = to_tsquery_string(query)
     per_path_k = max(top_k * 2, HYBRID_PER_PATH_K)
 
-    async def _run_vector() -> list[NoteChunk]:
-        return await _vector_search(
-            session, folder_path, heading_path, vec, per_path_k
-        )
-
-    async def _run_lexical() -> list[NoteChunk]:
-        if not lex_query:
-            return []
-        return await _lexical_search(
+    # 顺序跑 vector / lex 两路:SQLAlchemy AsyncSession 不允许同 session 并发
+    # SQL(撞 InvalidRequestError "concurrent operations are not permitted")。
+    # 两路都是 indexed 查询(HNSW + GIN),串行延迟可控。
+    vector_chunks = await _vector_search(
+        session, folder_path, heading_path, vec, per_path_k
+    )
+    if lex_query:
+        lexical_chunks = await _lexical_search(
             session, folder_path, heading_path, lex_query, per_path_k
         )
-
-    vector_chunks, lexical_chunks = await asyncio.gather(
-        _run_vector(), _run_lexical()
-    )
+    else:
+        lexical_chunks = []
 
     scores = _rrf_fuse([vector_chunks, lexical_chunks])
     return _by_score(vector_chunks, lexical_chunks, scores)[:top_k]

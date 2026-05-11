@@ -4,16 +4,22 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
-class NoteChunkRef(BaseModel):
-    """传给 LLM 的 chunk 摘要 — 只含算分需要的字段。"""
+class QuizGenChunkInput(BaseModel):
+    """传给 quiz_generator 的 chunk DTO。
+
+    service 层(M2 第 4 步)负责 RetrievedChunk(retrieval_pipeline 输出)
+    → QuizGenChunkInput 的转换:id 是 NoteChunk DB id,渲染 USER 段时用
+    [N] 替换显示,LLM 输出回来还是 [N],service 后处理把 [N] 还原成 DB id
+    落 questions.source_chunk_ids。
+    """
 
     id: int
     folder_path: list[str]
     heading_path: list[str]
-    level: int
+    note_title: str
     content: str
 
 
@@ -42,9 +48,9 @@ class GeneratedQuestion(BaseModel):
 
 
 class QuizGenInput(BaseModel):
-    node_folder_path: list[str]
-    node_heading_path: list[str] = Field(default_factory=list)
-    chunks: list[NoteChunkRef]
+    query: str
+    mode: Literal["topic", "job", "auto"] = "topic"
+    chunks: list[QuizGenChunkInput]
     question_count: int
 
 

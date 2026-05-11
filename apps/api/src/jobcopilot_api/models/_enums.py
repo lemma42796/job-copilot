@@ -25,3 +25,9 @@ QUIZ_SESSION_STATUS_VALUES: tuple[str, ...] = (
     "submitted",
     "abandoned",
 )
+
+QUIZ_SESSION_MODE_VALUES: tuple[str, ...] = (
+    "topic",  # M2:聊天框主题类 query
+    "job",    # M3:岗位类(笔记 + 简历 + JD 子集 三源融合)
+    "auto",   # M3:空 query(SR 自选 heading_path 末段填入)
+)

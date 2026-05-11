@@ -87,6 +87,8 @@ class DashscopeProvider(Provider):
         }
         if request.response_format is not None:
             kwargs["response_format"] = request.response_format
+        if request.temperature is not None:
+            kwargs["temperature"] = request.temperature
 
         if on_token is not None:
             return await self._complete_stream(kwargs, on_token=on_token)

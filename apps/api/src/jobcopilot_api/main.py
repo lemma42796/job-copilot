@@ -30,7 +30,7 @@ from jobcopilot_api.infra.db import get_sessionmaker  # noqa: E402
 from jobcopilot_api.infra.logging import setup_logging  # noqa: E402
 from jobcopilot_api.infra.prompts import load_prompt_versions  # noqa: E402
 from jobcopilot_api.infra.request_id import RequestIDMiddleware  # noqa: E402
-from jobcopilot_api.routers import health, notes  # noqa: E402
+from jobcopilot_api.routers import health, notes, quiz  # noqa: E402
 from jobcopilot_api.workers import embed_worker  # noqa: E402
 
 
@@ -90,6 +90,7 @@ def create_app() -> FastAPI:
     # 统一挂 /api。
     app.include_router(health.router, prefix="/v1")
     app.include_router(notes.router, prefix="/api")
+    app.include_router(quiz.router, prefix="/api")
 
     return app
 

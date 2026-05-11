@@ -1,19 +1,60 @@
-"""QuizGenerator 编排(M1)。
+"""QuizGenerator 编排(M2)。
 
-config(5-AGENT_DESIGN §2.1 / §2.2):
-- model: qwen3.6-flash
-- thinking: off
-- temperature: 0.3
-- prompt name/version: quiz_generator v1.0
+config(5-AGENT_DESIGN §2.1 / §2.2 / §3):
+- model: qwen3.6-flash(Tier.CHEAP)
+- thinking: off(出题靠 chunks 内容重组,不需复杂推理)
+- temperature: 0.3(降随机性,要稳定结构)
+- prompt name/version: quiz_generator v1.0(详见 prompts.py)
+
+agent 是薄壳:渲染 USER 段 → 调 LLMClient(BaseLLMClient 内置 retry / cache /
+schema 校验 / cost 计算)→ 返回 LLMResult。
+
+`result.parsed` 是 `QuizGenOutput` 实例(LLM 输出经 Pydantic 校验);
+service 层(M2 第 4 步)做 [N] → DB id 映射 + 完整性校验
+(reference_chunk_ids ⊆ source_chunk_ids / weight 之和 ≈ 1.0 等)+ 落库
++ 写 questions.gen_model / gen_prompt_version / gen_tokens_* / gen_cost_cny
+audit 字段(从 LLMResult 抽)。
 """
 
 from __future__ import annotations
 
-from jobcopilot_api.schemas.agents.quiz_generator import QuizGenInput, QuizGenOutput
+from jobcopilot_api.agents.quiz_generator.prompts import (
+    PROMPT_NAME,
+    SYSTEM,
+    render_user,
+)
+from jobcopilot_api.infra.llm import get_llm_client
+from jobcopilot_api.llm.client import LLMClient, LLMResult
+from jobcopilot_api.llm.tiers import Tier
+from jobcopilot_api.schemas.agents.quiz_generator import (
+    QuizGenInput,
+    QuizGenOutput,
+)
 
-PROMPT_NAME = "quiz_generator"
-PROMPT_VERSION = "v1.0"
+TEMPERATURE = 0.3  # 5-AGENT §2.2
 
 
-async def run(inp: QuizGenInput) -> QuizGenOutput:
-    raise NotImplementedError("M1")
+async def run(
+    inp: QuizGenInput,
+    *,
+    llm: LLMClient | None = None,
+) -> LLMResult:
+    """LLM 出题。
+
+    返回 LLMResult — `.parsed` 是 `QuizGenOutput`(已 Pydantic 校验);
+    `.tokens_in / tokens_out / cost_cny / model` 喂 service 层落 audit。
+    """
+    client = llm or get_llm_client()
+    user = render_user(
+        query=inp.query,
+        chunks=inp.chunks,
+        question_count=inp.question_count,
+    )
+    return await client.complete(
+        feature=PROMPT_NAME,
+        tier=Tier.CHEAP,
+        system=SYSTEM,
+        user=user,
+        response_schema=QuizGenOutput,
+        temperature=TEMPERATURE,
+    )

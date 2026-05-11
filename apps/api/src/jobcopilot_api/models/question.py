@@ -1,5 +1,8 @@
 """Question ORM — DATA_MODEL §5.3.
 
+出题来源是 query 不是节点(M2 起聊天框 query 替代节点点击);
+originated_query / originated_mode 留作 audit / 复用判断 / 评测 query 多样性。
+
 source_chunk_ids 是 SSoT 数组,出题 prompt 里 [N] 编号顺序跟数组顺序一致;
 Judge 同一份顺序对照。reference_chunk_ids ⊆ source_chunk_ids(LLM 强约束)。
 reference_points 见 §6.1 schema(用于 Coverage 算分)。
@@ -14,20 +17,25 @@ from sqlalchemy import BigInteger, Integer, Numeric, String, Text, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from jobcopilot_api.models._enums import QUESTION_TYPE_VALUES
+from jobcopilot_api.models._enums import (
+    QUESTION_TYPE_VALUES,
+    QUIZ_SESSION_MODE_VALUES,
+)
 from jobcopilot_api.models.base import Base, IDMixin, TimestampMixin
 
 
 class Question(Base, IDMixin, TimestampMixin):
     __tablename__ = "questions"
 
-    node_folder_path: Mapped[list[str]] = mapped_column(
-        postgresql.ARRAY(Text()), nullable=False
-    )
-    node_heading_path: Mapped[list[str]] = mapped_column(
-        postgresql.ARRAY(Text()),
+    originated_query: Mapped[str] = mapped_column(Text(), nullable=False)
+    originated_mode: Mapped[str] = mapped_column(
+        postgresql.ENUM(
+            *QUIZ_SESSION_MODE_VALUES,
+            name="quiz_session_mode",
+            create_type=False,
+        ),
         nullable=False,
-        server_default=text("'{}'::text[]"),
+        server_default="topic",
     )
 
     type: Mapped[str] = mapped_column(

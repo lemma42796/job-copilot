@@ -5,13 +5,23 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+QuizMode = Literal["topic", "job", "auto"]
 
 
 class QuizSessionCreateIn(BaseModel):
-    folder_path: list[str]
-    heading_path: list[str] | None = None
-    question_count: int
+    """POST /api/quiz/sessions 请求 body(4-API_SPEC §4.1)。
+
+    M2 仅 mode=topic 可用;router 层把 mode=job/auto 拦截成
+    422 mode_not_implemented(M3 启用)。query 长度上限 200(超限 422
+    query_too_long)— 422 错误码由 Pydantic 校验生成,router 不重判。
+    """
+
+    query: str = ""
+    mode: QuizMode = "topic"
+    jd_ids: list[int] | None = None
+    question_count: int = Field(ge=3, le=10)
 
 
 class AnswerDraftIn(BaseModel):
@@ -20,21 +30,35 @@ class AnswerDraftIn(BaseModel):
 
 class QuizSessionOut(BaseModel):
     id: int
-    folder_path: list[str]
-    heading_path: list[str] | None
-    question_count: int
+    query: str
+    mode: QuizMode
+    jd_ids: list[int] | None = None
     status: Literal["in_progress", "submitted", "abandoned"]
     started_at: datetime
-    submitted_at: datetime | None
-    total_score: float | None
+    submitted_at: datetime | None = None
+    total_score: float | None = None
 
 
-class QuestionOut(BaseModel):
-    id: int
+class QuestionReadyOut(BaseModel):
+    """SSE event=question_ready 的 data payload(4-API_SPEC §4.1)。
+
+    答题阶段前端拿不到 reference_answer / reference_points(active recall
+    强约束,防作弊)— 见 4-API_SPEC §4.2 的"重要"备注。
+    """
+
     order_index: int
+    question: "QuestionPublic"
+
+
+class QuestionPublic(BaseModel):
+    id: int
     type: Literal["open_ended", "definition"]
     prompt: str
     source_chunk_ids: list[int]
+
+
+# 关闭循环引用
+QuestionReadyOut.model_rebuild()
 
 
 class SessionAnswerOut(BaseModel):

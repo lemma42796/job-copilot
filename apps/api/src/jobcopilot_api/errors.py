@@ -53,6 +53,42 @@ class ValidationError(JobCopilotError):
     title = "请求参数有误"
 
 
+class NoChunksForQueryError(JobCopilotError):
+    """retrieval_pipeline 0 命中守门(PRD Q-10:< 3 chunks → 报错不兜底)。
+
+    语义:用户的笔记库里没找到跟 query 主题相关的内容 — 让用户改 query 或
+    先扩笔记。422 = 请求语法合法但语义无对应资源(比 404 更贴 "笔记里没这主题")。
+    """
+
+    status_code = 422
+    code = "NO_CHUNKS_FOR_QUERY"
+    title = "笔记里没找到这个主题"
+
+
+class ModeNotImplementedError(JobCopilotError):
+    """4-API_SPEC §4.1:M2 阶段传 mode=job / mode=auto 返 422。"""
+
+    status_code = 422
+    code = "mode_not_implemented"
+    title = "该模式 M2 阶段未启用"
+
+
+class QueryRequiredError(JobCopilotError):
+    """4-API_SPEC §4.1:mode=topic 但 query 为空。"""
+
+    status_code = 422
+    code = "query_required"
+    title = "query 不能为空"
+
+
+class QueryTooLongError(JobCopilotError):
+    """4-API_SPEC §4.1:query 超过 200 字符。"""
+
+    status_code = 422
+    code = "query_too_long"
+    title = "query 超过长度限制"
+
+
 class ProblemResponse(JSONResponse):
     media_type = "application/problem+json"
 
