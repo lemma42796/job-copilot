@@ -23,10 +23,11 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 最新状态:
 
+- 本轮补齐 **M2 RAG 质量评测方案**:`docs/6-EVAL_PLAN.md` 第 7 节改为完整链路补测,覆盖 `candidate_recall@50 / rerank_recall@10 / mrr@10 / final_context_recall / zero_hit_precision / unsafe_boundary_rate`。
+- 本轮确认并清理本地 dogfood 笔记目录:`test-notes/llm-notes` 从 25 篇 / 14.98 万字清到 21 篇 / 12.24 万字,移除 JobCopilot 项目自指内容;该目录当前不在 git 跟踪,后续需复制一份干净 fixture 到 `evals/suites/hybrid_search/notes_fixture/`。
 - **M2 已由用户确认完成**:聊天框主题 query → 全库 RAG → 出题 → 答题 → Judge 三层评分 → session 恢复已跑通。
-- 本次收口前 `git status --short` 为空;本次只改 `docs/STATUS.md`,等待用户决定是否 commit / push / tag。
 - Context Cache 已验证 provider-side 命中,但因 5 分钟 TTL 不适合当前一次性答题流,已默认关闭显式 `cache_control`;后续多轮讨论面试题时再打开。
-- 最新功能提交主题:`feat: summarize quiz progress UI`;push 后 working tree 应清空。
+- 最新功能提交主题:`docs: mark m2 complete`;M2 tag `v0.4-m2-end` 仍待用户确认。
 - M2 retrieval quiz pipeline 代码已提交:`103d882 feat: add m2 retrieval quiz pipeline`。
 - M2.1 Agentic RAG 文档已提交:`fd892fa docs: add agentic interview coach roadmap`。
 - M2 AnswerJudge 初版已落地:三层 evidence prompt / agent / submit SSE / Python 算分 / fabricated 锁顶。
@@ -58,15 +59,15 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **M2.1 状态机骨架**:新增 `InterviewCoachAgent` session root orchestrator,先串 `retrieve_context → generate_question → wait_user_answer → judge_answer`。
+1. **M2 RAG 质量补测落地**:实现 `eval_hybrid_search.py` + `evals/suites/hybrid_search/dataset.jsonl` 骨架,把干净 `test-notes/llm-notes` 固化为 `notes_fixture`,先出 baseline report。
 
 备选:
 
+- 根据评测失败样本调整 parent-doc / chunker / query rewrite / reranker 阈值。
+- RAG 补测过线后,再开 M2.1 `InterviewCoachAgent` 状态机骨架。
 - 接 `decide_next_action`:按 coverage / fabricated / depth evidence 决定追问或下一题。
 - 接 `generate_followup`:单题最多 1 轮追问,不做无限循环。
 - 做中途退出恢复:从 `wait_user_answer` 状态恢复真实 session。
-- 补 Langfuse trace 颗粒度:`retrieve → generate → judge → decide → followup → summarize`。
-- 预留 `update_knowledge_gap(...)` 接口,真实 SR 队列放 M3。
 
 # 已锁定关键决策
 

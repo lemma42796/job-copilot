@@ -1,7 +1,7 @@
 ---
 title: EVAL PLAN - JobCopilot v2(评测套件 + Cohen's kappa 守门)
 owner: lemma42796
-last_updated: 2026-05-11
+last_updated: 2026-05-12
 purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、不达标处理流程
 ---
 
@@ -11,7 +11,7 @@ purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、
 
 | Suite | M? DoD | 守什么 | 阈值 |
 |-------|--------|-------|------|
-| `hybrid_search` | M1 | 节点查 chunks 召回率 | recall@5 ≥ 0.85 |
+| `hybrid_search` | M2 补测 | RAG 召回 + chunk 语义完整性 | final_context_recall ≥ 0.95 |
 | `quiz_generator` | M2 | 出题结构合规 + type_mix 决策合理 | 合规率 ≥ 0.95 / type_mix 一致率 ≥ 0.7 |
 | `answer_judge` | M2 | 三层 label 跟人工标注一致性 | Cohen's `κ ≥ 0.7`(三层独立) |
 | `interview_coach` | M2.1 | Agent 状态机是否走到人工期望分支 | branch accuracy ≥ 0.8 / recovery case 全过 |
@@ -469,19 +469,51 @@ python -m jobcopilot_api.scripts.eval_resume_advisor \
 
 **dogfood 自查硬约束**:跑出任意一条触发 forbidden_pattern 的 fixture → **prompt 漏洞,M3 DoD 不通过**(必须修 prompt + 加 forbidden_pattern + 重跑直到 0 触发)。
 
-# 7. `hybrid_search` suite(M1 DoD)
+# 7. `hybrid_search` suite(M2 补测 / M2.1 前置)
 
 ## 7.1 评什么
 
-测节点 prefix 查询(API §3.8)+ hybrid search 召回(RRF 融合 lexical + dense)是否把"该出现的 chunk"排进 Top-K。
+测 **用户主题 query → query rewrite → hybrid 召回 → reranker → parent-doc 扩展 → 最终 chunks** 这条完整 RAG 链路是否满足两件事:
+
+1. **召回不漏**:该出现的 evidence 能进入候选、重排后靠前,最终上下文覆盖完整。
+2. **切片不断义**:最终喂给 QuizGenerator / AnswerJudge 的 chunks 不把关键前提、否定、数值、表格、代码块、列表结构切坏。
+
+本 suite 是 M2 已完成功能链路后的质量补测,也是 M2.1 `InterviewCoachAgent.retrieve_context` 的前置守门。它不改变产品边界:当前只评程序员面试笔记,不声明医学 / 法律等高风险领域可用。
+
+## 7.2 分阶段指标
 
 | 指标 | 定义 | 阈值 |
-|------|------|----|
-| `recall@5` | 期望 chunk 在 Top-5 的样本比例 | ≥ 0.85 |
-| `recall@10` | 期望 chunk 在 Top-10 的样本比例 | ≥ 0.95 |
-| `mrr` | mean reciprocal rank | ≥ 0.6 |
+|------|------|------|
+| `candidate_recall@50` | expected evidence 进入 query rewrite + hybrid + RRF 后候选 Top-50 的样本比例 | ≥ 0.98 |
+| `rerank_recall@10` | expected evidence 进入 reranker Top-10 的样本比例 | ≥ 0.90 |
+| `mrr@10` | reranker Top-10 中首个 expected evidence 的 mean reciprocal rank | ≥ 0.60 |
+| `final_context_recall` | parent-doc 扩展后最终 chunks 覆盖 expected evidence 的样本比例 | ≥ 0.95 |
+| `zero_hit_precision` | 0 命中 / 近邻干扰样本没有被错误拿去出题的比例 | ≥ 0.90 |
+| `unsafe_boundary_rate` | 人工审查中出现"关键前提 / 否定 / 数值 / 表格 / 代码块被切断且 final context 未补回"的比例 | ≤ 0.05 |
 
-## 7.2 dataset.jsonl schema
+解释:
+
+- `candidate_recall@50` 守"别漏":reranker 只能重排候选,不能找回没召回的 chunk。
+- `rerank_recall@10` / `mrr@10` 守"排准":QuizGenerator 不应吃大量边缘候选。
+- `final_context_recall` 守"最终可用":真正决定出题 / 评分质量的是 parent-doc 后的上下文,不是中间候选。
+- `unsafe_boundary_rate` 是 chunker 质量指标,发现问题优先调 chunker / parent-doc,不是换模型。
+
+## 7.3 Ablation 矩阵
+
+每条样本都跑以下路径,报告里并排输出:
+
+| 路径 | 目的 |
+|------|------|
+| `vector_only` | 看 dense embedding 语义召回单路上限 |
+| `lexical_only` | 看 char_ngram / 英文 token 对术语、拼写、缩写的守门能力 |
+| `hybrid_no_rewrite` | 看 RRF 融合本身收益 |
+| `hybrid_with_rewrite` | 看 query rewrite 是否真实提召回,以及是否引入跑题 |
+| `hybrid_with_rewrite_rerank` | 看 reranker 是否把正确 evidence 推到 Top-10 |
+| `final_context_parent_doc` | 看 parent-doc 是否补回被切断的语义上下文 |
+
+不接受只报最终均值。报告必须保留 per-case 的各阶段 chunk_ids / heading_path / score / failure_reason,否则无法知道该调 query rewrite、hybrid、reranker、chunker 还是 parent-doc。
+
+## 7.4 dataset.jsonl schema
 
 ```json
 {
@@ -489,38 +521,121 @@ python -m jobcopilot_api.scripts.eval_resume_advisor \
   "source": "dogfood_2026_05",
   "input": {
     "query": "synchronized 锁升级过程",
-    "node_folder_path": ["Java","并发"]
+    "mode": "topic"
   },
   "ground_truth": {
-    "expected_chunk_ids": [12, 15],     // chunks 库里这条 query 应当召回的 chunk_id(可多个)
-    "must_be_in_top_k": 5
+    "expected_chunk_ids": [12, 15],
+    "expected_heading_paths": [["Java", "并发", "synchronized"]],
+    "evidence_anchors": ["偏向锁", "轻量级锁", "重量级锁"],
+    "expected_zero_hit": false,
+    "risk_tags": ["cross_heading", "ordered_steps"]
   }
 }
 ```
 
-注:dataset 跟 dogfood 笔记库强绑(`chunk_id` 是固定库里的 id),所以本 suite 跑前必须先 **load fixture 笔记包**(放在 `evals/suites/hybrid_search/notes_fixture.zip`),`alembic upgrade` + 上传 → 拿到稳定的 chunk_id。每次跑 suite 重置 DB → 重 import → 跑评测。
+字段约定:
 
-## 7.3 30 条覆盖矩阵
+- `expected_chunk_ids`:固定 fixture 库导入后的稳定 chunk id;用于精确算 recall / mrr。
+- `expected_heading_paths`:chunker 调参导致 chunk_id 漂移时的人工兜底定位。
+- `evidence_anchors`:短原文锚点,用于人工审查 final context 是否真包含关键证据;不要贴长段原文。
+- `expected_zero_hit`:无该主题 / 近邻干扰样本置 `true`,用于测 0 命中守门。
+- `risk_tags`:标注该样本主要测什么,取值建议:`exact_term` / `synonym` / `typo` / `mixed_cn_en` / `cross_heading` / `numeric` / `negation` / `table` / `code` / `ordered_steps` / `zero_hit`。
 
-| # | query 风格 | 期望召回 |
-|---|-----------|----------|
-| 1-10 | 完整术语(`synchronized 锁升级`)| 字面 + 语义都好命中 |
-| 11-15 | 同义改写(`Java 同步关键字 锁的等级`)| 语义召回守门(lexical 失效)|
-| 16-20 | 拼写错误 / 缺字(`synchroized 升级`)| char_ngram 守门 |
-| 21-25 | 跨节点 query(笔记里没有但常识相关)| 应当召回 0 / 排序低 |
-| 26-30 | 中英混合(`Java 中 synchronized 怎么实现 monitor`)| char_ngram + dense 双路 |
+标注职责:
 
-## 7.4 跑法
+- `ground_truth` 初标由 Codex 完成:先读 fixture 笔记、定位 expected chunks / heading_path / anchors,生成 dataset 草稿。
+- 用户只做抽样复核与争议裁决:Codex 对不确定样本必须标 `needs_review: true` 并写 `notes`,等待用户确认后再纳入正式阈值统计。
+- Codex 不得用 LLM 自己输出的相关性判断当唯一依据;必须回到笔记原文 / chunk 内容定位 evidence。
+
+注:dataset 跟 dogfood 笔记库强绑,所以本 suite 跑前必须先 load fixture 笔记包(`evals/suites/hybrid_search/notes_fixture/` 或 `notes_fixture.zip`)。每次正式跑 suite 用干净 DB 重 import,保证 chunk_id 稳定;如果改 chunker 导致 chunk_id 全量漂移,必须用 `expected_heading_paths` + `evidence_anchors` 重新审核并更新 dataset。
+
+## 7.5 样本覆盖矩阵
+
+MVP 起步 50 条主题 query,总 fixture 笔记 ≥ 10 万字。
+
+| # | 场景 | 主要风险 |
+|---|------|----------|
+| 1-10 | 完整术语,如 `synchronized 锁升级` | baseline 应稳定命中 |
+| 11-20 | 同义改写,如 `Java 同步关键字 锁的等级` | lexical 失效时 dense / rewrite 要补上 |
+| 21-30 | 中英混合 / 缩写 / 拼写错误,如 `synchroized monitor` | char_ngram + dense 互补 |
+| 31-40 | 跨 heading / 列表 / 代码块 / 表格 / 数值 / 否定样本 | 测 chunk 是否切断关键语义 |
+| 41-50 | 0 命中 / 近邻干扰,如笔记没有 React 却有前端泛论 | 不应强行出题 |
+
+新增 bug 进入 dataset:dogfood 中出现"题目基于半截上下文"、"Judge 漏看 source chunk 外的全库证据"、"query rewrite 扩太宽导致跑题"等问题,必须新增至少 1 条 fixture。
+
+## 7.6 报告 schema
+
+`eval_hybrid_search.py` 输出 JSON 至少包含:
+
+```json
+{
+  "suite": "hybrid_search",
+  "git_sha": "...",
+  "fixture_word_count": 157000,
+  "summary": {
+    "candidate_recall@50": 0.98,
+    "rerank_recall@10": 0.92,
+    "mrr@10": 0.67,
+    "final_context_recall": 0.96,
+    "zero_hit_precision": 0.90,
+    "unsafe_boundary_rate": 0.04
+  },
+  "cases": [
+    {
+      "id": "s001",
+      "expanded_queries": ["synchronized 锁升级过程", "..."],
+      "vector_top_ids": [1, 2],
+      "lexical_top_ids": [12, 15],
+      "hybrid_top_ids": [12, 2, 15],
+      "rerank_top_ids": [12, 15],
+      "final_context_ids": [12, 13, 15],
+      "pass": true,
+      "failure_reason": null
+    }
+  ]
+}
+```
+
+`failure_reason` 只能取固定枚举,便于统计:
+
+| failure_reason | 含义 | 优先排查 |
+|----------------|------|----------|
+| `rewrite_drift` | rewrite 扩太宽,候选跑题 | query_rewriter prompt / expanded query 数量 |
+| `vector_miss` | dense 路漏召回 | embedding 模型 / chunk 内容粒度 |
+| `lexical_miss` | lexical 路漏召回 | char_ngram / tokenization / tsvector |
+| `rerank_drop` | hybrid 命中但 reranker 掉出 Top-10 | reranker top_k / instruct / 候选噪声 |
+| `parent_context_missing` | Top-10 命中但 final context 缺前提 | parent-doc 策略 |
+| `chunk_boundary_unsafe` | 切片打断关键语义 | chunker / overlap / 结构化 markdown 保护 |
+| `zero_hit_false_positive` | 无主题样本仍召回并出题 | 0 命中阈值 / rerank score threshold |
+
+`unsafe_boundary_rate` 评审职责:
+
+- 由 Codex 逐条审查 `risk_tags` 包含 `cross_heading` / `numeric` / `negation` / `table` / `code` / `ordered_steps` 的样本,对 final context 标 `boundary_safe=true/false`。
+- 用户不做全量人工审查,只抽查 Codex 标为 `boundary_safe=false` 或 `needs_review=true` 的样本。
+- 判 `boundary_safe=false` 时必须给出 `failure_reason` + 最小原文证据,说明是前提、否定、数值、表格、代码块还是步骤被切断。
+
+## 7.7 跑法
 
 ```
 python -m jobcopilot_api.scripts.eval_hybrid_search \
     --suite evals/suites/hybrid_search \
-    --output evals/reports/2026-05-08_search_baseline.json
+    --output evals/reports/2026-05-12_hybrid_search_baseline.json
 ```
+
+本项目测试 / 自动化验证由用户手动跑。实现脚本后,Codex 只说明跑法、预期字段和判定标准;除非用户明确说"跑评测",否则不主动执行。
+
+## 7.8 不达标处理顺序
+
+1. 先看 per-case `failure_reason`,不要只看总均值。
+2. `candidate_recall@50` 不达标:优先调 query rewrite / hybrid top_k / tokenization / embedding,不要调 reranker。
+3. `rerank_recall@10` 不达标:优先调 reranker `top_k` / instruct / 候选去噪。
+4. `final_context_recall` 或 `unsafe_boundary_rate` 不达标:优先调 parent-doc / chunker / overlap / markdown 结构保护。
+5. `zero_hit_precision` 不达标:增加 rerank score / source diversity / expected evidence 阈值,不要让 LLM 兜底编。
+6. 调参后重跑全 suite,报告进 git history。
 
 # 8. 防回归约束
 
-跨三个 suite 通用规则(沿用 v1 LESSONS §8.2):
+跨各 suite 通用规则(沿用 v1 LESSONS §8.2):
 
 1. **每发现一类新 bug 必须加 1 条 fixture**:dogfood 跑出"Judge 把常识标 fabricated"这类 bug → answer_judge dataset 加 1 条对应样本,标 `bug_ref` 记 issue 号
 2. **prompt 改版必须重跑全套对应 suite**:`quiz_generator` v1.0 → v1.1 之前,`eval_quiz_generator.py --prompt-version v1.1` 必须先跑通,verdict=pass 才允许在生产用 v1.1
@@ -535,12 +650,13 @@ python -m jobcopilot_api.scripts.eval_hybrid_search \
 
 ## 9.1 单人标注 vs 双人标注
 
-MVP **单人标注**(作者 dogfood 自己标),不上双人 inter-rater agreement。理由:
-- 作者就是目标用户,标注语义边界跟产品方向高度对齐
-- 30 条样本 × 2 人 = 60 人时,投入产出比低
+MVP **单人主标注 + 抽样复核**,不上双人 inter-rater agreement。理由:
+- hybrid_search 的 ground_truth / unsafe boundary 由 Codex 主标注,用户抽样复核与争议裁决,降低人工负担
+- quiz_generator / answer_judge 等主观语义标注仍以作者 dogfood 复核为准,标注语义边界跟产品方向高度对齐
+- 30-50 条样本 × 2 人 = 60-100 人时,投入产出比低
 - M3 SaaS 化后再考虑双人交叉(M4+)
 
-风险:作者一个人的偏差进 dataset。**对冲手段**:每条 fixture 必须填 `notes` 字段说"这条想测什么",外人 review PR 时校"测点"是否清晰。
+风险:单人 / Codex 标注偏差进 dataset。**对冲手段**:每条 fixture 必须填 `notes` 字段说"这条想测什么";Codex 低置信样本标 `needs_review: true`;用户抽查失败样本与争议样本。
 
 ## 9.2 Coverage label 边界
 
@@ -572,10 +688,10 @@ MVP **单人标注**(作者 dogfood 自己标),不上双人 inter-rater agreemen
 
 | 项 | 决策 | 备注 |
 |----|------|------|
-| 三个 suite | hybrid_search(M1)/ quiz_generator(M2)/ answer_judge(M2) | 每个对应一条 DoD |
+| 核心 suite | hybrid_search(M2 补测)/ quiz_generator(M2)/ answer_judge(M2) | hybrid_search 先补 RAG 召回 + chunk 完整性 |
 | Cohen's kappa 阈值 | Coverage / Fidelity 各 ≥ 0.7;Depth 用 accuracy ≥ 0.75 | Depth 二值 + 三维度,kappa 抖动大 |
 | 不达标处理 | 改 prompt(bump version)+ 重跑;**不切模型** | 沿用 5-AGENT_DESIGN §2.1 |
-| dataset 容量 | 三 suite 各 30 条起;新 bug 进 dataset(永不删)| 沿用 v1 LESSONS §8.2 |
+| dataset 容量 | hybrid_search 50 条起;quiz_generator / answer_judge 各 30 条起;新 bug 进 dataset(永不删)| hybrid_search 要覆盖 chunk 边界 / 0 命中 / ablation,样本更宽 |
 | 标注模式 | MVP 单人标注(作者自己),notes 字段守"测点清晰" | M4+ 双人交叉 |
 | LLM cache | 评测路径**不禁** cache | 测 prompt 输出质量,不测速度 |
 | 报告归档 | `evals/reports/*.json` 进 git | ablation / 时间线对比必需 |
@@ -585,12 +701,12 @@ MVP **单人标注**(作者 dogfood 自己标),不上双人 inter-rater agreemen
 | jd_aggregator 不算 kappa | 用 F1(集合)+ MAE(频次)指标 | canonical 不是 categorical label,kappa 不适用 |
 | resume_advisor 不强求 kappa | anchored ratio + forbidden 触发率 + 主观合理度 | 简历建议主观度高,结构指标 + 自查更稳 |
 | forbidden_pattern 触发 | M3 DoD 硬卡(0 容忍)| 触发即 prompt 漏洞;修 prompt + 加 pattern + 重跑直到 0 触发 |
-| dogfood 笔记 fixture | hybrid_search suite 强依赖固定笔记库(notes_fixture.zip)| chunk_id 稳定才能比 |
-| 跑评测 CLI | `eval_<suite>.py --suite <dir> --prompt-version <v> --output <path>` | 三 suite 统一 |
+| dogfood 笔记 fixture | hybrid_search suite 强依赖固定笔记库(notes_fixture/ 或 notes_fixture.zip)| chunk_id 稳定才能比;chunker 改动后用 heading_path + anchors 复核 |
+| 跑评测 CLI | `eval_<suite>.py --suite <dir> --prompt-version <v> --output <path>` | 各 suite 统一 |
 
 # 11. 上次会话遗留的开放问题
 
-- **EQ-01** 30 条样本第一次怎么齐?dogfood 边跑边标(每周 5 条 × 6 周)还是集中 1 周一次性标完?— 偏向边跑边标(标 = 顺便审产品)
+- **EQ-01** 第一批样本怎么齐?hybrid_search 50 条、quiz_generator / answer_judge 各 30 条,偏向 dogfood 边跑边标(标 = 顺便审产品)
 - **EQ-02** dataset PR review 谁审?MVP 没团队,作者自审 + 1 周 cooldown 再 merge?
 - **EQ-03** Depth 三维度的"关键词触发"标注规则会不会过死?dogfood 跑完看实际答题语料再调
 
