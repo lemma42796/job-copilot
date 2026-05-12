@@ -6,12 +6,22 @@ LLM 应用评测套件:检索 / 出题 / Judge / Agent 状态机 / JD 聚合 / �
 
 | suite | 评什么 | 状态 |
 |-------|--------|------|
-| `hybrid_search/` | 主题 query 到 chunks 的召回质量 | 待 M2 建 |
+| `hybrid_search/` | 主题 query 到 chunks / notes 的召回质量 | 已有 smoke fixture + note-level dataset;待 eval 脚本 |
 | `quiz_generator/` | QuizGenerator 出题质量(题目是否基于 chunks / 反幻觉) | 待 M2 建 |
 | `answer_judge/` | AnswerJudge 评分跟人工 ground truth 的 Cohen's kappa(≥ 0.7) | 待 M2 建 |
 | `interview_coach/` | InterviewCoachAgent 是否走到人工期望分支 | 待 M2.1 建 |
 | `jd_aggregator/` | JD 同义合并与频次重算 | 待 M2.5 建 |
 | `resume_advisor/` | 简历诊断锚点正确率 + forbidden 文案拦截 | 待 M3 建 |
+
+## hybrid_search smoke
+
+当前 `hybrid_search/` 先做轻量 smoke,不冒充正式 baseline:
+
+- `notes_fixture/`:15 篇固定小 fixture,用于后续可回归的最小检索样本。
+- `dataset.note_smoke.jsonl`:12 条全库 note-level 标签,用于当前 119 篇 dogfood 全库 smoke。
+- `expected_chunk_ids` 暂留空;第一版先看 `expected_note_paths` / `hard_negative_note_paths` / `expected_zero_hit`。
+
+正式 `dataset.jsonl` 和 `eval_hybrid_search.py` 待 smoke 结果稳定后再补。
 
 ## 一句话用法
 

@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-12
+last_updated: 2026-05-13
 purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指向其他文档。
 ---
 
@@ -23,10 +23,11 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 最新状态:
 
-- 本轮连续扩充本地 dogfood 笔记库:`test-notes/llm-notes` 已到约 93 篇 / 45.74 万字符;目标约 70 万字符,剩余约 24.26 万字符;该目录当前仍被 gitignore,只作本地 dogfood 语料。
-- 第 5-15 批已覆盖后端、LLM 应用开发(RAG/Agent/评测/Prompt/可观测)、计算机基础、系统设计、M2.5/M3 预埋、JobCopilot 私有事实和 hard negatives;当前判断是"主干已覆盖,计算机基础和通用后端系统设计仍需加厚"。
+- 本地 dogfood 笔记库已扩充到 `test-notes/llm-notes` **119 篇 / 532,999 字符**,覆盖后端开发、LLM 应用开发(RAG/Agent/Judge/评测/Prompt/可观测)和计算机基础;该目录仍被 gitignore,只作本地 dogfood 语料。
+- 本地 Docker Postgres 已对齐当前 dogfood 全库:active notes 119 / chunks 2,090 / embedded 2,090 / pending 0;已清理 9 篇旧残留及其 77 个旧 chunks。
+- 已建立 `evals/suites/hybrid_search/` smoke 资产:15 篇小 fixture(`notes_fixture/`,63,808 字符) + 12 条全库 note-level 标签(`dataset.note_smoke.jsonl`);尚未跑正式 eval / 未产出 baseline report。
+- `dataset.note_smoke.jsonl` 当前只做 note-level ground truth:`expected_note_paths / hard_negative_note_paths / evidence_anchors / expected_zero_hit`;`expected_chunk_ids` 暂留空,后续发现切片问题再补 chunk/span 级标签。
 - 本轮补齐 **M2 RAG 质量评测方案**:`docs/6-EVAL_PLAN.md` 第 7 节改为完整链路补测,覆盖 `candidate_recall@50 / rerank_recall@10 / mrr@10 / final_context_recall / final_context_precision / zero_hit_precision / unsafe_boundary_rate`。
-- 本地 dogfood 笔记目录已确认清理过 JobCopilot 项目自指内容后又重新加入受控私有项目知识;该目录当前不在 git 跟踪,后续需复制一份干净 fixture 到 `evals/suites/hybrid_search/notes_fixture/`。
 - **M2 已由用户确认完成**:聊天框主题 query → 全库 RAG → 出题 → 答题 → Judge 三层评分 → session 恢复已跑通。
 - Context Cache 已验证 provider-side 命中,但因 5 分钟 TTL 不适合当前一次性答题流,已默认关闭显式 `cache_control`;后续多轮讨论面试题时再打开。
 - 最新功能提交主题:`docs: mark m2 complete`;M2 tag `v0.4-m2-end` 仍待用户确认。
@@ -55,20 +56,20 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **M2 quiz/session UI 已落地**:`/quiz` 支持主题出题、答题、草稿保存、提交评分、结构化 evidence、样例模式、最近练习与 session 恢复。
 - **百炼 Context Cache 代码已接入但默认关闭**:保留稳定 chunks 前缀渲染与审计字段;后续多轮面试讨论再开启显式 cache。
 - **M2.1 Agentic RAG 方向锁定**:`InterviewCoachAgent` 不做泛化多 Agent,只做面试状态机:检索 → 出题 → 等答 → 评分 → 决策 → 追问 / 总结。
+- **hybrid_search smoke 标签已落地**:`evals/suites/hybrid_search/dataset.note_smoke.jsonl` 覆盖 M2/M3 边界、Context Cache、reranker/query rewrite、AnswerJudge、SSE 恢复、MVCC、Outbox、epoll、provider timeout/429、zero-hit。
 - **CI 策略调整**:所有 GitHub workflow 改为手动触发,避免 push 自动跑测试和邮件通知。
 
 # 下一刀
 
 等待用户指示再开工。推荐下一刀:
 
-1. **继续扩充 dogfood 第 16 批**:优先补计算机基础专项(算法/网络/OS 深水区)和通用后端系统设计案例,同时保留 JobCopilot 私有事实与 hard negatives,把总量从 45.74 万字符继续推进。
+1. **跑全库 RAG smoke / note-level eval**:基于当前 119 篇已 embedded 全库和 `dataset.note_smoke.jsonl`,先打印每条 query 的 top notes / hard negative intrusion / zero-hit 结果,人工看失败样本。
 
 备选:
 
-- 补 Agent 深水区:tool failure recovery、memory 压缩、多轮上下文裁剪、planner/executor 取舍、agent eval。
-- 语料接近 70 万字符后,把 `test-notes/llm-notes` 复制为干净 `evals/suites/hybrid_search/notes_fixture/`。
-- M2 RAG 质量补测落地:实现 `eval_hybrid_search.py` + `evals/suites/hybrid_search/dataset.jsonl` 骨架,先出 baseline report。
-- RAG 补测过线后,开 M2.1 `InterviewCoachAgent` 状态机骨架和 `decide_next_action` / `generate_followup`。
+- 把 note-level smoke 结果沉淀成 `eval_hybrid_search.py` 的最小报告,先算 `note_recall@k / hard_negative_intrusion / zero_hit_precision`。
+- 如果 note-level smoke 暴露切片问题,再回填 `expected_chunk_ids` 或加 chunk/span 级样本。
+- smoke 过线后,开 M2.1 `InterviewCoachAgent` 状态机骨架和 `decide_next_action` / `generate_followup`。
 
 # 已锁定关键决策
 
