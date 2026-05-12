@@ -11,7 +11,7 @@ purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、
 
 | Suite | M? DoD | 守什么 | 阈值 |
 |-------|--------|-------|------|
-| `hybrid_search` | M2 补测 | RAG 召回 + chunk 语义完整性 | final_context_recall ≥ 0.95 |
+| `hybrid_search` | M2 补测 | RAG 召回 + final context 干净度 + chunk 语义完整性 | final_context_recall ≥ 0.95 / final_context_precision ≥ 0.70 |
 | `quiz_generator` | M2 | 出题结构合规 + type_mix 决策合理 | 合规率 ≥ 0.95 / type_mix 一致率 ≥ 0.7 |
 | `answer_judge` | M2 | 三层 label 跟人工标注一致性 | Cohen's `κ ≥ 0.7`(三层独立) |
 | `interview_coach` | M2.1 | Agent 状态机是否走到人工期望分支 | branch accuracy ≥ 0.8 / recovery case 全过 |
@@ -473,10 +473,11 @@ python -m jobcopilot_api.scripts.eval_resume_advisor \
 
 ## 7.1 评什么
 
-测 **用户主题 query → query rewrite → hybrid 召回 → reranker → parent-doc 扩展 → 最终 chunks** 这条完整 RAG 链路是否满足两件事:
+测 **用户主题 query → query rewrite → hybrid 召回 → reranker → parent-doc 扩展 → 最终 chunks** 这条完整 RAG 链路是否满足三件事:
 
 1. **召回不漏**:该出现的 evidence 能进入候选、重排后靠前,最终上下文覆盖完整。
-2. **切片不断义**:最终喂给 QuizGenerator / AnswerJudge 的 chunks 不把关键前提、否定、数值、表格、代码块、列表结构切坏。
+2. **上下文不脏**:最终喂给 QuizGenerator / AnswerJudge 的 chunks 以直接证据和必要上下文为主,避免靠堆无关 chunk 换 recall。
+3. **切片不断义**:最终喂给 QuizGenerator / AnswerJudge 的 chunks 不把关键前提、否定、数值、表格、代码块、列表结构切坏。
 
 本 suite 是 M2 已完成功能链路后的质量补测,也是 M2.1 `InterviewCoachAgent.retrieve_context` 的前置守门。它不改变产品边界:当前只评程序员面试笔记,不声明医学 / 法律等高风险领域可用。
 
@@ -488,6 +489,7 @@ python -m jobcopilot_api.scripts.eval_resume_advisor \
 | `rerank_recall@10` | expected evidence 进入 reranker Top-10 的样本比例 | ≥ 0.90 |
 | `mrr@10` | reranker Top-10 中首个 expected evidence 的 mean reciprocal rank | ≥ 0.60 |
 | `final_context_recall` | parent-doc 扩展后最终 chunks 覆盖 expected evidence 的样本比例 | ≥ 0.95 |
+| `final_context_precision` | 非 0 命中样本中,final context 内由 Codex 判为直接证据 / 必要上下文的 chunk 数 / final context chunk 总数 | ≥ 0.70 |
 | `zero_hit_precision` | 0 命中 / 近邻干扰样本没有被错误拿去出题的比例 | ≥ 0.90 |
 | `unsafe_boundary_rate` | 人工审查中出现"关键前提 / 否定 / 数值 / 表格 / 代码块被切断且 final context 未补回"的比例 | ≤ 0.05 |
 
@@ -496,6 +498,7 @@ python -m jobcopilot_api.scripts.eval_resume_advisor \
 - `candidate_recall@50` 守"别漏":reranker 只能重排候选,不能找回没召回的 chunk。
 - `rerank_recall@10` / `mrr@10` 守"排准":QuizGenerator 不应吃大量边缘候选。
 - `final_context_recall` 守"最终可用":真正决定出题 / 评分质量的是 parent-doc 后的上下文,不是中间候选。
+- `final_context_precision` 守"最终干净":防止 parent-doc / top_k 扩太宽,把无关 chunk 塞给 LLM。
 - `unsafe_boundary_rate` 是 chunker 质量指标,发现问题优先调 chunker / parent-doc,不是换模型。
 
 ## 7.3 Ablation 矩阵
@@ -546,6 +549,7 @@ python -m jobcopilot_api.scripts.eval_resume_advisor \
 - `ground_truth` 初标由 Codex 完成:先读 fixture 笔记、定位 expected chunks / heading_path / anchors,生成 dataset 草稿。
 - 用户只做抽样复核与争议裁决:Codex 对不确定样本必须标 `needs_review: true` 并写 `notes`,等待用户确认后再纳入正式阈值统计。
 - Codex 不得用 LLM 自己输出的相关性判断当唯一依据;必须回到笔记原文 / chunk 内容定位 evidence。
+- `final_context_precision` 由 Codex 逐条判定 final context chunk 相关性:`direct_evidence` / `necessary_context` 计为 relevant,`noise` 不计;`expected_zero_hit=true` 且 final context 为空的样本不参与该指标。
 
 注:dataset 跟 dogfood 笔记库强绑,所以本 suite 跑前必须先 load fixture 笔记包(`evals/suites/hybrid_search/notes_fixture/` 或 `notes_fixture.zip`)。每次正式跑 suite 用干净 DB 重 import,保证 chunk_id 稳定;如果改 chunker 导致 chunk_id 全量漂移,必须用 `expected_heading_paths` + `evidence_anchors` 重新审核并更新 dataset。
 
@@ -577,6 +581,7 @@ MVP 起步 50 条主题 query,总 fixture 笔记 ≥ 10 万字。
     "rerank_recall@10": 0.92,
     "mrr@10": 0.67,
     "final_context_recall": 0.96,
+    "final_context_precision": 0.74,
     "zero_hit_precision": 0.90,
     "unsafe_boundary_rate": 0.04
   },
@@ -589,6 +594,11 @@ MVP 起步 50 条主题 query,总 fixture 笔记 ≥ 10 万字。
       "hybrid_top_ids": [12, 2, 15],
       "rerank_top_ids": [12, 15],
       "final_context_ids": [12, 13, 15],
+      "final_context_relevance": [
+        {"chunk_id": 12, "label": "direct_evidence", "counted_relevant": true},
+        {"chunk_id": 13, "label": "necessary_context", "counted_relevant": true},
+        {"chunk_id": 15, "label": "noise", "counted_relevant": false}
+      ],
       "pass": true,
       "failure_reason": null
     }
@@ -605,6 +615,7 @@ MVP 起步 50 条主题 query,总 fixture 笔记 ≥ 10 万字。
 | `lexical_miss` | lexical 路漏召回 | char_ngram / tokenization / tsvector |
 | `rerank_drop` | hybrid 命中但 reranker 掉出 Top-10 | reranker top_k / instruct / 候选噪声 |
 | `parent_context_missing` | Top-10 命中但 final context 缺前提 | parent-doc 策略 |
+| `final_context_noise` | final context 召回到了证据,但混入过多无关 chunk | parent-doc 扩展范围 / final context top_k / 去重与 source diversity |
 | `chunk_boundary_unsafe` | 切片打断关键语义 | chunker / overlap / 结构化 markdown 保护 |
 | `zero_hit_false_positive` | 无主题样本仍召回并出题 | 0 命中阈值 / rerank score threshold |
 
@@ -630,8 +641,9 @@ python -m jobcopilot_api.scripts.eval_hybrid_search \
 2. `candidate_recall@50` 不达标:优先调 query rewrite / hybrid top_k / tokenization / embedding,不要调 reranker。
 3. `rerank_recall@10` 不达标:优先调 reranker `top_k` / instruct / 候选去噪。
 4. `final_context_recall` 或 `unsafe_boundary_rate` 不达标:优先调 parent-doc / chunker / overlap / markdown 结构保护。
-5. `zero_hit_precision` 不达标:增加 rerank score / source diversity / expected evidence 阈值,不要让 LLM 兜底编。
-6. 调参后重跑全 suite,报告进 git history。
+5. `final_context_precision` 不达标:优先收紧 parent-doc 扩展范围 / final context top_k / 去重与 source diversity,不要靠减少 expected evidence 标注来抬分。
+6. `zero_hit_precision` 不达标:增加 rerank score / source diversity / expected evidence 阈值,不要让 LLM 兜底编。
+7. 调参后重跑全 suite,报告进 git history。
 
 # 8. 防回归约束
 

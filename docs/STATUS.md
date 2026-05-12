@@ -23,8 +23,10 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 最新状态:
 
-- 本轮补齐 **M2 RAG 质量评测方案**:`docs/6-EVAL_PLAN.md` 第 7 节改为完整链路补测,覆盖 `candidate_recall@50 / rerank_recall@10 / mrr@10 / final_context_recall / zero_hit_precision / unsafe_boundary_rate`。
-- 本轮确认并清理本地 dogfood 笔记目录:`test-notes/llm-notes` 从 25 篇 / 14.98 万字清到 21 篇 / 12.24 万字,移除 JobCopilot 项目自指内容;该目录当前不在 git 跟踪,后续需复制一份干净 fixture 到 `evals/suites/hybrid_search/notes_fixture/`。
+- 本轮扩充本地 dogfood 笔记库:`test-notes/llm-notes` 从 21 篇 / 12.24 万字符扩到约 44 篇 / 25.52 万字符;目标 70 万字符,剩余约 44.48 万字符,后续按每批约 5 万字符继续补 9 批左右。
+- 已新增/扩写前 4 批语料:围绕 RAG/评测/JobCopilot 私有知识、编程语言/网络/OS/设计模式、数据库/中间件/系统设计、prompt/API/可观测/成本;语料刻意混入项目私有事实和近邻干扰,避免 LLM 只靠通用知识答题。
+- 本轮补齐 **M2 RAG 质量评测方案**:`docs/6-EVAL_PLAN.md` 第 7 节改为完整链路补测,覆盖 `candidate_recall@50 / rerank_recall@10 / mrr@10 / final_context_recall / final_context_precision / zero_hit_precision / unsafe_boundary_rate`。
+- 本地 dogfood 笔记目录已确认清理过 JobCopilot 项目自指内容后又重新加入受控私有项目知识;该目录当前不在 git 跟踪,后续需复制一份干净 fixture 到 `evals/suites/hybrid_search/notes_fixture/`。
 - **M2 已由用户确认完成**:聊天框主题 query → 全库 RAG → 出题 → 答题 → Judge 三层评分 → session 恢复已跑通。
 - Context Cache 已验证 provider-side 命中,但因 5 分钟 TTL 不适合当前一次性答题流,已默认关闭显式 `cache_control`;后续多轮讨论面试题时再打开。
 - 最新功能提交主题:`docs: mark m2 complete`;M2 tag `v0.4-m2-end` 仍待用户确认。
@@ -59,15 +61,14 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **M2 RAG 质量补测落地**:实现 `eval_hybrid_search.py` + `evals/suites/hybrid_search/dataset.jsonl` 骨架,把干净 `test-notes/llm-notes` 固化为 `notes_fixture`,先出 baseline report。
+1. **继续扩充 dogfood 笔记第 5 批**:优先补分布式系统 / 微服务 / 一致性 / 限流熔断,继续混入 JobCopilot 私有场景和近邻干扰,把总量从 25.52 万字符推进到约 30 万字符以上。
 
 备选:
 
-- 根据评测失败样本调整 parent-doc / chunker / query rewrite / reranker 阈值。
-- RAG 补测过线后,再开 M2.1 `InterviewCoachAgent` 状态机骨架。
-- 接 `decide_next_action`:按 coverage / fabricated / depth evidence 决定追问或下一题。
-- 接 `generate_followup`:单题最多 1 轮追问,不做无限循环。
-- 做中途退出恢复:从 `wait_user_answer` 状态恢复真实 session。
+- 继续第 6-9 批:Java/Spring/TypeScript、RAG 对抗样本、M2.1 追问分支题库、M2.5/M3 JD/简历预埋知识。
+- 语料接近 70 万字符后,把 `test-notes/llm-notes` 复制为干净 `evals/suites/hybrid_search/notes_fixture/`。
+- M2 RAG 质量补测落地:实现 `eval_hybrid_search.py` + `evals/suites/hybrid_search/dataset.jsonl` 骨架,先出 baseline report。
+- RAG 补测过线后,开 M2.1 `InterviewCoachAgent` 状态机骨架和 `decide_next_action` / `generate_followup`。
 
 # 已锁定关键决策
 
