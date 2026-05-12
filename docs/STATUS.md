@@ -23,8 +23,8 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 最新状态:
 
-- 本轮扩充本地 dogfood 笔记库:`test-notes/llm-notes` 从 21 篇 / 12.24 万字符扩到约 44 篇 / 25.52 万字符;目标 70 万字符,剩余约 44.48 万字符,后续按每批约 5 万字符继续补 9 批左右。
-- 已新增/扩写前 4 批语料:围绕 RAG/评测/JobCopilot 私有知识、编程语言/网络/OS/设计模式、数据库/中间件/系统设计、prompt/API/可观测/成本;语料刻意混入项目私有事实和近邻干扰,避免 LLM 只靠通用知识答题。
+- 本轮连续扩充本地 dogfood 笔记库:`test-notes/llm-notes` 已到约 93 篇 / 45.74 万字符;目标约 70 万字符,剩余约 24.26 万字符;该目录当前仍被 gitignore,只作本地 dogfood 语料。
+- 第 5-15 批已覆盖后端、LLM 应用开发(RAG/Agent/评测/Prompt/可观测)、计算机基础、系统设计、M2.5/M3 预埋、JobCopilot 私有事实和 hard negatives;当前判断是"主干已覆盖,计算机基础和通用后端系统设计仍需加厚"。
 - 本轮补齐 **M2 RAG 质量评测方案**:`docs/6-EVAL_PLAN.md` 第 7 节改为完整链路补测,覆盖 `candidate_recall@50 / rerank_recall@10 / mrr@10 / final_context_recall / final_context_precision / zero_hit_precision / unsafe_boundary_rate`。
 - 本地 dogfood 笔记目录已确认清理过 JobCopilot 项目自指内容后又重新加入受控私有项目知识;该目录当前不在 git 跟踪,后续需复制一份干净 fixture 到 `evals/suites/hybrid_search/notes_fixture/`。
 - **M2 已由用户确认完成**:聊天框主题 query → 全库 RAG → 出题 → 答题 → Judge 三层评分 → session 恢复已跑通。
@@ -61,11 +61,11 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **继续扩充 dogfood 笔记第 5 批**:优先补分布式系统 / 微服务 / 一致性 / 限流熔断,继续混入 JobCopilot 私有场景和近邻干扰,把总量从 25.52 万字符推进到约 30 万字符以上。
+1. **继续扩充 dogfood 第 16 批**:优先补计算机基础专项(算法/网络/OS 深水区)和通用后端系统设计案例,同时保留 JobCopilot 私有事实与 hard negatives,把总量从 45.74 万字符继续推进。
 
 备选:
 
-- 继续第 6-9 批:Java/Spring/TypeScript、RAG 对抗样本、M2.1 追问分支题库、M2.5/M3 JD/简历预埋知识。
+- 补 Agent 深水区:tool failure recovery、memory 压缩、多轮上下文裁剪、planner/executor 取舍、agent eval。
 - 语料接近 70 万字符后,把 `test-notes/llm-notes` 复制为干净 `evals/suites/hybrid_search/notes_fixture/`。
 - M2 RAG 质量补测落地:实现 `eval_hybrid_search.py` + `evals/suites/hybrid_search/dataset.jsonl` 骨架,先出 baseline report。
 - RAG 补测过线后,开 M2.1 `InterviewCoachAgent` 状态机骨架和 `decide_next_action` / `generate_followup`。
