@@ -1,8 +1,8 @@
 """LLM price table + cost computation (ADR-0004 D5).
 
 DashScope OpenAI-compat does not return cost; we compute it locally from
-`response.usage` plus this table. Prices are CNY per 1M tokens, sourced
-from ADR-0003 (Qwen3.6) on 2026-05-01.
+`response.usage` plus this table. Token prices are CNY per 1M tokens;
+Responses API tool prices are CNY per 1K calls.
 """
 
 from __future__ import annotations
@@ -21,21 +21,74 @@ class Pricing:
     out: Decimal
 
 
+@dataclass(frozen=True)
+class BatchPricing:
+    """Per-model batch pricing (CNY per 1M tokens)."""
+
+    file_in: Decimal
+    file_out: Decimal
+    chat_in: Decimal
+    chat_out: Decimal
+
+
+@dataclass(frozen=True)
+class ToolCallPricing:
+    """Responses API tool call pricing (CNY per 1K calls)."""
+
+    per_1k_calls: Decimal
+    limited_free: bool = False
+
+
 _TABLE: dict[str, Pricing] = {
-    # ADR-0003 §「负面」表格(2026-05-01)
+    # DashScope Model Studio console, China Mainland, 2026-05-13.
     "qwen3.6-flash": Pricing(
-        in_=Decimal("0.6"),
+        in_=Decimal("1.2"),
         cached_in=Decimal("0.12"),
-        cache_creation_in=Decimal("0.75"),
+        cache_creation_in=Decimal("1.5"),
         out=Decimal("7.2"),
     ),
     # qwen3.6-plus: 实测后回填 (ADR-0003 §「负面」第 4 条)
 }
 
 
+_BATCH_TABLE: dict[str, BatchPricing] = {
+    # DashScope Model Studio console, China Mainland, 2026-05-13.
+    "qwen3.6-flash": BatchPricing(
+        file_in=Decimal("0.6"),
+        file_out=Decimal("3.6"),
+        chat_in=Decimal("1.2"),
+        chat_out=Decimal("7.2"),
+    ),
+}
+
+
+_RESPONSES_TOOL_TABLE: dict[str, ToolCallPricing] = {
+    # DashScope Model Studio console, China Mainland, 2026-05-13.
+    "web_search": ToolCallPricing(per_1k_calls=Decimal("4")),
+    "code_interpreter": ToolCallPricing(
+        per_1k_calls=Decimal("0"), limited_free=True
+    ),
+    "web_extractor": ToolCallPricing(
+        per_1k_calls=Decimal("0"), limited_free=True
+    ),
+    "i2i_search": ToolCallPricing(per_1k_calls=Decimal("48")),
+    "t2i_search": ToolCallPricing(per_1k_calls=Decimal("24")),
+}
+
+
 def price_table() -> dict[str, Pricing]:
     """Read-only view of the price table (returns a shallow copy)."""
     return dict(_TABLE)
+
+
+def batch_price_table() -> dict[str, BatchPricing]:
+    """Read-only view of the batch price table (returns a shallow copy)."""
+    return dict(_BATCH_TABLE)
+
+
+def responses_tool_price_table() -> dict[str, ToolCallPricing]:
+    """Read-only view of Responses API tool prices (returns a shallow copy)."""
+    return dict(_RESPONSES_TOOL_TABLE)
 
 
 _PER_MILLION = Decimal("1000000")

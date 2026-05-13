@@ -25,12 +25,14 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 - 本地 dogfood 笔记库已扩充到 `test-notes/llm-notes` **119 篇 / 532,999 字符**,覆盖后端开发、LLM 应用开发(RAG/Agent/Judge/评测/Prompt/可观测)和计算机基础;该目录仍被 gitignore,只作本地 dogfood 语料。
 - 本地 Docker Postgres 已对齐当前 dogfood 全库:active notes 119 / chunks 2,090 / embedded 2,090 / pending 0;已清理 9 篇旧残留及其 77 个旧 chunks。
-- 已建立 `evals/suites/hybrid_search/` smoke 资产:15 篇小 fixture(`notes_fixture/`,63,808 字符) + 12 条全库 note-level 标签(`dataset.note_smoke.jsonl`);尚未跑正式 eval / 未产出 baseline report。
-- `dataset.note_smoke.jsonl` 当前只做 note-level ground truth:`expected_note_paths / hard_negative_note_paths / evidence_anchors / expected_zero_hit`;`expected_chunk_ids` 暂留空,后续发现切片问题再补 chunk/span 级标签。
+- 已建立 `evals/suites/hybrid_search/` smoke 资产:15 篇小 fixture(`notes_fixture/`,63,808 字符) + 12 条全库 note-level 标签(`dataset.note_smoke.jsonl`)。
+- 已跑全库 RAG note-level smoke:`apps/api/scripts/eval_hybrid_search_note_smoke.py`;12 cases 通过 6/12,非 zero-hit note micro recall 18/30=60.0%,macro recall 64.17%,`precision@shown` 25.71%,zero-hit 0/2,实测成本 ¥0.212169。
+- smoke 失败归因:rewrite drift(`hs_note_001`,`hs_note_005`);note-level 粒度误伤(`hs_note_003`,`hs_note_007`);0 命中守门太弱(`hs_note_011`,`hs_note_012`)。
+- `dataset.note_smoke.jsonl` 当前仍只做 note-level ground truth:`expected_note_paths / hard_negative_note_paths / evidence_anchors / expected_zero_hit`;下一步补 chunk/span 级标签与 anchor 命中统计。
 - 本轮补齐 **M2 RAG 质量评测方案**:`docs/6-EVAL_PLAN.md` 第 7 节改为完整链路补测,覆盖 `candidate_recall@50 / rerank_recall@10 / mrr@10 / final_context_recall / final_context_precision / zero_hit_precision / unsafe_boundary_rate`。
 - **M2 已由用户确认完成**:聊天框主题 query → 全库 RAG → 出题 → 答题 → Judge 三层评分 → session 恢复已跑通。
 - Context Cache 已验证 provider-side 命中,但因 5 分钟 TTL 不适合当前一次性答题流,已默认关闭显式 `cache_control`;后续多轮讨论面试题时再打开。
-- 最新功能提交主题:`docs: mark m2 complete`;M2 tag `v0.4-m2-end` 仍待用户确认。
+- 最新功能提交主题:`eval: add hybrid search note smoke`;M2 tag `v0.4-m2-end` 仍待用户确认。
 - M2 retrieval quiz pipeline 代码已提交:`103d882 feat: add m2 retrieval quiz pipeline`。
 - M2.1 Agentic RAG 文档已提交:`fd892fa docs: add agentic interview coach roadmap`。
 - M2 AnswerJudge 初版已落地:三层 evidence prompt / agent / submit SSE / Python 算分 / fabricated 锁顶。
@@ -57,19 +59,22 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **百炼 Context Cache 代码已接入但默认关闭**:保留稳定 chunks 前缀渲染与审计字段;后续多轮面试讨论再开启显式 cache。
 - **M2.1 Agentic RAG 方向锁定**:`InterviewCoachAgent` 不做泛化多 Agent,只做面试状态机:检索 → 出题 → 等答 → 评分 → 决策 → 追问 / 总结。
 - **hybrid_search smoke 标签已落地**:`evals/suites/hybrid_search/dataset.note_smoke.jsonl` 覆盖 M2/M3 边界、Context Cache、reranker/query rewrite、AnswerJudge、SSE 恢复、MVCC、Outbox、epoll、provider timeout/429、zero-hit。
+- **hybrid_search note smoke 脚本已落地**:`apps/api/scripts/eval_hybrid_search_note_smoke.py` 只读 DB / 写本地 report(`evals/reports/` gitignore),输出 top notes、hard negative intrusion、zero-hit 与成本。
+- **百炼价格 / rerank 限制已记录**:`qwen3.6-flash` 控制台价格、Responses 工具价、`qwen3-rerank` 500 docs / token 上限 / `gte-rerank-v2` 下线提醒已写入代码注释与常量;rerank 请求本地截断到 500 docs。
 - **CI 策略调整**:所有 GitHub workflow 改为手动触发,避免 push 自动跑测试和邮件通知。
 
 # 下一刀
 
 等待用户指示再开工。推荐下一刀:
 
-1. **跑全库 RAG smoke / note-level eval**:基于当前 119 篇已 embedded 全库和 `dataset.note_smoke.jsonl`,先打印每条 query 的 top notes / hard negative intrusion / zero-hit 结果,人工看失败样本。
+1. **升级 hybrid_search smoke 到 chunk/anchor 级报告**:输出每个 top chunk 的 `note_path / heading_path / rerank_score / anchor 命中 / hard-negative rank`,区分 note-level 误伤与真实检索失败。
 
 备选:
 
-- 把 note-level smoke 结果沉淀成 `eval_hybrid_search.py` 的最小报告,先算 `note_recall@k / hard_negative_intrusion / zero_hit_precision`。
-- 如果 note-level smoke 暴露切片问题,再回填 `expected_chunk_ids` 或加 chunk/span 级样本。
-- smoke 过线后,开 M2.1 `InterviewCoachAgent` 状态机骨架和 `decide_next_action` / `generate_followup`。
+- 补 `expected_chunk_ids` / `expected_heading_paths` / `evidence_anchors` 命中统计,先修 `hs_note_003`、`hs_note_007` 这类 note-level 误伤。
+- 为 zero-hit 增加 core entity / anchor coverage 守门:Rust、Kubernetes Operator 这类核心实体缺失时不能只靠向量近邻过门。
+- 汇总 `hs_note_001`、`hs_note_005` 后再决定是否改 `query_rewriter` prompt,避免为单条样本过拟合。
+- smoke 评测闭环稳定后,开 M2.1 `InterviewCoachAgent` 状态机骨架和 `decide_next_action` / `generate_followup`。
 
 # 已锁定关键决策
 

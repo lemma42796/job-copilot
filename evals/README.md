@@ -6,7 +6,7 @@ LLM 应用评测套件:检索 / 出题 / Judge / Agent 状态机 / JD 聚合 / �
 
 | suite | 评什么 | 状态 |
 |-------|--------|------|
-| `hybrid_search/` | 主题 query 到 chunks / notes 的召回质量 | 已有 smoke fixture + note-level dataset;待 eval 脚本 |
+| `hybrid_search/` | 主题 query 到 chunks / notes 的召回质量 | 已有 smoke fixture + note-level dataset + note smoke 脚本 |
 | `quiz_generator/` | QuizGenerator 出题质量(题目是否基于 chunks / 反幻觉) | 待 M2 建 |
 | `answer_judge/` | AnswerJudge 评分跟人工 ground truth 的 Cohen's kappa(≥ 0.7) | 待 M2 建 |
 | `interview_coach/` | InterviewCoachAgent 是否走到人工期望分支 | 待 M2.1 建 |
@@ -19,13 +19,16 @@ LLM 应用评测套件:检索 / 出题 / Judge / Agent 状态机 / JD 聚合 / �
 
 - `notes_fixture/`:15 篇固定小 fixture,用于后续可回归的最小检索样本。
 - `dataset.note_smoke.jsonl`:12 条全库 note-level 标签,用于当前 119 篇 dogfood 全库 smoke。
+- `apps/api/scripts/eval_hybrid_search_note_smoke.py`:跑全库 note-level smoke,输出 top notes / hard negative intrusion / zero-hit / 成本;报告写入 `evals/reports/`(gitignore)。
 - `expected_chunk_ids` 暂留空;第一版先看 `expected_note_paths` / `hard_negative_note_paths` / `expected_zero_hit`。
 
-正式 `dataset.jsonl` 和 `eval_hybrid_search.py` 待 smoke 结果稳定后再补。
+当前第一轮结果:12 cases 通过 6/12,非 zero-hit note micro recall 60.0%,zero-hit 0/2。下一步补 chunk/anchor 级报告与标签,再沉淀正式 `dataset.jsonl` / `eval_hybrid_search.py`。
 
 ## 一句话用法
 
 ```bash
+uv run python apps/api/scripts/eval_hybrid_search_note_smoke.py
+
 uv run python -m jobcopilot_api.scripts.eval_answer_judge \
   --suite evals/suites/answer_judge \
   --prompt-version v1.0 \

@@ -1,11 +1,17 @@
 """Reranker service — retrieval pipeline 第三段(M2)。
 
-百炼 `qwen3-rerank`(reference memory `reference_aliyun_dashscope_rerank.md`):
+百炼 `qwen3-rerank`(DashScope docs / console, 2026-05-13):
 - 端点:`POST https://dashscope.aliyuncs.com/compatible-api/v1/reranks`
   (注意是 `compatible-api`,跟 chat 走的 `compatible-mode` 不通用)
-- 价格:¥0.0005/千 token,500 doc 上限
+- 请求体是扁平结构:`model/query/documents/top_n/instruct/return_documents`;
+  不走 `input` / `parameters` 包裹(qwen3-vl-rerank / gte-rerank-v2 才走
+  `/api/v1/services/rerank/text-rerank/text-rerank` + 嵌套结构)
+- 限制:qwen3-rerank 单次最多 500 docs;每个 Query 或 Document 最多
+  4,000 tokens;单请求最大 120,000 tokens;支持 100+ 语言
+- 价格:¥0.0005/千 input tokens
 - 计费公式:`Query Tokens × Document 数量 + Document Tokens 总和`
   (response.usage.total_tokens 已按此公式给值)
+- `gte-rerank-v2` 将于 2026-05-30 下线;新实现只用 qwen3-rerank
 
 工程边界:
 - **不走 OpenAI SDK**:rerank 不在 OpenAI 协议标准里,langfuse.openai 也不
@@ -39,6 +45,15 @@ RERANK_PATH = "/compatible-api/v1/reranks"
 DEFAULT_MODEL = "qwen3-rerank"
 DEFAULT_TOP_K = 10
 DEFAULT_TIMEOUT_S = 30.0
+QWEN3_RERANK_MAX_DOCUMENTS = 500
+QWEN3_RERANK_MAX_TOKENS_PER_ITEM = 4000
+QWEN3_RERANK_MAX_REQUEST_TOKENS = 120000
+QWEN3_VL_RERANK_TEXT_MAX_DOCUMENTS = 100
+QWEN3_VL_RERANK_IMAGE_MAX_DOCUMENTS = 40
+QWEN3_VL_RERANK_VIDEO_MAX_DOCUMENTS = 4
+QWEN3_VL_RERANK_MAX_TOKENS_PER_ITEM = 8000
+QWEN3_VL_RERANK_MAX_REQUEST_TOKENS = 120000
+GTE_RERANK_V2_DEPRECATION_DATE = "2026-05-30"
 
 # memory §5 默认问答检索 instruct(英文写,贴 "用户 query → 找笔记" 场景)
 DEFAULT_INSTRUCT = (
@@ -109,7 +124,8 @@ async def rerank(
             scored=[], total_tokens=0, model=model, cost_cny=Decimal("0")
         )
 
-    documents = [c.content for c in chunks]
+    candidate_chunks = chunks[:QWEN3_RERANK_MAX_DOCUMENTS]
+    documents = [c.content for c in candidate_chunks]
     generation = Langfuse().generation(
         name="reranker",
         model=model,
@@ -134,7 +150,7 @@ async def rerank(
     except (httpx.HTTPError, ValueError) as exc:
         generation.end(level="ERROR", status_message=f"rerank_failed: {exc}")
         logger.warning("rerank failed, falling back to hybrid order: %s", exc)
-        fallback = [(c, 0.0) for c in chunks[:top_k]]
+        fallback = [(c, 0.0) for c in candidate_chunks[:top_k]]
         return RerankResult(
             scored=fallback,
             total_tokens=0,
@@ -150,9 +166,9 @@ async def rerank(
     for r in results:
         idx = r.get("index")
         score = float(r.get("relevance_score", 0.0))
-        if idx is None or not (0 <= idx < len(chunks)):
+        if idx is None or not (0 <= idx < len(candidate_chunks)):
             continue
-        scored.append((chunks[idx], score))
+        scored.append((candidate_chunks[idx], score))
 
     generation.end(
         output=f"{len(scored)} reranked",
