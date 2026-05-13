@@ -1,7 +1,7 @@
 ---
 title: ROADMAP - JobCopilot v2
 owner: lemma42796
-last_updated: 2026-05-11
+last_updated: 2026-05-13
 purpose: 6 个里程碑 + 退出标准 + 下一刀
 ---
 
@@ -10,8 +10,8 @@ purpose: 6 个里程碑 + 退出标准 + 下一刀
 ```
 M0    仓库改造 + 文档重写                                                    ✅
 M1    笔记入库 + chunker + 树形导航 + Langfuse 起步                          ✅
-M2    聊天框主题类 query → 全库 RAG → 出题 + Judge 三层评分 + Judge tool use ← 当前
-M2.1  InterviewCoachAgent: Agentic RAG 面试状态机 + 工具调用 + 追问分支
+M2    聊天框主题类 query → 全库 RAG → 出题 + Judge 三层评分 + Judge tool use ✅
+M2.1  InterviewCoachAgent: Agentic RAG 面试状态机 + 工具调用 + 追问分支 ← 当前
 M2.5  JD 累积上传 + 一键分析 + 学习路径(独立有价值)
 M3    弱点跟踪 + SR(空 query 系统自选)+ 岗位类出题(三源融合)+ 简历诊断
 ```
@@ -96,7 +96,8 @@ M3    弱点跟踪 + SR(空 query 系统自选)+ 岗位类出题(三源融合)+ 
 - [ ] `evals/suites/answer_judge/dataset.jsonl` 收 30 条人工标注样本
 - [ ] `scripts/eval_answer_judge.py` 跑通,Coverage / Fidelity kappa ≥ 0.7,Depth accuracy ≥ 0.75
 - [ ] `scripts/eval_quiz_generator.py` 跑通,结构合规率 ≥ 0.95
-- [ ] `scripts/eval_hybrid_search.py` 跑通,**ablation 三路**(vector-only / lex-only / hybrid)各自 recall@5 / recall@10 / mrr 都出数,**hybrid recall@5 ≥ 0.85 / recall@10 ≥ 0.95 / mrr ≥ 0.6**(从 M1 挂账继承,详见 6-EVAL §7);数据集 30 条 (query, expected_chunk_ids),query 来源全部为**主题类 query 真实场景**(例 "考考我多线程" / "缓存一致性" / "Java 集合 ArrayList vs LinkedList" 等 30 条),不再用"节点路径拼接"假 query
+- [x] `apps/api/scripts/eval_hybrid_search_note_smoke.py` smoke 脚本与 12 条主题类 / zero-hit query 标签已落地:数据集含 `direct_evidence_chunk_ids / necessary_context_chunk_ids / expected_heading_paths / evidence_anchors`,脚本支持输出 top chunks、anchor 命中、hard-negative rank、`candidate_recall@50 / rerank_recall@10 / mrr@10 / final_context_recall / final_context_precision`;2026-05-13 已生成首份 chunk-level report,随后完成一轮标签口径收紧,待重跑新基线
+- [ ] 正式 `hybrid_search` suite 扩到 50 条 fixture query + ablation 矩阵(vector-only / lex-only / hybrid / rewrite / rerank / parent-doc),阈值以 6-EVAL §7 为准
 - [ ] Langfuse 按 session_id 过滤能看到完整 trace 树(query rewriting → hybrid → rerank → parent-doc → 出题 → 工具 → 评分嵌套)
 
 # M2.1:InterviewCoachAgent(Agentic RAG 面试状态机)

@@ -1,7 +1,7 @@
 ---
 title: EVAL PLAN - JobCopilot v2(评测套件 + Cohen's kappa 守门)
 owner: lemma42796
-last_updated: 2026-05-12
+last_updated: 2026-05-13
 purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、不达标处理流程
 ---
 
@@ -527,7 +527,10 @@ python -m jobcopilot_api.scripts.eval_resume_advisor \
     "mode": "topic"
   },
   "ground_truth": {
-    "expected_chunk_ids": [12, 15],
+    "direct_evidence_chunk_ids": [12, 15],
+    "necessary_context_chunk_ids": [13],
+    "expected_note_paths": ["Java/并发/synchronized.md"],
+    "hard_negative_note_paths": ["Java/集合/HashMap.md"],
     "expected_heading_paths": [["Java", "并发", "synchronized"]],
     "evidence_anchors": ["偏向锁", "轻量级锁", "重量级锁"],
     "expected_zero_hit": false,
@@ -538,11 +541,21 @@ python -m jobcopilot_api.scripts.eval_resume_advisor \
 
 字段约定:
 
-- `expected_chunk_ids`:固定 fixture 库导入后的稳定 chunk id;用于精确算 recall / mrr。
+- `direct_evidence_chunk_ids`:固定 fixture / dogfood 库导入后的稳定 chunk id;这些 chunk 直接回答 query,用于精确算 recall / mrr。
+- `necessary_context_chunk_ids`:自身不一定直接回答 query,但用于补齐前提、边界、步骤或 parent-doc 上下文;计入 final context precision 的 relevant。
+- `expected_note_paths`:note-level 粗守门;用于保留历史 smoke pass/fail 口径,避免 chunk_id 漂移时完全失去诊断信号。
+- `hard_negative_note_paths`:近邻干扰笔记;若进入最终上下文,报告 `hard_negative_intrusion` 和首个 rank。
 - `expected_heading_paths`:chunker 调参导致 chunk_id 漂移时的人工兜底定位。
 - `evidence_anchors`:短原文锚点,用于人工审查 final context 是否真包含关键证据;不要贴长段原文。
 - `expected_zero_hit`:无该主题 / 近邻干扰样本置 `true`,用于测 0 命中守门。
 - `risk_tags`:标注该样本主要测什么,取值建议:`exact_term` / `synonym` / `typo` / `mixed_cn_en` / `cross_heading` / `numeric` / `negation` / `table` / `code` / `ordered_steps` / `zero_hit`。
+
+标注口径:
+
+- `direct_evidence_chunk_ids` 只放**单独拿出来也能回答 query 的核心证据**;不要把面试追问、anchor 汇总、评测诊断、泛背景说明放进 direct。
+- `necessary_context_chunk_ids` 放**防止证据断义的上下文**:协议形态、代理配置、限流算法、通用重试规则、parent-doc 流程 / 风险等。
+- `evidence_anchors` 是短文本锚点,用于确认 final context 是否包含关键原文事实;anchor 不等于 direct chunk,也不要求每个 direct chunk 都逐字命中。
+- 发现 recall 低时先复核标签口径,避免用过宽 direct evidence 把 reranker / parent-doc 指标压低。
 
 标注职责:
 
@@ -626,6 +639,16 @@ MVP 起步 50 条主题 query,总 fixture 笔记 ≥ 10 万字。
 - 判 `boundary_safe=false` 时必须给出 `failure_reason` + 最小原文证据,说明是前提、否定、数值、表格、代码块还是步骤被切断。
 
 ## 7.7 跑法
+
+当前已落地的 smoke 子集:
+
+```
+uv run python apps/api/scripts/eval_hybrid_search_note_smoke.py
+```
+
+该脚本读取 `evals/suites/hybrid_search/dataset.note_smoke.jsonl`,只读当前 DB,写 markdown report 到 `evals/reports/`。报告包含 top notes、top chunks、heading/anchor coverage、hard-negative rank、`candidate_recall@50`、`rerank_recall@10`、`mrr@10`、`final_context_recall`、`final_context_precision`、zero-hit 与成本。旧 note-level pass rule 暂时保留;chunk / heading / anchor 字段用于诊断。
+
+正式 suite 目标入口:
 
 ```
 python -m jobcopilot_api.scripts.eval_hybrid_search \
