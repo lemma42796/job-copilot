@@ -8,6 +8,8 @@
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![LLM](https://img.shields.io/badge/LLM-Qwen3.6%20%40%20DashScope-1f7ae0)]()
 
+[中文](#这是什么) | [English](#english-version)
+
 ---
 
 ## 这是什么
@@ -196,3 +198,191 @@ v2 重新定位为 "AI 面试陪练 + 笔记即题库",同一目标用户(1-3 �
 
 - 阿里云百炼:Qwen3.6 与百炼平台
 - LangGraph / FastAPI / Next.js / pgvector / SQLAlchemy / Tailwind 等开源社区
+
+---
+
+# English Version
+
+> **A local-first AI interview coach for developers. Turn your own notes into interview questions.**
+>
+> Start with one `docker compose up`. Your notes stay on your machine.
+
+[Chinese](#这是什么) | [English](#english-version)
+
+---
+
+## What is JobCopilot?
+
+Developers often run into the same awkward moment: you learned the topic, wrote the notes, maybe even used it at work, but still struggle to explain it clearly in an interview.
+
+JobCopilot turns your technical notes into a private interview question bank. It retrieves from your own Markdown notes, asks questions like a real interviewer, grades your answers, and keeps track of weak spots for later review.
+
+**Core loop**:
+
+```text
+1. Ingest notes - upload a local Markdown folder or write in the web editor
+2. Enter a topic - for example, "quiz me on concurrency" or "cache consistency"
+3. Generate questions with full-repo RAG - 3 to 10 open-ended and interview-style questions, each grounded by source_chunk_ids
+4. Answer from memory - no peeking at notes
+5. Grade with an LLM judge - coverage, fidelity, and depth
+6. Track weak spots - knowledge gaps are queued for spaced repetition
+```
+
+**How it differs from common tools**
+
+| Tool | What it does | What JobCopilot does differently |
+|------|--------------|----------------------------------|
+| Anki | Manual flashcards | Generates questions from your notes |
+| Public interview banks | Shared question sets | Private question bank based on what you wrote |
+| ChatGPT prompts | Stateless questions and feedback | Persistent memory, calibrated judging, and weakness tracking |
+| Notion AI | Passive retrieval | Active recall: it asks you the questions |
+
+---
+
+## Architecture
+
+```text
+apps/web (Next.js 15)
+  Tree navigation / Markdown editor / quiz flow / weakness dashboard
+        |
+        | REST + SSE
+        v
+apps/api (FastAPI)
+  services/  notes, quiz, answer, sessions
+  agents/    QuizGenerator, AnswerJudge
+  llm/       provider abstraction + prompt cache
+  infra/     pgvector, hybrid search, kappa evaluation
+        |
+        v
+Postgres 16
+  notes / chunks / questions / sessions / answers / knowledge_gap
+        |
+        v
+Alibaba Cloud Bailian API
+  Qwen3.6-Flash with thinking enabled
+```
+
+---
+
+## Engineering Highlights
+
+| Area | Implementation |
+|------|----------------|
+| Note-based RAG | Hybrid search with pgvector, tsvector, RRF, and Chinese char n-gram |
+| Anti-hallucination question generation | Every question must include `source_chunk_ids`; unsupported terms are blocked |
+| LLM-as-Judge | Three-layer scoring: coverage, fidelity, and depth |
+| Judge reliability | Cohen's kappa gate before promotion |
+| Weakness tracking | Uses `folder_path / heading_path` as ground-truth knowledge tags |
+| Prompt cache | `sha256(prompt + schema)` cache key with safe miss fallback |
+| Spaced repetition | Simplified SM-2 style scheduling backed by SQL |
+| Agentic RAG interview coach | LangGraph state machine for retrieval, questioning, grading, follow-up, and summary |
+| Observability | Each response includes a `trace_id`; LLM calls are recorded in `llm_calls` |
+| Local-first deployment | Docker Compose plus BYOK; user notes stay local |
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Docker with Compose v2
+- Alibaba Cloud Bailian API key
+
+### Run
+
+```bash
+git clone https://github.com/lemma42796/job-copilot.git
+cd job-copilot
+cp .env.example .env
+# Edit .env:
+#   JOBCOPILOT_DASHSCOPE_API_KEY=sk-xxx
+docker compose up -d
+```
+
+After a few minutes:
+
+```text
+Web:  http://localhost:3000
+API:  http://localhost:8000/v1/health
+Docs: http://localhost:8000/v1/docs   # development mode
+```
+
+---
+
+## Documentation
+
+| File | Purpose |
+|------|---------|
+| [`docs/STATUS.md`](docs/STATUS.md) | Current project status and locked decisions |
+| [`docs/1-PRD.md`](docs/1-PRD.md) | Product requirements, target users, core loop, NSM |
+| [`docs/2-TECH_DESIGN.md`](docs/2-TECH_DESIGN.md) | Architecture, module boundaries, LLM layer |
+| [`docs/3-DATA_MODEL.md`](docs/3-DATA_MODEL.md) | Data model for notes, chunks, questions, sessions, answers, and knowledge gaps |
+| [`docs/4-API_SPEC.md`](docs/4-API_SPEC.md) | REST + SSE API spec, error codes, streaming protocol |
+| [`docs/5-AGENT_DESIGN.md`](docs/5-AGENT_DESIGN.md) | Agent design, schemas, and full prompts |
+| [`docs/6-EVAL_PLAN.md`](docs/6-EVAL_PLAN.md) | Evaluation plan for retrieval, question generation, judging, and coach behavior |
+| [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md) | Milestones and exit criteria |
+| [`docs/8-ENGINEERING.md`](docs/8-ENGINEERING.md) | Engineering conventions and manual gates |
+| [`docs/9-LESSONS.md`](docs/9-LESSONS.md) | Engineering lessons from v1 and v2 |
+
+---
+
+## Engineering Proof Points
+
+| Hiring signal | Project evidence |
+|---------------|------------------|
+| End-to-end LLM application engineering | Product docs, architecture docs, roadmap, and implementation notes |
+| Agent orchestration | InterviewCoachAgent with state, tools, branching, memory, evaluation, and recovery |
+| RAG engineering | Hybrid retrieval with pgvector, tsvector, RRF, and chunk grounding |
+| Prompt engineering | Prompt-as-code with structured schemas and prompt versions |
+| Anti-hallucination | Source-grounded question generation and fidelity judging |
+| LLM-as-Judge | Coverage, fidelity, and depth scoring with evidence-first evaluation |
+| Evaluation quality | Cohen's kappa gate and recorded failure cases |
+| Structured output | Pydantic schemas, JSON Schema retry, and typed API contracts |
+| Streaming UX | SSE event protocol for long-running interview flows |
+| Cost engineering | Prompt cache with stable keys and graceful degradation |
+| Provider abstraction | `LLMProvider` protocol with Qwen and dummy implementations |
+| Vector database engineering | pgvector HNSW, normalization, and multi-granularity chunks |
+| Modern full-stack stack | FastAPI, SQLAlchemy 2.x async, Next.js 15, React 19, TypeScript |
+| Local deployment | Docker Compose stack with Postgres, API, web, Caddy, and Langfuse |
+
+---
+
+## Current Status
+
+**Phase**: M2 - topic query in chat -> full-repo RAG -> question generation + three-layer LLM judge.
+
+See [`docs/STATUS.md`](docs/STATUS.md) for details.
+
+---
+
+## Roadmap
+
+```text
+M0    Repository restructuring and documentation rewrite
+M1    Markdown note ingestion, web editor, chunker, and tree navigation
+M2    Topic query -> full-repo RAG -> questions + LLM judge
+M2.1  InterviewCoachAgent with agentic RAG, interview state machine, and follow-up questions
+M2.5  JD upload, one-click analysis, and learning path
+M3    Weakness tracking, spaced repetition, job-oriented question generation, and resume diagnosis
+```
+
+---
+
+## Project Evolution
+
+JobCopilot v1 started as an AI resume optimization and job application tracker. By W8, real evaluations showed that the product value assumption was weak: job descriptions were too homogeneous, and retrieval was attached to a profile that did not grow enough over time.
+
+v2 repositions the project as an AI interview coach powered by personal notes. It keeps the same target user - developers preparing for job changes - but moves to a sharper pain point: interview anxiety, active recall, note-based RAG, knowledge-gap tracking, and open-ended answer judging.
+
+---
+
+## License
+
+[MIT](LICENSE)
+
+---
+
+## Acknowledgements
+
+- Alibaba Cloud Bailian for Qwen3.6 and model serving
+- LangGraph, FastAPI, Next.js, pgvector, SQLAlchemy, Tailwind, and the open-source community
