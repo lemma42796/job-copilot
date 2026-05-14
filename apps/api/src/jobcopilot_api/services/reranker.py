@@ -55,9 +55,12 @@ QWEN3_VL_RERANK_MAX_TOKENS_PER_ITEM = 8000
 QWEN3_VL_RERANK_MAX_REQUEST_TOKENS = 120000
 GTE_RERANK_V2_DEPRECATION_DATE = "2026-05-30"
 
-# memory §5 默认问答检索 instruct(英文写,贴 "用户 query → 找笔记" 场景)
+# direct-evidence 检索 instruct:不要只因路径 / 标题相似就把近邻材料抬高。
 DEFAULT_INSTRUCT = (
-    "Given a web search query, retrieve relevant passages that answer the query."
+    "Rank note chunks by direct evidence in CONTENT for answering the question. "
+    "Prefer concrete facts, decisions, and constraints. Use source context only "
+    "as a tie-breaker; do not reward folder, heading, interview question, "
+    "summary, or related topic match alone."
 )
 
 # memory §3 计费 + 单价
@@ -108,14 +111,15 @@ def _rerank_cost(total_tokens: int) -> Decimal:
 
 
 def _format_document(chunk: NoteChunk) -> str:
-    """给 reranker 暴露结构化上下文,帮助区分事实笔记和近邻背景。"""
+    """正文优先;路径 / 标题只作为弱 source context。"""
     folder = " / ".join(chunk.folder_path) if chunk.folder_path else "<root>"
     heading = " > ".join(chunk.heading_path) if chunk.heading_path else "<root>"
     return (
-        f"Folder path: {folder}\n"
-        f"Heading path: {heading}\n"
         "Content:\n"
-        f"{chunk.content}"
+        f"{chunk.content}\n\n"
+        "Source context (tie-breaker only):\n"
+        f"Folder path: {folder}\n"
+        f"Heading path: {heading}"
     )
 
 
@@ -145,7 +149,7 @@ async def rerank(
         metadata={
             "top_k": top_k,
             "instruct": instruct,
-            "document_format": "folder_path + heading_path + content",
+            "document_format": "content + weak_source_context",
         },
     )
     try:
@@ -194,7 +198,9 @@ async def rerank(
             "total": total_tokens,
             "unit": "TOKENS",
         },
-        metadata={"cost_cny": str(cost)},
+        metadata={
+            "cost_cny": str(cost),
+        },
     )
     return RerankResult(
         scored=scored,

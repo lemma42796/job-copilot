@@ -217,7 +217,17 @@ class QueryRewriteOutput:
 - **relevance_score 不可跨请求比较**:只是本次请求内相对值,不写到 DB 当跨 session 指标;quiz_sessions.retrieved_chunk_ids 仅存 ids 不存 score
 - 本地 `bge-reranker-v2-m3`(BAAI,~568M params,fp16 ~1.1GB)作 fallback,M2 不做,有真问题再加 adapter
 
-**默认 instruct(qwen3-rerank 参数)**:`"Given a web search query, retrieve relevant passages that answer the query."`(默认问答检索任务,贴我们"用户 query → 找最相关笔记"场景)
+**默认 instruct(qwen3-rerank 参数)**:`"Given a web search query, retrieve relevant passages that answer the query."`。这是百炼文档给的问答检索 baseline,不是最终锁死策略。M2.1 调参时优先 A/B 更贴 JobCopilot 的 direct-evidence instruct:
+
+```text
+Given a user question and candidate note chunks, rank chunks by whether the
+chunk content directly provides evidence to answer the question. Prefer concrete
+product decisions, implementation facts, and constraints. Do not rank a chunk
+highly only because its folder path, heading path, interview question, summary,
+or loosely related topic matches the query.
+```
+
+**document format 约束**:qwen3-rerank 的 `documents` 是字符串数组,没有结构化 metadata 字段。`folder_path` / `heading_path` 一旦拼进 document,模型会把它们当正文信号。后续不要把 metadata 前缀视为无风险增强;至少比较 `content_only` / `content_then_path` / `path_then_content`,并用 `hybrid_search` trace 看 `rerank_recall@10`、hard-negative intrusion、token cost。标签 / content_type 更适合在 rerank 前做过滤或降权,而不是只拼进文本。
 
 # 3. QuizGenerator
 

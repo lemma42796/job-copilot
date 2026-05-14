@@ -702,11 +702,23 @@ python -m jobcopilot_api.scripts.eval_hybrid_search \
 
 1. 先看 per-case `failure_reason`,不要只看总均值。
 2. `candidate_recall@50` 不达标:优先调 query rewrite / hybrid top_k / tokenization / embedding,不要调 reranker。
-3. `rerank_recall@10` 不达标:优先调 reranker `top_k` / instruct / 候选去噪。
+3. `rerank_recall@10` 不达标:优先调 reranker `top_k` / instruct / 候选去噪 / document format,尤其检查 metadata 是否把题库、评测样本、anchor 汇总、hard-negative 这类近邻材料抬高。
 4. `final_context_recall` 或 `unsafe_boundary_rate` 不达标:优先调 parent-doc / chunker / overlap / markdown 结构保护。
 5. `final_context_precision` 不达标:优先收紧 parent-doc 扩展范围 / final context top_k / 去重与 source diversity,不要靠减少 expected evidence 标注来抬分。
-6. `zero_hit_precision` 不达标:增加 rerank score / source diversity / expected evidence 阈值,不要让 LLM 兜底编。
+6. `zero_hit_precision` 不达标:调整 0 命中守门的核心实体 / anchor / source diversity / score 阈值组合,不要让 LLM 兜底编。注意 reranker `relevance_score` 只适合本次请求内排序,不要未经标定就做跨请求绝对阈值。
 7. 调参后重跑全 suite,报告进 git history。
+
+## 7.9 RAG / reranker 调参沉淀(百炼文档对照)
+
+百炼 RAG 优化文档和 qwen3-rerank 文档对本 suite 的可复用结论:
+
+1. **先有基线再调参**:每次改 query rewrite / chunker / reranker instruct / document format / top_k,都必须对比同一批 case 的 trace/report。只看总均值不够,要定位 `candidate_recall@50`、`rerank_recall@10`、`final_context_recall` 分别在哪一层变化。
+2. **`instruct` 是排序策略,不是装饰参数**:qwen3-rerank 明确支持用 instruct 区分"问答检索"和"语义相似度"。JobCopilot 的目标是找"能直接作为笔记证据回答 query 的 chunk",不是找标题 / 文件夹 / 主题最相似的 chunk。默认 web-search instruct 只能作为 baseline,不算最终锁定策略。
+3. **metadata 拼进 document 后就是正文**:qwen3-rerank 的 `documents` 是字符串数组,没有结构化 metadata 字段。`folder_path` / `heading_path` 一旦被拼到正文前面,模型会把它们当强文本信号,可能把"题库 / 评测 / anchor 汇总 / hard negative"抬到 direct evidence 前面。metadata format 变更必须 A/B,并同时看 `rerank_recall@10`、hard-negative intrusion、token cost。
+4. **标签 / 元数据优先用于检索前过滤或降权**:百炼 RAG 文档里的标签过滤和元数据搜索语义是"先结构化筛选,再向量检索 / rerank",不是把标签粗暴拼进文本。JobCopilot 可考虑给 chunk 标轻量 `content_type`,例如 `project_fact` / `interview_question_bank` / `eval_case` / `anchor_summary` / `hard_negative` / `generic_background`;项目事实 query 优先事实笔记,题库和评测样本通常只能作为 necessary context 或噪声候选。
+5. **top_k 是召回兜底,不是根因修复**:提高 reranker `top_n` / final context K 可以救回排在 10 名外的 direct evidence,但会增加噪声、成本和生成端截断风险。只有在总结 / 列举 / 比较类 query 需要更多材料时才优先增 K;边界事实题优先做候选去噪和 direct-evidence instruct。
+6. **chunk 完整性单独排查**:如果 evidence 已进 top_k 但 final context 缺前提、否定、数值、步骤,优先查 chunker / parent-doc / markdown 结构保护,不要误归因为 reranker。
+7. **本地降权先做诊断,不要默认进主路**:2026-05-14 试过 intent × chunk-type soft adjustment,能把 hard-negative intrusion 从 4/12 压到 3/12、提升 MRR,但 `rerank_recall@10` 和 final recall 下降。后续若继续做,report/trace 必须打印 `query_intent`、`chunk_type`、provider rank、adjustment、adjusted_score,先离线 A/B penalty 表,再决定是否进产品路径。
 
 # 8. 防回归约束
 

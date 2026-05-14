@@ -102,6 +102,14 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 - **修法**:抽 `infra.langfuse` helper:只有 public/secret key 齐全才构造 Langfuse client,手动 generation 走进程内复用;DashScope OpenAI-compatible client 也改成有 key 才走 `langfuse.openai`,否则走原生 OpenAI client。评测脚本收尾只关闭已存在的 singleton,不为了 cleanup 反向构造 embedder / llm client。
 - **沉淀**:观测 SDK 的 noop 模式不能默认等同于"零资源";CLI / eval / batch 脚本要把 observability client lifecycle 当成显式资源管理。
 
+## 3.5 Reranker metadata 不等于结构化过滤(M2.1 评测沉淀)
+
+- **症状**:给 qwen3-rerank 的 document 从纯 content 改成 `folder_path + heading_path + content` 后,hybrid_search note smoke 的 `candidate_recall@50` 不变,但 `rerank_recall@10` 从 73.33% 降到 67.50%。具体表现: `hs_note_001` 丢掉 `#434 Query Rewrite 与召回扩展 > JobCopilot 的 rewrite 边界`;`hs_note_010` 丢掉 `#2214 JobCopilot M2 RAG pipeline`;同时 `hs_note_005` 被 metadata 救回一个 `#2259 Client disconnected`。总通过数从 6/12 到 7/12,但不是净提升。
+- **根因**:qwen3-rerank 的 `documents` 只是字符串数组,没有弱 metadata 字段。把 folder / heading 放到 content 前面,等于把它们变成强正文信号。默认 instruct 是通用 web-search QA,不会区分"标题/题库/评测样本语义相近"和"chunk 正文能直接作为 direct evidence 回答 query"。因此题库、anchor 汇总、评测示例、hard-negative 这类 heading 很贴 query 的近邻材料被抬高,挤掉部分真正 direct evidence。
+- **修法**:metadata 不再当"无风险增强"处理。已保留的折中方案是 direct-evidence instruct + `content + weak_source_context` 后置格式(report `20260514-092218`:8/12,`rerank_recall@10` 69.17%,成本 ¥0.251666),比 metadata 前置更稳但仍未达标。后续改 reranker 输入时必须做 A/B:至少比较 `content_only`、`content_then_path`、`path_then_content` 与更严格 direct-evidence instruct;同时记录 token 成本和 hard-negative intrusion。
+- **后续实验**:intent × chunk-type 本地降权试过两版。初版误把 `rag/Hard Negative 概念对照表` 里的正常定义 chunk 判成 hard-negative;修正后 hard-negative intrusion 从 4/12 到 3/12、MRR 到 75.33%,但 `rerank_recall@10` 只有 65.83%、final recall 69.17%,低于保留版,所以没有进主路。这个方向要先把 `query_intent` / `chunk_type` / provider rank / adjustment / adjusted_score 打进 report,再离线调 penalty 表。
+- **沉淀**:RAG 文档里的"标签 / 元数据优化"语义是结构化过滤,不是把 metadata 粗暴拼到 reranker 文本前缀。metadata 能救私有事实样本,也会制造标题相似偏置;本地降权也可能误伤 direct evidence。是否保留要看 per-case trace,不能只看 pass 数或单个 headline。
+
 ---
 
 # 4. Streaming / SSE
