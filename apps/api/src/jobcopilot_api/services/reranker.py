@@ -15,8 +15,8 @@
 
 工程边界:
 - **不走 OpenAI SDK**:rerank 不在 OpenAI 协议标准里,langfuse.openai 也不
-  patch — 这里直接 httpx + 手动 `Langfuse().generation()` 包(参考 embedder
-  在 STATUS 永久约束 "langfuse 2.x 的 langfuse.openai 不 patch embeddings.create")
+  patch — 这里直接 httpx + 手动 generation 包;无 Langfuse key 时不构造
+  SDK client,避免 CLI 评测脚本退出时被 noop background thread 拖住。
 - **失败回退**:不抛错,降级为 hybrid 顺序前 top_k(rerank_score=0.0),
   trace 打 warning(5-AGENT §2.7.5)
 - **relevance_score 不可跨请求比较**:仅本次请求内相对值,不存 DB,
@@ -33,8 +33,8 @@ from decimal import Decimal
 from typing import Any
 
 import httpx
-from langfuse import Langfuse
 
+from jobcopilot_api.infra.langfuse import start_generation
 from jobcopilot_api.models.note_chunk import NoteChunk
 from jobcopilot_api.settings import settings
 
@@ -107,6 +107,18 @@ def _rerank_cost(total_tokens: int) -> Decimal:
     return Decimal(total_tokens) * RERANK_PRICE_PER_1K / Decimal("1000")
 
 
+def _format_document(chunk: NoteChunk) -> str:
+    """给 reranker 暴露结构化上下文,帮助区分事实笔记和近邻背景。"""
+    folder = " / ".join(chunk.folder_path) if chunk.folder_path else "<root>"
+    heading = " > ".join(chunk.heading_path) if chunk.heading_path else "<root>"
+    return (
+        f"Folder path: {folder}\n"
+        f"Heading path: {heading}\n"
+        "Content:\n"
+        f"{chunk.content}"
+    )
+
+
 async def rerank(
     query: str,
     chunks: list[NoteChunk],
@@ -125,12 +137,16 @@ async def rerank(
         )
 
     candidate_chunks = chunks[:QWEN3_RERANK_MAX_DOCUMENTS]
-    documents = [c.content for c in candidate_chunks]
-    generation = Langfuse().generation(
+    documents = [_format_document(c) for c in candidate_chunks]
+    generation = start_generation(
         name="reranker",
         model=model,
         input={"query": query, "doc_count": len(documents)},
-        metadata={"top_k": top_k, "instruct": instruct},
+        metadata={
+            "top_k": top_k,
+            "instruct": instruct,
+            "document_format": "folder_path + heading_path + content",
+        },
     )
     try:
         client = _get_http_client()

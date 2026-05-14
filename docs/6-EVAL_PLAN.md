@@ -1,7 +1,7 @@
 ---
 title: EVAL PLAN - JobCopilot v2(评测套件 + Cohen's kappa 守门)
 owner: lemma42796
-last_updated: 2026-05-13
+last_updated: 2026-05-14
 purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、不达标处理流程
 ---
 
@@ -485,10 +485,10 @@ python -m jobcopilot_api.scripts.eval_resume_advisor \
 
 | 指标 | 定义 | 阈值 |
 |------|------|------|
-| `candidate_recall@50` | expected evidence 进入 query rewrite + hybrid + RRF 后候选 Top-50 的样本比例 | ≥ 0.98 |
-| `rerank_recall@10` | expected evidence 进入 reranker Top-10 的样本比例 | ≥ 0.90 |
+| `candidate_recall@50` | 每个非 0 命中样本中,direct evidence chunk 进入 query rewrite + hybrid + RRF 后候选 Top-50 的比例;再做 macro average | ≥ 0.98 |
+| `rerank_recall@10` | 每个非 0 命中样本中,direct evidence chunk 进入 reranker Top-10 的比例;再做 macro average | ≥ 0.90 |
 | `mrr@10` | reranker Top-10 中首个 expected evidence 的 mean reciprocal rank | ≥ 0.60 |
-| `final_context_recall` | parent-doc 扩展后最终 chunks 覆盖 expected evidence 的样本比例 | ≥ 0.95 |
+| `final_context_recall` | 每个非 0 命中样本中,parent-doc 扩展后最终 chunks 覆盖 direct evidence chunk 的比例;再做 macro average | ≥ 0.95 |
 | `final_context_precision` | 非 0 命中样本中,final context 内由 Codex 判为直接证据 / 必要上下文的 chunk 数 / final context chunk 总数 | ≥ 0.70 |
 | `zero_hit_precision` | 0 命中 / 近邻干扰样本没有被错误拿去出题的比例 | ≥ 0.90 |
 | `unsafe_boundary_rate` | 人工审查中出现"关键前提 / 否定 / 数值 / 表格 / 代码块被切断且 final context 未补回"的比例 | ≤ 0.05 |
@@ -500,6 +500,8 @@ python -m jobcopilot_api.scripts.eval_resume_advisor \
 - `final_context_recall` 守"最终可用":真正决定出题 / 评分质量的是 parent-doc 后的上下文,不是中间候选。
 - `final_context_precision` 守"最终干净":防止 parent-doc / top_k 扩太宽,把无关 chunk 塞给 LLM。
 - `unsafe_boundary_rate` 是 chunker 质量指标,发现问题优先调 chunker / parent-doc,不是换模型。
+
+聚合口径:recall / mrr headline 默认是 **macro average**。`expected_zero_hit=true` 的样本没有 direct evidence,不参与 recall / mrr 均值;但非 0 命中样本如果被系统误判为 0 命中,`final_context_recall` 记 0,避免被 headline 漏算。需要看全局 chunk 粒度时,另看 report 里的 micro coverage 字段。
 
 ## 7.3 Ablation 矩阵
 
@@ -619,6 +621,35 @@ MVP 起步 50 条主题 query,总 fixture 笔记 ≥ 10 万字。
 }
 ```
 
+当前 note/chunk smoke 额外保存 trace JSONL,用于把"跑 pipeline"和"按标签打分"拆开:
+
+```json
+{
+  "case_id": "hs_note_001",
+  "query": "M2 是否支持岗位类 query？",
+  "predicted_zero_hit": false,
+  "expanded_queries": ["M2 是否支持岗位类 query？", "..."],
+  "candidate_chunk_ids": [2212, 2333, 434],
+  "rerank_chunk_ids": [2212, 434],
+  "final_chunks": [
+    {
+      "chunk_id": 2212,
+      "note_path": "项目/JobCopilot/M2 RAG 与出题链路.md",
+      "heading_path": ["JobCopilot M2 RAG 与出题链路", "M2 的产品边界"],
+      "rerank_score": 0.9859,
+      "content": "..."
+    }
+  ],
+  "rerank_tokens": 22550,
+  "rerank_cost_cny": "0.011275",
+  "error": ""
+}
+```
+
+trace 保存的是**可按新标签重新求交集的阶段全集**,不是旧标签下的命中结果。后续只调整 `direct_evidence_chunk_ids` / `necessary_context_chunk_ids` / heading / anchor / hard-negative 标签时,必须复用 trace 离线重算,避免重复调用 query rewrite / rerank。只有改检索代码、prompt、reranker、DB 语料、embedding 或 chunker 时,才完整重跑 pipeline。
+
+注意:`candidate_chunk_ids` 在 0 命中守门前就会保存;即使 `predicted_zero_hit=true`,也能检查系统是否其实召回了 1-2 个正确证据、只是没达到出题阈值。`rerank_chunk_ids` 和 `final_chunks` 只有通过 0 命中守门后才会出现。
+
 `failure_reason` 只能取固定枚举,便于统计:
 
 | failure_reason | 含义 | 优先排查 |
@@ -646,7 +677,16 @@ MVP 起步 50 条主题 query,总 fixture 笔记 ≥ 10 万字。
 uv run python apps/api/scripts/eval_hybrid_search_note_smoke.py
 ```
 
-该脚本读取 `evals/suites/hybrid_search/dataset.note_smoke.jsonl`,只读当前 DB,写 markdown report 到 `evals/reports/`。报告包含 top notes、top chunks、heading/anchor coverage、hard-negative rank、`candidate_recall@50`、`rerank_recall@10`、`mrr@10`、`final_context_recall`、`final_context_precision`、zero-hit 与成本。旧 note-level pass rule 暂时保留;chunk / heading / anchor 字段用于诊断。
+该脚本读取 `evals/suites/hybrid_search/dataset.note_smoke.jsonl`,只读当前 DB,写 markdown report 到 `evals/reports/`,并同时写同时间戳的 `.trace.jsonl`。报告包含 top notes、top chunks、heading/anchor coverage、hard-negative rank、`candidate_recall@50`、`rerank_recall@10`、`mrr@10`、`final_context_recall`、`final_context_precision`、zero-hit 与成本。旧 note-level pass rule 暂时保留;chunk / heading / anchor 字段用于诊断。
+
+只改标签或打分口径时,不要完整重跑。复用上一次 trace 离线重算:
+
+```
+uv run python apps/api/scripts/eval_hybrid_search_note_smoke.py \
+    --score-trace evals/reports/hybrid-search-note-smoke-xxx.trace.jsonl
+```
+
+离线重算只读 trace + 当前 dataset,不调用 query rewrite / search / rerank / LLM。它会生成 `hybrid-search-note-smoke-rescore-*.md`,其中成本字段来自原 trace,用于审计历史跑法,不是本次新增花费。
 
 正式 suite 目标入口:
 

@@ -23,9 +23,10 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jobcopilot_api.errors import NoChunksForQueryError
+from jobcopilot_api.infra import embedder as embedder_infra
+from jobcopilot_api.infra import llm as llm_infra
 from jobcopilot_api.infra.db import get_engine
-from jobcopilot_api.infra.embedder import get_embedder, reset_embedder
-from jobcopilot_api.infra.llm import get_llm_client, reset_client
+from jobcopilot_api.infra.langfuse import shutdown_langfuse
 from jobcopilot_api.models.llm_call import LlmCall
 from jobcopilot_api.schemas.retrieval import PipelineResult, RetrievedChunk
 from jobcopilot_api.services.query_rewriter import rewrite_query
@@ -73,12 +74,37 @@ class ChunkHit:
 
 
 @dataclass(frozen=True)
+class TraceFinalChunk:
+    chunk_id: int
+    note_path: str
+    heading_path: list[str]
+    rerank_score: float
+    content: str
+
+
+@dataclass(frozen=True)
+class SmokeTrace:
+    case_id: str
+    query: str
+    predicted_zero_hit: bool
+    expanded_queries: list[str]
+    candidate_chunk_ids: list[int]
+    rerank_chunk_ids: list[int]
+    final_chunks: list[TraceFinalChunk]
+    rerank_tokens: int
+    rerank_cost_cny: Decimal
+    error: str = ""
+
+
+@dataclass(frozen=True)
 class PipelineTrace:
     result: PipelineResult
     candidate_chunks: list[RetrievedChunk]
     reranked_chunks: list[RetrievedChunk]
     rerank_tokens: int
     rerank_cost_cny: Decimal
+    predicted_zero_hit: bool = False
+    error: str = ""
 
 
 @dataclass(frozen=True)
@@ -163,16 +189,40 @@ async def run_pipeline_with_cost(
         )
         hybrid_rankings.append(ranking)
     fused = multi_query_rrf(hybrid_rankings, k=RRF_K)
+    candidate_base = fused[:50]
 
     if len(fused) < MIN_CHUNKS_FOR_QUIZ:
-        raise NoChunksForQueryError(
-            f"query='{user_query}' hit {len(fused)} chunks"
+        note_titles = await fetch_note_titles(
+            session, list({chunk.note_id for chunk in candidate_base})
+        )
+        candidate_chunks = [
+            RetrievedChunk(
+                chunk=chunk,
+                folder_path=list(chunk.folder_path),
+                heading_path=list(chunk.heading_path),
+                note_title=note_titles.get(chunk.note_id, ""),
+                rerank_score=0.0,
+            )
+            for chunk in candidate_base
+        ]
+        detail = f"query='{user_query}' hit {len(fused)} chunks"
+        return PipelineTrace(
+            result=PipelineResult(
+                expanded_queries=expanded_queries,
+                retrieved_chunks=[],
+            ),
+            candidate_chunks=candidate_chunks,
+            reranked_chunks=[],
+            rerank_tokens=0,
+            rerank_cost_cny=Decimal("0"),
+            predicted_zero_hit=True,
+            error=detail,
         )
 
     rerank_result = await rerank(user_query, fused, top_k=RERANK_TOP_K)
     expanded_scored = await expand_to_parent_docs(session, rerank_result.scored)
     all_chunks = [
-        *fused[:50],
+        *candidate_base,
         *[chunk for chunk, _ in rerank_result.scored],
         *[chunk for chunk, _ in expanded_scored],
     ]
@@ -222,6 +272,16 @@ async def run_pipeline_with_cost(
 
 def note_path(item: RetrievedChunk) -> str:
     return "/".join([*item.folder_path, f"{item.note_title}.md"])
+
+
+def trace_final_chunk(item: RetrievedChunk) -> TraceFinalChunk:
+    return TraceFinalChunk(
+        chunk_id=int(item.chunk.id),
+        note_path=note_path(item),
+        heading_path=list(item.heading_path),
+        rerank_score=float(item.rerank_score),
+        content=item.chunk.content,
+    )
 
 
 def ordered_unique(items: list[str]) -> list[str]:
@@ -275,18 +335,18 @@ def heading_matches(actual: list[str], expected: list[str]) -> bool:
 
 def build_chunk_hits(
     case: SmokeCase,
-    retrieved_chunks: list[RetrievedChunk],
+    final_chunks: list[TraceFinalChunk],
 ) -> list[ChunkHit]:
     direct_evidence_chunk_ids = set(case.direct_evidence_chunk_ids)
     necessary_context_chunk_ids = set(case.necessary_context_chunk_ids)
     out: list[ChunkHit] = []
-    for rank, item in enumerate(retrieved_chunks, start=1):
-        chunk_id = int(item.chunk.id)
-        current_note_path = note_path(item)
+    for rank, item in enumerate(final_chunks, start=1):
+        chunk_id = item.chunk_id
+        current_note_path = item.note_path
         matched_anchors = [
             anchor
             for anchor in case.evidence_anchors
-            if anchor_matches(item.chunk.content, anchor)
+            if anchor_matches(item.content, anchor)
         ]
         out.append(
             ChunkHit(
@@ -345,6 +405,80 @@ def first_ranks_by_note(
 
 def chunk_ids(chunks: list[RetrievedChunk]) -> list[int]:
     return [int(chunk.chunk.id) for chunk in chunks]
+
+
+def trace_to_json(trace: SmokeTrace) -> dict[str, object]:
+    return {
+        "case_id": trace.case_id,
+        "query": trace.query,
+        "predicted_zero_hit": trace.predicted_zero_hit,
+        "expanded_queries": trace.expanded_queries,
+        "candidate_chunk_ids": trace.candidate_chunk_ids,
+        "rerank_chunk_ids": trace.rerank_chunk_ids,
+        "final_chunks": [
+            {
+                "chunk_id": chunk.chunk_id,
+                "note_path": chunk.note_path,
+                "heading_path": chunk.heading_path,
+                "rerank_score": chunk.rerank_score,
+                "content": chunk.content,
+            }
+            for chunk in trace.final_chunks
+        ],
+        "rerank_tokens": trace.rerank_tokens,
+        "rerank_cost_cny": str(trace.rerank_cost_cny),
+        "error": trace.error,
+    }
+
+
+def trace_from_json(obj: dict[str, object]) -> SmokeTrace:
+    return SmokeTrace(
+        case_id=str(obj["case_id"]),
+        query=str(obj["query"]),
+        predicted_zero_hit=bool(obj["predicted_zero_hit"]),
+        expanded_queries=[str(x) for x in obj.get("expanded_queries", [])],
+        candidate_chunk_ids=[
+            int(x) for x in obj.get("candidate_chunk_ids", [])
+        ],
+        rerank_chunk_ids=[int(x) for x in obj.get("rerank_chunk_ids", [])],
+        final_chunks=[
+            TraceFinalChunk(
+                chunk_id=int(chunk["chunk_id"]),
+                note_path=str(chunk["note_path"]),
+                heading_path=[
+                    str(part) for part in chunk.get("heading_path", [])
+                ],
+                rerank_score=float(chunk.get("rerank_score", 0.0)),
+                content=str(chunk.get("content", "")),
+            )
+            for chunk in obj.get("final_chunks", [])
+            if isinstance(chunk, dict)
+        ],
+        rerank_tokens=int(obj.get("rerank_tokens", 0)),
+        rerank_cost_cny=Decimal(str(obj.get("rerank_cost_cny", "0"))),
+        error=str(obj.get("error", "")),
+    )
+
+
+def load_traces(path: Path) -> dict[str, SmokeTrace]:
+    traces: dict[str, SmokeTrace] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if not raw.strip():
+            continue
+        trace = trace_from_json(json.loads(raw))
+        traces[trace.case_id] = trace
+    return traces
+
+
+def write_traces(path: Path, traces: list[SmokeTrace]) -> None:
+    path.write_text(
+        "\n".join(
+            json.dumps(trace_to_json(trace), ensure_ascii=False)
+            for trace in traces
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def match_direct_evidence_hits(
@@ -418,26 +552,31 @@ def diagnose_failure(
     return hints
 
 
-async def evaluate_case(
-    case: SmokeCase,
-    sessionmaker: async_sessionmaker[AsyncSession],
-) -> SmokeResult:
-    try:
-        async with sessionmaker() as session:
-            trace = await run_pipeline_with_cost(session, case.query)
-    except NoChunksForQueryError as exc:
+def score_case_trace(case: SmokeCase, trace: SmokeTrace) -> SmokeResult:
+    if trace.predicted_zero_hit:
+        candidate_hits = match_direct_evidence_hits(
+            case.direct_evidence_chunk_ids, trace.candidate_chunk_ids
+        )
+        rerank_hits = match_direct_evidence_hits(
+            case.direct_evidence_chunk_ids, trace.rerank_chunk_ids
+        )
+        final_context_recall = (
+            recall_ratio(case.direct_evidence_chunk_ids, [])
+            if not case.expected_zero_hit
+            else None
+        )
         passed = case.expected_zero_hit
         return SmokeResult(
             case=case,
             passed=passed,
             predicted_zero_hit=True,
-            expanded_queries=[case.query],
-            candidate_chunk_ids=[],
-            rerank_chunk_ids=[],
+            expanded_queries=trace.expanded_queries or [case.query],
+            candidate_chunk_ids=trace.candidate_chunk_ids,
+            rerank_chunk_ids=trace.rerank_chunk_ids,
             top_note_paths=[],
             top_chunks=[],
-            candidate_direct_evidence_hits=[],
-            rerank_direct_evidence_hits=[],
+            candidate_direct_evidence_hits=candidate_hits,
+            rerank_direct_evidence_hits=rerank_hits,
             expected_hits=[],
             direct_evidence_hits=[],
             necessary_context_hits=[],
@@ -446,28 +585,31 @@ async def evaluate_case(
             hard_negative_hits=[],
             hard_negative_ranks={},
             failure_hints=[] if passed else ["unexpected_zero_hit"],
-            candidate_recall_at_50=None,
-            rerank_recall_at_10=None,
-            mrr_at_10=None,
-            final_context_recall=None,
+            candidate_recall_at_50=recall_ratio(
+                case.direct_evidence_chunk_ids, candidate_hits
+            ),
+            rerank_recall_at_10=recall_ratio(
+                case.direct_evidence_chunk_ids, rerank_hits
+            ),
+            mrr_at_10=mrr_at_k(
+                case.direct_evidence_chunk_ids, trace.rerank_chunk_ids
+            ),
+            final_context_recall=final_context_recall,
             final_context_precision=None,
             retrieved_chunk_count=0,
-            rerank_tokens=0,
-            rerank_cost_cny=Decimal("0"),
-            error=exc.detail,
+            rerank_tokens=trace.rerank_tokens,
+            rerank_cost_cny=trace.rerank_cost_cny,
+            error=trace.error,
         )
 
-    result = trace.result
-    candidate_chunk_ids = chunk_ids(trace.candidate_chunks)
-    rerank_chunk_ids = chunk_ids(trace.reranked_chunks)
     candidate_hits = match_direct_evidence_hits(
-        case.direct_evidence_chunk_ids, candidate_chunk_ids
+        case.direct_evidence_chunk_ids, trace.candidate_chunk_ids
     )
     rerank_hits = match_direct_evidence_hits(
-        case.direct_evidence_chunk_ids, rerank_chunk_ids
+        case.direct_evidence_chunk_ids, trace.rerank_chunk_ids
     )
-    top_chunks = build_chunk_hits(case, result.retrieved_chunks)
-    top_notes = ordered_unique([note_path(item) for item in result.retrieved_chunks])
+    top_chunks = build_chunk_hits(case, trace.final_chunks)
+    top_notes = ordered_unique([chunk.note_path for chunk in trace.final_chunks])
     expected_hits = [p for p in top_notes if p in case.expected_note_paths]
     direct_evidence_chunk_id_set = set(case.direct_evidence_chunk_ids)
     direct_evidence_hits = ordered_unique_int(
@@ -513,9 +655,9 @@ async def evaluate_case(
         case=case,
         passed=passed,
         predicted_zero_hit=False,
-        expanded_queries=result.expanded_queries,
-        candidate_chunk_ids=candidate_chunk_ids,
-        rerank_chunk_ids=rerank_chunk_ids,
+        expanded_queries=trace.expanded_queries,
+        candidate_chunk_ids=trace.candidate_chunk_ids,
+        rerank_chunk_ids=trace.rerank_chunk_ids,
         top_note_paths=top_notes,
         top_chunks=top_chunks,
         candidate_direct_evidence_hits=candidate_hits,
@@ -534,15 +676,55 @@ async def evaluate_case(
         rerank_recall_at_10=recall_ratio(
             case.direct_evidence_chunk_ids, rerank_hits
         ),
-        mrr_at_10=mrr_at_k(case.direct_evidence_chunk_ids, rerank_chunk_ids),
+        mrr_at_10=mrr_at_k(case.direct_evidence_chunk_ids, trace.rerank_chunk_ids),
         final_context_recall=recall_ratio(
             case.direct_evidence_chunk_ids, direct_evidence_hits
         ),
         final_context_precision=calculate_final_context_precision(top_chunks),
-        retrieved_chunk_count=len(result.retrieved_chunks),
+        retrieved_chunk_count=len(trace.final_chunks),
         rerank_tokens=trace.rerank_tokens,
         rerank_cost_cny=trace.rerank_cost_cny,
+        error=trace.error,
     )
+
+
+async def evaluate_case(
+    case: SmokeCase,
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> tuple[SmokeResult, SmokeTrace]:
+    try:
+        async with sessionmaker() as session:
+            trace = await run_pipeline_with_cost(session, case.query)
+    except NoChunksForQueryError as exc:
+        smoke_trace = SmokeTrace(
+            case_id=case.id,
+            query=case.query,
+            predicted_zero_hit=True,
+            expanded_queries=[case.query],
+            candidate_chunk_ids=[],
+            rerank_chunk_ids=[],
+            final_chunks=[],
+            rerank_tokens=0,
+            rerank_cost_cny=Decimal("0"),
+            error=exc.detail,
+        )
+        return score_case_trace(case, smoke_trace), smoke_trace
+
+    smoke_trace = SmokeTrace(
+        case_id=case.id,
+        query=case.query,
+        predicted_zero_hit=trace.predicted_zero_hit,
+        expanded_queries=trace.result.expanded_queries,
+        candidate_chunk_ids=chunk_ids(trace.candidate_chunks),
+        rerank_chunk_ids=chunk_ids(trace.reranked_chunks),
+        final_chunks=[
+            trace_final_chunk(chunk) for chunk in trace.result.retrieved_chunks
+        ],
+        rerank_tokens=trace.rerank_tokens,
+        rerank_cost_cny=trace.rerank_cost_cny,
+        error=trace.error,
+    )
+    return score_case_trace(case, smoke_trace), smoke_trace
 
 
 async def summarize_llm_costs(
@@ -621,7 +803,14 @@ def labels_text(chunk: ChunkHit) -> str:
     return ", ".join(labels) if labels else "-"
 
 
-def render_report(results: list[SmokeResult], llm_calls: int, llm_cost: Decimal) -> str:
+def render_report(
+    results: list[SmokeResult],
+    llm_calls: int,
+    llm_cost: Decimal,
+    *,
+    score_trace_path: Path | None = None,
+    trace_output_path: Path | None = None,
+) -> str:
     total = len(results)
     passed = sum(1 for r in results if r.passed)
     expected_zero = [r for r in results if r.case.expected_zero_hit]
@@ -672,11 +861,28 @@ def render_report(results: list[SmokeResult], llm_calls: int, llm_cost: Decimal)
     lines.append("# Hybrid Search Note/Chunk Smoke Report\n")
     lines.append(f"- generated_at: {datetime.now(UTC).isoformat()}")
     lines.append(f"- database_url: `{settings.database_url}`")
+    if score_trace_path is not None:
+        lines.append("- score_mode: offline_trace")
+        lines.append(f"- score_trace: `{score_trace_path}`")
+        lines.append(
+            "- cost_note: cost fields are carried from the trace run; "
+            "this rescore did not call rewrite/rerank/LLM services"
+        )
+    else:
+        lines.append("- score_mode: live_pipeline")
+    if trace_output_path is not None:
+        lines.append(f"- trace_output: `{trace_output_path}`")
     lines.append(f"- cases: {total}")
     lines.append(f"- passed: {passed}/{total}")
     lines.append(
         "- pass_rule: non-zero cases need at least one expected note and no "
         "hard-negative note; chunk/heading/anchor fields are diagnostics"
+    )
+    lines.append(
+        "- metric_average_rule: candidate/rerank/final recall and mrr are "
+        "macro averages over cases with direct_evidence_chunk_ids; expected "
+        "zero-hit cases are excluded, unexpected zero-hit cases count final "
+        "context recall as 0"
     )
     lines.append(f"- candidate_recall@50: {percent_text(candidate_recall)}")
     lines.append(f"- rerank_recall@10: {percent_text(rerank_recall)}")
@@ -837,6 +1043,25 @@ def render_report(results: list[SmokeResult], llm_calls: int, llm_cost: Decimal)
     return "\n".join(lines) + "\n"
 
 
+def print_result(result: SmokeResult) -> None:
+    status = "PASS" if result.passed else "FAIL"
+    print(
+        f"[{status}] {result.case.id} zero_hit={result.predicted_zero_hit} "
+        f"hits={len(result.expected_hits)} "
+        f"cand@50={percent_text(result.candidate_recall_at_50)} "
+        f"rerank@10={percent_text(result.rerank_recall_at_10)} "
+        f"mrr@10={percent_text(result.mrr_at_10)} "
+        f"final={percent_text(result.final_context_recall)} "
+        f"headings={len(result.expected_heading_hits)}/"
+        f"{len(result.case.expected_heading_paths)} "
+        f"anchors={len(result.evidence_anchor_hits)}/"
+        f"{len(result.case.evidence_anchors)} "
+        f"hard_neg={len(result.hard_negative_hits)} "
+        f"chunks={result.retrieved_chunk_count} "
+        f"rerank_tokens={result.rerank_tokens}"
+    )
+
+
 async def close_openai_owner(owner: object) -> None:
     client = getattr(owner, "_client", None)
     close = getattr(client, "close", None) or getattr(client, "aclose", None)
@@ -844,20 +1069,32 @@ async def close_openai_owner(owner: object) -> None:
         return
     result = close()
     if inspect.isawaitable(result):
-        await result
+        try:
+            await asyncio.wait_for(result, timeout=5)
+        except TimeoutError:
+            print("warning: timed out while closing OpenAI-compatible client")
 
 
 async def close_clients() -> None:
     await reset_http_client()
+    embedder = getattr(embedder_infra, "_embedder", None)
     try:
-        await close_openai_owner(get_embedder())
+        if embedder is not None:
+            await close_openai_owner(embedder)
     finally:
-        reset_embedder()
+        embedder_infra.reset_embedder()
+    llm_client = getattr(llm_infra, "_client", None)
     try:
-        llm_client = get_llm_client()
-        await close_openai_owner(getattr(llm_client, "_provider", None))
+        if llm_client is not None:
+            await close_openai_owner(getattr(llm_client, "_provider", None))
     finally:
-        reset_client()
+        llm_infra.reset_client()
+    shutdown_langfuse()
+    try:
+        from langfuse.utils.langfuse_singleton import LangfuseSingleton
+    except ImportError:
+        return
+    LangfuseSingleton().reset()
 
 
 async def main() -> None:
@@ -872,41 +1109,84 @@ async def main() -> None:
         type=Path,
         default=Path("evals/reports"),
     )
+    parser.add_argument(
+        "--score-trace",
+        type=Path,
+        default=None,
+        help=(
+            "Re-score a previous trace JSONL against the current dataset "
+            "without calling rewrite/search/rerank services."
+        ),
+    )
     args = parser.parse_args()
 
-    started_at = datetime.now(UTC)
     cases = load_cases(args.dataset)
+    args.report_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.score_trace is not None:
+        traces_by_case = load_traces(args.score_trace)
+        missing_case_ids = [
+            case.id for case in cases if case.id not in traces_by_case
+        ]
+        if missing_case_ids:
+            raise SystemExit(
+                "Trace is missing cases: " + ", ".join(missing_case_ids)
+            )
+
+        results = [
+            score_case_trace(case, traces_by_case[case.id])
+            for case in cases
+        ]
+        for result in results:
+            print_result(result)
+
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        path = args.report_dir / f"hybrid-search-note-smoke-rescore-{timestamp}.md"
+        report = render_report(
+            results,
+            llm_calls=0,
+            llm_cost=Decimal("0"),
+            score_trace_path=args.score_trace,
+        )
+        path.write_text(report, encoding="utf-8")
+
+        rerank_cost = sum(
+            (r.rerank_cost_cny for r in results), Decimal("0")
+        )
+        print("")
+        print(f"summary: passed={sum(r.passed for r in results)}/{len(results)}")
+        print("new_llm_calls=0 new_rerank_calls=0")
+        print(f"trace_rerank_cost_cny={rerank_cost:.6f}")
+        print(f"report={path}")
+        return
+
+    started_at = datetime.now(UTC)
     engine = get_engine()
     sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
 
     results: list[SmokeResult] = []
+    traces: list[SmokeTrace] = []
     try:
         for case in cases:
-            result = await evaluate_case(case, sessionmaker)
+            result, smoke_trace = await evaluate_case(case, sessionmaker)
             results.append(result)
-            status = "PASS" if result.passed else "FAIL"
-            print(
-                f"[{status}] {case.id} zero_hit={result.predicted_zero_hit} "
-                f"hits={len(result.expected_hits)} "
-                f"cand@50={percent_text(result.candidate_recall_at_50)} "
-                f"rerank@10={percent_text(result.rerank_recall_at_10)} "
-                f"mrr@10={percent_text(result.mrr_at_10)} "
-                f"final={percent_text(result.final_context_recall)} "
-                f"headings={len(result.expected_heading_hits)}/"
-                f"{len(case.expected_heading_paths)} "
-                f"anchors={len(result.evidence_anchor_hits)}/"
-                f"{len(case.evidence_anchors)} "
-                f"hard_neg={len(result.hard_negative_hits)} "
-                f"chunks={result.retrieved_chunk_count} "
-                f"rerank_tokens={result.rerank_tokens}"
-            )
+            traces.append(smoke_trace)
+            print_result(result)
 
         llm_calls, llm_cost = await summarize_llm_costs(sessionmaker, started_at)
-        report = render_report(results, llm_calls, llm_cost)
-        args.report_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         path = args.report_dir / (
-            "hybrid-search-note-smoke-"
-            f"{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}.md"
+            f"hybrid-search-note-smoke-{timestamp}.md"
+        )
+        trace_path = args.report_dir / (
+            f"hybrid-search-note-smoke-{timestamp}.trace.jsonl"
+        )
+        write_traces(trace_path, traces)
+        report = render_report(
+            results,
+            llm_calls,
+            llm_cost,
+            trace_output_path=trace_path,
         )
         path.write_text(report, encoding="utf-8")
 
@@ -919,9 +1199,16 @@ async def main() -> None:
         print(f"rerank_cost_cny={rerank_cost:.6f}")
         print(f"observed_cost_cny={(llm_cost + rerank_cost):.6f}")
         print(f"report={path}")
+        print(f"trace={trace_path}")
     finally:
-        await engine.dispose()
-        await close_clients()
+        try:
+            await asyncio.wait_for(engine.dispose(), timeout=5)
+        except TimeoutError:
+            print("warning: timed out while disposing database engine")
+        try:
+            await asyncio.wait_for(close_clients(), timeout=15)
+        except TimeoutError:
+            print("warning: timed out while closing smoke eval clients")
 
 
 if __name__ == "__main__":

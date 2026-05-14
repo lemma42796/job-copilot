@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 工程踩坑录(Lessons Learned)
 owner: lemma42796
-last_updated: 2026-05-11
+last_updated: 2026-05-14
 purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因 + 解决方案,按主题分 8 类。每条字段统一为「症状 / 根因 / 修法 / 沉淀」,链接详细切片归档,作为面向外部读者(招聘 / 协作者 / 博客读者)的索引视图。
 ---
 
@@ -94,6 +94,13 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 - **根因**:中文专有名词(LangGraph / Kubernetes / TypeScript)在 embedding 空间里没有强 anchor,纯向量召回不稳。**Hybrid search(BM25 + 向量)是中文场景的合格线**
 - **修法**:子任务 4-A — Postgres `tsvector`(zhparser/pg_jieba 中文分词) + pgvector 双路召回,application 层 RRF 融合(`1/(k+rank)`,k=60)
 - **沉淀**:v1 子任务 4-A
+
+## 3.4 评测脚本不要在 noop 观测模式下频繁构造 SDK client
+
+- **症状**:hybrid_search note/chunk smoke 已写出 report / trace,但进程在收尾阶段疑似卡住,需要手动 kill。
+- **根因**:CLI 脚本不经过 `main.py` 的 Langfuse env mirror;无 key / noop 场景下仍反复 `Langfuse().generation()`,SDK 仍注册 background consumer 与 atexit shutdown。脚本退出时清理线程比业务路径更难观察。
+- **修法**:抽 `infra.langfuse` helper:只有 public/secret key 齐全才构造 Langfuse client,手动 generation 走进程内复用;DashScope OpenAI-compatible client 也改成有 key 才走 `langfuse.openai`,否则走原生 OpenAI client。评测脚本收尾只关闭已存在的 singleton,不为了 cleanup 反向构造 embedder / llm client。
+- **沉淀**:观测 SDK 的 noop 模式不能默认等同于"零资源";CLI / eval / batch 脚本要把 observability client lifecycle 当成显式资源管理。
 
 ---
 

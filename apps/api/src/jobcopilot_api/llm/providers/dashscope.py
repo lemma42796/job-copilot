@@ -1,7 +1,8 @@
 """DashscopeProvider — DashScope OpenAI-compatible endpoint (ADR-0003).
 
 Endpoint: `https://dashscope.aliyuncs.com/compatible-mode/v1`
-SDK:      `langfuse.openai.AsyncOpenAI`(自动 Langfuse instrument;走百炼 base_url + api_key)。
+SDK:      OpenAI-compatible AsyncOpenAI;有 Langfuse key 时才走
+          `langfuse.openai` 自动 instrument,否则走原生 OpenAI client。
           错误类仍从 `openai` 导(langfuse 只 wrap 客户端类,不 wrap 错误)。
 
 Error mapping (ADR-0004 D3):
@@ -22,7 +23,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from langfuse.openai import AsyncOpenAI
 from openai import (
     APIConnectionError,
     APIStatusError,
@@ -36,6 +36,7 @@ from openai import (
     UnprocessableEntityError,
 )
 
+from jobcopilot_api.infra.langfuse import build_async_openai_client
 from jobcopilot_api.llm.client import (
     OnTokenCallback,
     Provider,
@@ -77,7 +78,7 @@ class DashscopeProvider(Provider):
     def __init__(self, *, api_key: str, base_url: str = DASHSCOPE_BASE_URL) -> None:
         if not api_key:
             raise ValueError("DashscopeProvider requires a non-empty api_key")
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._client = build_async_openai_client(api_key=api_key, base_url=base_url)
 
     async def complete(
         self,

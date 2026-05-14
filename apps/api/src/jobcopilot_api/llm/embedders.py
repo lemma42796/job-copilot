@@ -20,8 +20,6 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Protocol
 
-from langfuse import Langfuse
-from langfuse.openai import AsyncOpenAI
 from openai import (
     APIConnectionError,
     APIStatusError,
@@ -43,6 +41,10 @@ from tenacity import (
 )
 from tenacity.wait import wait_base
 
+from jobcopilot_api.infra.langfuse import (
+    build_async_openai_client,
+    start_generation,
+)
 from jobcopilot_api.llm.errors import LLMAuthError, LLMTimeoutError, LLMUpstreamError
 from jobcopilot_api.llm.providers.dashscope import DASHSCOPE_BASE_URL
 
@@ -180,11 +182,14 @@ class DashscopeEmbedder:
         timeout_s: float = 30.0,
         retry_attempts: int = DEFAULT_RETRY_ATTEMPTS,
         retry_wait: wait_base = DEFAULT_RETRY_WAIT,
-        client: AsyncOpenAI | None = None,
+        client: Any | None = None,
     ) -> None:
         if not api_key and client is None:
             raise ValueError("DashscopeEmbedder requires a non-empty api_key")
-        self._client = client or AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._client = client or build_async_openai_client(
+            api_key=api_key,
+            base_url=base_url,
+        )
         self._model = model
         self._dim = dimensions
         self._timeout_s = timeout_s
@@ -220,10 +225,10 @@ class DashscopeEmbedder:
         return result
 
     async def _call(self, texts: list[str]) -> EmbeddingResult:
-        # Langfuse 2.x 的 OpenAI auto-instrument 只 patch chat/completions/responses,
-        # 不覆盖 embeddings.create — 这里手动建 generation 让 trace 进 langfuse。
-        # noop 模式(无 PUBLIC_KEY)下 generation() 是 no-op,不影响业务。
-        generation = Langfuse().generation(
+        # Langfuse 2.x 的 OpenAI auto-instrument 不覆盖 embeddings.create。
+        # 无 Langfuse key 时 start_generation 返回 no-op,避免 CLI 评测脚本
+        # 因 disabled SDK background threads 卡在解释器退出阶段。
+        generation = start_generation(
             name="embedder",
             model=self._model,
             input=texts,

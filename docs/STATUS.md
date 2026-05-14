@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-13
+last_updated: 2026-05-14
 purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指向其他文档。
 ---
 
@@ -23,18 +23,19 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 最新状态:
 
-- 本地 dogfood 笔记库已扩充到 `test-notes/llm-notes` **119 篇 / 532,999 字符**,覆盖后端开发、LLM 应用开发(RAG/Agent/Judge/评测/Prompt/可观测)和计算机基础;该目录仍被 gitignore,只作本地 dogfood 语料。
-- 本地 Docker Postgres 已对齐当前 dogfood 全库:active notes 119 / chunks 2,090 / embedded 2,090 / pending 0;已清理 9 篇旧残留及其 77 个旧 chunks。
-- 已建立 `evals/suites/hybrid_search/` smoke 资产:15 篇小 fixture(`notes_fixture/`,63,808 字符) + 12 条全库 chunk/anchor 标签(`dataset.note_smoke.jsonl`)。
-- `eval_hybrid_search_note_smoke.py` 已升级为 note/chunk-level report:输出 `candidate_recall@50 / rerank_recall@10 / mrr@10 / final_context_recall / final_context_precision / expected_heading_coverage / evidence_anchor_coverage`。
-- smoke report 已支持逐 case 展开 top chunks:`chunk_id / note_path / heading_path / rerank_score / labels / anchor hits / hard-negative rank`,用于区分 note-level 误伤与真实检索失败。
-- 已按用户指令跑过 chunk-level smoke report:`evals/reports/hybrid-search-note-smoke-20260513-133024.md`;旧标签口径下 12 cases 通过 6/12,`candidate_recall@50` 86.67%,`rerank_recall@10` 56.50%,`final_context_recall` 59.83%,`final_context_precision` 6.63%,zero-hit 0/2,实测 rerank 成本 ¥0.195307。
-- 已复核并收紧 `dataset.note_smoke.jsonl` 标签:把 anchor 汇总 / 追问 / 诊断 / 背景 chunk 从 `direct_evidence_chunk_ids` 挪到 `necessary_context_chunk_ids` 或移出;`hs_note_005` 保留为真实检索失败样本。
-- 当前待重跑:用新标签重新生成 chunk-level report,再判断真实瓶颈;预期重点仍是 `hs_note_005` 私有 SSE 恢复事实召回失败、`hs_note_011/012` zero-hit 守门失败。
-- 本轮补齐 **M2 RAG 质量评测方案**:`docs/6-EVAL_PLAN.md` 第 7 节改为完整链路补测,覆盖 `candidate_recall@50 / rerank_recall@10 / mrr@10 / final_context_recall / final_context_precision / zero_hit_precision / unsafe_boundary_rate`。
+- 本地 dogfood 笔记库仍为 `test-notes/llm-notes` **119 篇 / 532,999 字符**;Docker Postgres 对齐 active notes 119 / chunks 2,090 / embedded 2,090 / pending 0。
+- `evals/suites/hybrid_search/` smoke 资产已进入 chunk-level 口径:15 篇 fixture + 12 条全库 chunk/anchor 标签;`direct_evidence_chunk_ids` 只放可直接回答 query 的 chunk。
+- `eval_hybrid_search_note_smoke.py` 已支持 live report + `.trace.jsonl` + `--score-trace` 离线重算;只改标签 / 打分口径时复用 trace,不重复调用 query rewrite / rerank。
+- 评测指标分母已澄清并落代码:`candidate_recall@50 / rerank_recall@10 / mrr@10 / final_context_recall` 对有 direct evidence 的非 0 命中样本做 macro average;expected zero-hit 排除,unexpected zero-hit 的 final recall 记 0。
+- 0 命中分支已保存 `candidate_chunk_ids`:即使 `predicted_zero_hit=true`,也能检查系统是否召回了 1-2 个正确证据但未达出题阈值。
+- 新标签基线已按用户指令跑过:`evals/reports/hybrid-search-note-smoke-20260514-063244.md` + `.trace.jsonl`;12 cases 通过 6/12,`candidate_recall@50` 95.00%,`rerank_recall@10` 73.33%,`mrr@10` 70.83%,`final_context_recall` 73.33%,`final_context_precision` 6.63%,zero-hit 0/2,成本 ¥0.195307。
+- reranker 输入已试加 `folder_path + heading_path + content` 结构化 metadata;对照 report `hybrid-search-note-smoke-20260514-084642.md` 通过 7/12,但 `rerank_recall@10` 降到 67.50%,不是净提升,下一会话需决定保留 / 调整 / 回滚。
+- 已补 `docs/6-EVAL_PLAN.md` 第 7 节:trace schema、离线 rescore 跑法、macro average 口径、0 命中 candidate 保存语义。
+- 已补 `docs/9-LESSONS.md` §3.4:CLI 评测脚本不要在 Langfuse noop 模式下频繁构造 SDK client。
+- 本轮代码侧已缓解 smoke 脚本收尾卡住:无 Langfuse key 时不构造 Langfuse SDK / `langfuse.openai` client;评测脚本 cleanup 只关闭已存在的 embedder / llm singleton 并 shutdown Langfuse singleton。尚未按新代码重跑验证,下一会话先由用户手动确认脚本是否能正常退出。
 - **M2 已由用户确认完成**:聊天框主题 query → 全库 RAG → 出题 → 答题 → Judge 三层评分 → session 恢复已跑通。
 - Context Cache 已验证 provider-side 命中,但因 5 分钟 TTL 不适合当前一次性答题流,已默认关闭显式 `cache_control`;后续多轮讨论面试题时再打开。
-- 最新功能提交主题:`eval: add chunk-level hybrid search metrics`;M2 tag `v0.4-m2-end` 仍待用户确认。
+- 最新保存主题:`eval: add trace scoring and langfuse cleanup`;M2 tag `v0.4-m2-end` 仍待用户确认。
 - M2 retrieval quiz pipeline 代码已提交:`103d882 feat: add m2 retrieval quiz pipeline`。
 - M2.1 Agentic RAG 文档已提交:`fd892fa docs: add agentic interview coach roadmap`。
 - M2 AnswerJudge 初版已落地:三层 evidence prompt / agent / submit SSE / Python 算分 / fabricated 锁顶。
@@ -61,7 +62,8 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **百炼 Context Cache 代码已接入但默认关闭**:保留稳定 chunks 前缀渲染与审计字段;后续多轮面试讨论再开启显式 cache。
 - **M2.1 Agentic RAG 方向锁定**:`InterviewCoachAgent` 不做泛化多 Agent,只做面试状态机:检索 → 出题 → 等答 → 评分 → 决策 → 追问 / 总结。
 - **hybrid_search smoke 标签已升级并复核一轮**:`evals/suites/hybrid_search/dataset.note_smoke.jsonl` 覆盖 M2/M3 边界、Context Cache、reranker/query rewrite、AnswerJudge、SSE 恢复、MVCC、Outbox、epoll、provider timeout/429、zero-hit;`direct_evidence_chunk_ids` 只放可直接回答 query 的 chunk。
-- **hybrid_search note/chunk smoke 脚本已落地**:`apps/api/scripts/eval_hybrid_search_note_smoke.py` 只读 DB / 写本地 report(`evals/reports/` gitignore),输出 top notes、top chunks、heading/anchor coverage、hard-negative intrusion、zero-hit、召回指标与成本。
+- **hybrid_search note/chunk smoke 脚本已落地**:`apps/api/scripts/eval_hybrid_search_note_smoke.py` 只读 DB / 写本地 report + trace(`evals/reports/` gitignore),输出 top notes、top chunks、heading/anchor coverage、hard-negative intrusion、zero-hit、召回指标与成本;`--score-trace` 支持只按新标签离线重算。
+- **eval 脚本资源收尾已补强**:`infra.langfuse` 避免无 key/noop 场景构造 Langfuse SDK client;DashScope client 有 Langfuse key 才走 `langfuse.openai`;smoke cleanup 不再为关闭而懒加载 embedder / llm singleton。
 - **百炼价格 / rerank 限制已记录**:`qwen3.6-flash` 控制台价格、Responses 工具价、`qwen3-rerank` 500 docs / token 上限 / `gte-rerank-v2` 下线提醒已写入代码注释与常量;rerank 请求本地截断到 500 docs。
 - **CI 策略调整**:所有 GitHub workflow 改为手动触发,避免 push 自动跑测试和邮件通知。
 
@@ -69,12 +71,13 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **重跑 chunk-level smoke 并基于新标签做归因**:先确认 `candidate_recall@50 / rerank_recall@10 / final_context_recall / final_context_precision` 的真实基线,再优先处理 `hs_note_005` 和 zero-hit 守门。
+1. **先确认 smoke 脚本能正常收尾,再定 reranker metadata 去留**:用户手动重跑一次最新脚本;若不再卡住,对比 `20260514-063244` 与 `20260514-084642` trace/report,优先解释 `rerank_recall@10` 从 73.33% 降到 67.50% 的样本差异。
 
 备选:
 
 - 为 zero-hit 增加 core entity / anchor coverage 守门:Rust、Kubernetes Operator 这类核心实体缺失时不能只靠向量近邻过门。
 - 针对 `hs_note_005` 分析 query rewrite 是否把 JobCopilot 私有恢复事实稀释成通用 SSE / WebSocket / 前端恢复 query。
+- 如果 metadata 方向继续做,优先拆成字段化 reranker 输入 A/B,不要只靠单条 query prompt 微调。
 - smoke 评测闭环稳定后,开 M2.1 `InterviewCoachAgent` 状态机骨架和 `decide_next_action` / `generate_followup`。
 
 # 已锁定关键决策
@@ -108,6 +111,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **[来自 M2] Context Cache 当前默认关闭**:一次性答题流不依赖 5 分钟 TTL;等 M2.1 多轮面试讨论再开启显式 cache。
 - **[来自 M2] 本地开发优先 Docker Postgres + 本机 API**:api 容器需额外处理 `DASHSCOPE_API_KEY` 映射,日常避免走全 compose。
 - **[来自 M2.1] Agent 不做炫技多 Agent**:只做与面试陪练闭环直接相关的状态机、工具、分支、恢复、评测。
+- **[来自 M2.1] CLI / eval 脚本显式管理观测 SDK 生命周期**:Langfuse noop 不等于零资源;无 key 时不要构造 SDK client。
 
 # 文档导航
 
