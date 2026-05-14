@@ -2,9 +2,9 @@
 
 This is intentionally smaller than a formal eval:
 - reads `evals/suites/hybrid_search/dataset.note_smoke.jsonl`
-- runs the same query rewrite -> hybrid search -> rerank -> parent-doc path
+- runs the same query rewrite -> hybrid search -> optional rerank -> parent-doc path
 - prints top notes, top chunks, heading/anchor coverage, hard-negative intrusion,
-  formal retrieval metrics, zero-hit behavior, and cost
+  rerank movement, formal retrieval metrics, zero-hit behavior, and cost
 """
 
 from __future__ import annotations
@@ -28,9 +28,14 @@ from jobcopilot_api.infra import llm as llm_infra
 from jobcopilot_api.infra.db import get_engine
 from jobcopilot_api.infra.langfuse import shutdown_langfuse
 from jobcopilot_api.models.llm_call import LlmCall
+from jobcopilot_api.models.note_chunk import NoteChunk
 from jobcopilot_api.schemas.retrieval import PipelineResult, RetrievedChunk
 from jobcopilot_api.services.query_rewriter import rewrite_query
-from jobcopilot_api.services.reranker import rerank, reset_http_client
+from jobcopilot_api.services.reranker import (
+    QWEN3_RERANK_MAX_DOCUMENTS,
+    rerank,
+    reset_http_client,
+)
 from jobcopilot_api.services.retrieval_pipeline import (
     HYBRID_TOP_K_PER_QUERY,
     MIN_CHUNKS_FOR_QUIZ,
@@ -42,6 +47,9 @@ from jobcopilot_api.services.retrieval_pipeline import (
 )
 from jobcopilot_api.services.search_service import global_hybrid_search
 from jobcopilot_api.settings import settings
+
+
+RERANK_DIAGNOSTIC_TOP_K = 50
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,32 @@ class ChunkHit:
 
 
 @dataclass(frozen=True)
+class TraceRerankMovement:
+    chunk_id: int
+    note_path: str
+    heading_path: list[str]
+    candidate_rank: int | None
+    rerank_rank: int | None
+    rank_delta: int | None
+    rerank_score: float | None
+
+
+@dataclass(frozen=True)
+class RerankMovement:
+    chunk_id: int
+    note_path: str
+    heading_path: list[str]
+    candidate_rank: int | None
+    rerank_rank: int | None
+    rank_delta: int | None
+    rerank_score: float | None
+    expected_note: bool
+    hard_negative_note: bool
+    direct_evidence: bool
+    necessary_context: bool
+
+
+@dataclass(frozen=True)
 class TraceFinalChunk:
     chunk_id: int
     note_path: str
@@ -87,9 +121,14 @@ class SmokeTrace:
     case_id: str
     query: str
     predicted_zero_hit: bool
+    rerank_mode: str
+    rerank_input_top_k: int
+    selected_top_k: int
+    parent_doc_mode: str
     expanded_queries: list[str]
     candidate_chunk_ids: list[int]
     rerank_chunk_ids: list[int]
+    rerank_movements: list[TraceRerankMovement]
     final_chunks: list[TraceFinalChunk]
     rerank_tokens: int
     rerank_cost_cny: Decimal
@@ -101,6 +140,11 @@ class PipelineTrace:
     result: PipelineResult
     candidate_chunks: list[RetrievedChunk]
     reranked_chunks: list[RetrievedChunk]
+    rerank_movements: list[TraceRerankMovement]
+    rerank_mode: str
+    rerank_input_top_k: int
+    selected_top_k: int
+    parent_doc_mode: str
     rerank_tokens: int
     rerank_cost_cny: Decimal
     predicted_zero_hit: bool = False
@@ -112,9 +156,14 @@ class SmokeResult:
     case: SmokeCase
     passed: bool
     predicted_zero_hit: bool
+    rerank_mode: str
+    rerank_input_top_k: int
+    selected_top_k: int
+    parent_doc_mode: str
     expanded_queries: list[str]
     candidate_chunk_ids: list[int]
     rerank_chunk_ids: list[int]
+    rerank_movements: list[RerankMovement]
     top_note_paths: list[str]
     top_chunks: list[ChunkHit]
     candidate_direct_evidence_hits: list[int]
@@ -178,6 +227,11 @@ def load_cases(path: Path) -> list[SmokeCase]:
 async def run_pipeline_with_cost(
     session: AsyncSession,
     user_query: str,
+    *,
+    rerank_mode: str,
+    rerank_input_top_k: int,
+    selected_top_k: int,
+    parent_doc_mode: str,
 ) -> PipelineTrace:
     rewrite_out = await rewrite_query(user_query)
     expanded_queries = rewrite_out.expanded_queries
@@ -189,7 +243,12 @@ async def run_pipeline_with_cost(
         )
         hybrid_rankings.append(ranking)
     fused = multi_query_rrf(hybrid_rankings, k=RRF_K)
+    rerank_input = fused[:rerank_input_top_k]
     candidate_base = fused[:50]
+    diagnostic_top_k = min(
+        max(RERANK_DIAGNOSTIC_TOP_K, selected_top_k),
+        rerank_input_top_k,
+    )
 
     if len(fused) < MIN_CHUNKS_FOR_QUIZ:
         note_titles = await fetch_note_titles(
@@ -213,17 +272,52 @@ async def run_pipeline_with_cost(
             ),
             candidate_chunks=candidate_chunks,
             reranked_chunks=[],
+            rerank_movements=build_trace_rerank_movements(
+                candidate_base,
+                candidate_base,
+                [],
+                note_titles,
+            ),
+            rerank_mode=rerank_mode,
+            rerank_input_top_k=rerank_input_top_k,
+            selected_top_k=selected_top_k,
+            parent_doc_mode=parent_doc_mode,
             rerank_tokens=0,
             rerank_cost_cny=Decimal("0"),
             predicted_zero_hit=True,
             error=detail,
         )
 
-    rerank_result = await rerank(user_query, fused, top_k=RERANK_TOP_K)
-    expanded_scored = await expand_to_parent_docs(session, rerank_result.scored)
+    if rerank_mode == "provider":
+        rerank_result = await rerank(
+            user_query,
+            rerank_input,
+            top_k=diagnostic_top_k,
+        )
+        diagnostic_scored = rerank_result.scored
+        top_scored = rerank_result.scored[:selected_top_k]
+        rerank_tokens = rerank_result.total_tokens
+        rerank_cost_cny = rerank_result.cost_cny
+    elif rerank_mode == "none":
+        diagnostic_scored = [
+            (chunk, None)
+            for chunk in rerank_input[:diagnostic_top_k]
+        ]
+        top_scored = [(chunk, 0.0) for chunk in rerank_input[:selected_top_k]]
+        rerank_tokens = 0
+        rerank_cost_cny = Decimal("0")
+    else:
+        raise ValueError(f"unsupported rerank_mode: {rerank_mode}")
+
+    if parent_doc_mode == "on":
+        expanded_scored = await expand_to_parent_docs(session, top_scored)
+    elif parent_doc_mode == "off":
+        expanded_scored = top_scored
+    else:
+        raise ValueError(f"unsupported parent_doc_mode: {parent_doc_mode}")
     all_chunks = [
         *candidate_base,
-        *[chunk for chunk, _ in rerank_result.scored],
+        *[chunk for chunk, _ in diagnostic_scored],
         *[chunk for chunk, _ in expanded_scored],
     ]
     note_ids = list({chunk.note_id for chunk in all_chunks})
@@ -246,8 +340,14 @@ async def run_pipeline_with_cost(
             note_title=note_titles.get(chunk.note_id, ""),
             rerank_score=score,
         )
-        for chunk, score in rerank_result.scored[:RERANK_TOP_K]
+        for chunk, score in top_scored
     ]
+    rerank_movements = build_trace_rerank_movements(
+        candidate_base,
+        rerank_input,
+        diagnostic_scored,
+        note_titles,
+    )
     final_chunks = [
         RetrievedChunk(
             chunk=chunk,
@@ -265,13 +365,90 @@ async def run_pipeline_with_cost(
         ),
         candidate_chunks=candidate_chunks,
         reranked_chunks=reranked_chunks,
-        rerank_tokens=rerank_result.total_tokens,
-        rerank_cost_cny=rerank_result.cost_cny,
+        rerank_movements=rerank_movements,
+        rerank_mode=rerank_mode,
+        rerank_input_top_k=rerank_input_top_k,
+        selected_top_k=selected_top_k,
+        parent_doc_mode=parent_doc_mode,
+        rerank_tokens=rerank_tokens,
+        rerank_cost_cny=rerank_cost_cny,
     )
 
 
 def note_path(item: RetrievedChunk) -> str:
     return "/".join([*item.folder_path, f"{item.note_title}.md"])
+
+
+def chunk_note_path(chunk: NoteChunk, note_title: str) -> str:
+    return "/".join([*chunk.folder_path, f"{note_title}.md"])
+
+
+def build_trace_rerank_movements(
+    candidate_chunks: list[NoteChunk],
+    rerank_input_chunks: list[NoteChunk],
+    rerank_scored: list[tuple[NoteChunk, float | None]],
+    note_titles: dict[int, str],
+) -> list[TraceRerankMovement]:
+    candidate_rank_by_id = {
+        int(chunk.id): rank
+        for rank, chunk in enumerate(rerank_input_chunks, start=1)
+    }
+    rerank_by_id = {
+        int(chunk.id): (
+            rank,
+            float(score) if score is not None else None,
+        )
+        for rank, (chunk, score) in enumerate(
+            rerank_scored[:RERANK_DIAGNOSTIC_TOP_K],
+            start=1,
+        )
+    }
+    by_id: dict[int, NoteChunk] = {}
+    for chunk in candidate_chunks:
+        by_id.setdefault(int(chunk.id), chunk)
+    for chunk, _ in rerank_scored[:RERANK_DIAGNOSTIC_TOP_K]:
+        by_id.setdefault(int(chunk.id), chunk)
+
+    def sort_key(chunk: NoteChunk) -> tuple[int, int, int]:
+        chunk_id = int(chunk.id)
+        candidate_rank = candidate_rank_by_id.get(chunk_id)
+        rerank_info = rerank_by_id.get(chunk_id)
+        rerank_rank = rerank_info[0] if rerank_info is not None else None
+        return (
+            candidate_rank if candidate_rank is not None else 10**9,
+            rerank_rank if rerank_rank is not None else 10**9,
+            chunk_id,
+        )
+
+    movements: list[TraceRerankMovement] = []
+    for chunk in sorted(by_id.values(), key=sort_key):
+        chunk_id = int(chunk.id)
+        candidate_rank = candidate_rank_by_id.get(chunk_id)
+        rerank_info = rerank_by_id.get(chunk_id)
+        if rerank_info is None:
+            rerank_rank = None
+            rerank_score = None
+        else:
+            rerank_rank, rerank_score = rerank_info
+        rank_delta = (
+            rerank_rank - candidate_rank
+            if candidate_rank is not None and rerank_rank is not None
+            else None
+        )
+        movements.append(
+            TraceRerankMovement(
+                chunk_id=chunk_id,
+                note_path=chunk_note_path(
+                    chunk, note_titles.get(chunk.note_id, "")
+                ),
+                heading_path=list(chunk.heading_path),
+                candidate_rank=candidate_rank,
+                rerank_rank=rerank_rank,
+                rank_delta=rank_delta,
+                rerank_score=rerank_score,
+            )
+        )
+    return movements
 
 
 def trace_final_chunk(item: RetrievedChunk) -> TraceFinalChunk:
@@ -371,6 +548,30 @@ def build_chunk_hits(
     return out
 
 
+def build_rerank_movements(
+    case: SmokeCase,
+    trace_movements: list[TraceRerankMovement],
+) -> list[RerankMovement]:
+    direct_evidence_chunk_ids = set(case.direct_evidence_chunk_ids)
+    necessary_context_chunk_ids = set(case.necessary_context_chunk_ids)
+    return [
+        RerankMovement(
+            chunk_id=item.chunk_id,
+            note_path=item.note_path,
+            heading_path=list(item.heading_path),
+            candidate_rank=item.candidate_rank,
+            rerank_rank=item.rerank_rank,
+            rank_delta=item.rank_delta,
+            rerank_score=item.rerank_score,
+            expected_note=item.note_path in case.expected_note_paths,
+            hard_negative_note=item.note_path in case.hard_negative_note_paths,
+            direct_evidence=item.chunk_id in direct_evidence_chunk_ids,
+            necessary_context=item.chunk_id in necessary_context_chunk_ids,
+        )
+        for item in trace_movements
+    ]
+
+
 def matched_expected_headings(
     case: SmokeCase, chunks: list[ChunkHit]
 ) -> list[list[str]]:
@@ -412,9 +613,25 @@ def trace_to_json(trace: SmokeTrace) -> dict[str, object]:
         "case_id": trace.case_id,
         "query": trace.query,
         "predicted_zero_hit": trace.predicted_zero_hit,
+        "rerank_mode": trace.rerank_mode,
+        "rerank_input_top_k": trace.rerank_input_top_k,
+        "selected_top_k": trace.selected_top_k,
+        "parent_doc_mode": trace.parent_doc_mode,
         "expanded_queries": trace.expanded_queries,
         "candidate_chunk_ids": trace.candidate_chunk_ids,
         "rerank_chunk_ids": trace.rerank_chunk_ids,
+        "rerank_movements": [
+            {
+                "chunk_id": movement.chunk_id,
+                "note_path": movement.note_path,
+                "heading_path": movement.heading_path,
+                "candidate_rank": movement.candidate_rank,
+                "rerank_rank": movement.rerank_rank,
+                "rank_delta": movement.rank_delta,
+                "rerank_score": movement.rerank_score,
+            }
+            for movement in trace.rerank_movements
+        ],
         "final_chunks": [
             {
                 "chunk_id": chunk.chunk_id,
@@ -436,11 +653,48 @@ def trace_from_json(obj: dict[str, object]) -> SmokeTrace:
         case_id=str(obj["case_id"]),
         query=str(obj["query"]),
         predicted_zero_hit=bool(obj["predicted_zero_hit"]),
+        rerank_mode=str(obj.get("rerank_mode", "provider")),
+        rerank_input_top_k=int(
+            obj.get("rerank_input_top_k", QWEN3_RERANK_MAX_DOCUMENTS)
+        ),
+        selected_top_k=int(obj.get("selected_top_k", RERANK_TOP_K)),
+        parent_doc_mode=str(obj.get("parent_doc_mode", "on")),
         expanded_queries=[str(x) for x in obj.get("expanded_queries", [])],
         candidate_chunk_ids=[
             int(x) for x in obj.get("candidate_chunk_ids", [])
         ],
         rerank_chunk_ids=[int(x) for x in obj.get("rerank_chunk_ids", [])],
+        rerank_movements=[
+            TraceRerankMovement(
+                chunk_id=int(movement["chunk_id"]),
+                note_path=str(movement["note_path"]),
+                heading_path=[
+                    str(part) for part in movement.get("heading_path", [])
+                ],
+                candidate_rank=(
+                    int(movement["candidate_rank"])
+                    if movement.get("candidate_rank") is not None
+                    else None
+                ),
+                rerank_rank=(
+                    int(movement["rerank_rank"])
+                    if movement.get("rerank_rank") is not None
+                    else None
+                ),
+                rank_delta=(
+                    int(movement["rank_delta"])
+                    if movement.get("rank_delta") is not None
+                    else None
+                ),
+                rerank_score=(
+                    float(movement["rerank_score"])
+                    if movement.get("rerank_score") is not None
+                    else None
+                ),
+            )
+            for movement in obj.get("rerank_movements", [])
+            if isinstance(movement, dict)
+        ],
         final_chunks=[
             TraceFinalChunk(
                 chunk_id=int(chunk["chunk_id"]),
@@ -553,6 +807,7 @@ def diagnose_failure(
 
 
 def score_case_trace(case: SmokeCase, trace: SmokeTrace) -> SmokeResult:
+    rerank_movements = build_rerank_movements(case, trace.rerank_movements)
     if trace.predicted_zero_hit:
         candidate_hits = match_direct_evidence_hits(
             case.direct_evidence_chunk_ids, trace.candidate_chunk_ids
@@ -570,9 +825,14 @@ def score_case_trace(case: SmokeCase, trace: SmokeTrace) -> SmokeResult:
             case=case,
             passed=passed,
             predicted_zero_hit=True,
+            rerank_mode=trace.rerank_mode,
+            rerank_input_top_k=trace.rerank_input_top_k,
+            selected_top_k=trace.selected_top_k,
+            parent_doc_mode=trace.parent_doc_mode,
             expanded_queries=trace.expanded_queries or [case.query],
             candidate_chunk_ids=trace.candidate_chunk_ids,
             rerank_chunk_ids=trace.rerank_chunk_ids,
+            rerank_movements=rerank_movements,
             top_note_paths=[],
             top_chunks=[],
             candidate_direct_evidence_hits=candidate_hits,
@@ -655,9 +915,14 @@ def score_case_trace(case: SmokeCase, trace: SmokeTrace) -> SmokeResult:
         case=case,
         passed=passed,
         predicted_zero_hit=False,
+        rerank_mode=trace.rerank_mode,
+        rerank_input_top_k=trace.rerank_input_top_k,
+        selected_top_k=trace.selected_top_k,
+        parent_doc_mode=trace.parent_doc_mode,
         expanded_queries=trace.expanded_queries,
         candidate_chunk_ids=trace.candidate_chunk_ids,
         rerank_chunk_ids=trace.rerank_chunk_ids,
+        rerank_movements=rerank_movements,
         top_note_paths=top_notes,
         top_chunks=top_chunks,
         candidate_direct_evidence_hits=candidate_hits,
@@ -691,18 +956,35 @@ def score_case_trace(case: SmokeCase, trace: SmokeTrace) -> SmokeResult:
 async def evaluate_case(
     case: SmokeCase,
     sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    rerank_mode: str,
+    rerank_input_top_k: int,
+    selected_top_k: int,
+    parent_doc_mode: str,
 ) -> tuple[SmokeResult, SmokeTrace]:
     try:
         async with sessionmaker() as session:
-            trace = await run_pipeline_with_cost(session, case.query)
+            trace = await run_pipeline_with_cost(
+                session,
+                case.query,
+                rerank_mode=rerank_mode,
+                rerank_input_top_k=rerank_input_top_k,
+                selected_top_k=selected_top_k,
+                parent_doc_mode=parent_doc_mode,
+            )
     except NoChunksForQueryError as exc:
         smoke_trace = SmokeTrace(
             case_id=case.id,
             query=case.query,
             predicted_zero_hit=True,
+            rerank_mode=rerank_mode,
+            rerank_input_top_k=rerank_input_top_k,
+            selected_top_k=selected_top_k,
+            parent_doc_mode=parent_doc_mode,
             expanded_queries=[case.query],
             candidate_chunk_ids=[],
             rerank_chunk_ids=[],
+            rerank_movements=[],
             final_chunks=[],
             rerank_tokens=0,
             rerank_cost_cny=Decimal("0"),
@@ -714,9 +996,14 @@ async def evaluate_case(
         case_id=case.id,
         query=case.query,
         predicted_zero_hit=trace.predicted_zero_hit,
+        rerank_mode=trace.rerank_mode,
+        rerank_input_top_k=trace.rerank_input_top_k,
+        selected_top_k=trace.selected_top_k,
+        parent_doc_mode=trace.parent_doc_mode,
         expanded_queries=trace.result.expanded_queries,
         candidate_chunk_ids=chunk_ids(trace.candidate_chunks),
         rerank_chunk_ids=chunk_ids(trace.reranked_chunks),
+        rerank_movements=trace.rerank_movements,
         final_chunks=[
             trace_final_chunk(chunk) for chunk in trace.result.retrieved_chunks
         ],
@@ -803,6 +1090,74 @@ def labels_text(chunk: ChunkHit) -> str:
     return ", ".join(labels) if labels else "-"
 
 
+def movement_labels_text(chunk: RerankMovement) -> str:
+    labels: list[str] = []
+    if chunk.direct_evidence:
+        labels.append("direct-evidence")
+    if chunk.necessary_context:
+        labels.append("necessary-context")
+    if chunk.expected_note:
+        labels.append("expected-note")
+    if chunk.hard_negative_note:
+        labels.append("hard-negative")
+    return ", ".join(labels) if labels else "-"
+
+
+def rank_text(rank: int | None) -> str:
+    return f"#{rank}" if rank is not None else "-"
+
+
+def rank_delta_text(delta: int | None) -> str:
+    if delta is None:
+        return "-"
+    return f"+{delta}" if delta > 0 else str(delta)
+
+
+def score_text(score: float | None) -> str:
+    return f"{score:.4f}" if score is not None else "-"
+
+
+def select_movement_rows(
+    movements: list[RerankMovement],
+    *,
+    selected_top_k: int,
+) -> list[RerankMovement]:
+    selected = [
+        movement
+        for movement in movements
+        if movement.direct_evidence
+        or movement.hard_negative_note
+        or (
+            movement.rerank_rank is not None
+            and movement.rerank_rank <= selected_top_k
+        )
+    ]
+
+    def priority(movement: RerankMovement) -> tuple[int, int, int]:
+        if (
+            movement.rerank_rank is not None
+            and movement.rerank_rank <= selected_top_k
+        ):
+            group = 0
+        elif movement.direct_evidence:
+            group = 1
+        elif movement.hard_negative_note:
+            group = 2
+        else:
+            group = 3
+        return (
+            group,
+            movement.rerank_rank
+            if movement.rerank_rank is not None
+            else 10**9,
+            movement.candidate_rank
+            if movement.candidate_rank is not None
+            else 10**9,
+        )
+
+    return sorted(selected, key=priority)
+
+
 def render_report(
     results: list[SmokeResult],
     llm_calls: int,
@@ -813,6 +1168,12 @@ def render_report(
 ) -> str:
     total = len(results)
     passed = sum(1 for r in results if r.passed)
+    rerank_modes = ordered_unique([r.rerank_mode for r in results])
+    rerank_input_top_ks = ordered_unique_int(
+        [r.rerank_input_top_k for r in results]
+    )
+    selected_top_ks = ordered_unique_int([r.selected_top_k for r in results])
+    parent_doc_modes = ordered_unique([r.parent_doc_mode for r in results])
     expected_zero = [r for r in results if r.case.expected_zero_hit]
     zero_passed = sum(1 for r in expected_zero if r.passed)
     rerank_tokens = sum(r.rerank_tokens for r in results)
@@ -874,6 +1235,11 @@ def render_report(
         lines.append(f"- trace_output: `{trace_output_path}`")
     lines.append(f"- cases: {total}")
     lines.append(f"- passed: {passed}/{total}")
+    lines.append(f"- rerank_mode: {', '.join(rerank_modes)}")
+    lines.append(f"- rerank_input_top_k: {int_list_text(rerank_input_top_ks)}")
+    lines.append(f"- selected_top_k: {int_list_text(selected_top_ks)}")
+    lines.append(f"- parent_doc_mode: {', '.join(parent_doc_modes)}")
+    lines.append(f"- rerank_diagnostic_top_k: {RERANK_DIAGNOSTIC_TOP_K}")
     lines.append(
         "- pass_rule: non-zero cases need at least one expected note and no "
         "hard-negative note; chunk/heading/anchor fields are diagnostics"
@@ -884,9 +1250,13 @@ def render_report(
         "zero-hit cases are excluded, unexpected zero-hit cases count final "
         "context recall as 0"
     )
+    lines.append(
+        "- rerank_mode_note: selected recall/mrr use provider rerank topK in "
+        "`provider` mode and hybrid RRF topK in `none` mode"
+    )
     lines.append(f"- candidate_recall@50: {percent_text(candidate_recall)}")
-    lines.append(f"- rerank_recall@10: {percent_text(rerank_recall)}")
-    lines.append(f"- mrr@10: {percent_text(mean_mrr)}")
+    lines.append(f"- selected_recall@K: {percent_text(rerank_recall)}")
+    lines.append(f"- mrr@K: {percent_text(mean_mrr)}")
     lines.append(f"- final_context_recall: {percent_text(final_context_recall)}")
     lines.append(
         f"- final_context_precision: {percent_text(final_context_precision)}"
@@ -928,7 +1298,7 @@ def render_report(
     lines.append(f"- observed_cost_cny: {total_cost:.6f}")
     lines.append("\n## Cases\n")
     lines.append(
-        "| ID | Result | candidate@50 | rerank@10 | mrr@10 | final recall | final precision | Zero-hit | Chunks | Failure hints |"
+        "| ID | Result | candidate@50 | selected@K | mrr@K | final recall | final precision | Zero-hit | Chunks | Failure hints |"
     )
     lines.append(
         "|----|--------|--------------|-----------|--------|--------------|-----------------|----------|--------|---------------|"
@@ -956,8 +1326,8 @@ def render_report(
         lines.append(f"- failure_hints: {list_text(r.failure_hints)}")
         lines.append(
             f"- metrics: candidate_recall@50={percent_text(r.candidate_recall_at_50)}, "
-            f"rerank_recall@10={percent_text(r.rerank_recall_at_10)}, "
-            f"mrr@10={percent_text(r.mrr_at_10)}, "
+            f"selected_recall@K={percent_text(r.rerank_recall_at_10)}, "
+            f"mrr@K={percent_text(r.mrr_at_10)}, "
             f"final_context_recall={percent_text(r.final_context_recall)}, "
             f"final_context_precision={percent_text(r.final_context_precision)}"
         )
@@ -1022,6 +1392,33 @@ def render_report(
         )
         if r.error:
             lines.append(f"- error: {md_cell(r.error)}")
+        movement_rows = select_movement_rows(
+            r.rerank_movements,
+            selected_top_k=r.selected_top_k,
+        )
+        if movement_rows:
+            lines.append("")
+            lines.append(
+                "| Chunk | Hybrid rank | Selected rank | Delta | Rerank score | Labels | Note | Heading |"
+            )
+            lines.append(
+                "|-------|----------------|-------------|-------|--------------|--------|------|---------|"
+            )
+            for movement in movement_rows:
+                lines.append(
+                    f"| #{movement.chunk_id} | "
+                    f"{rank_text(movement.candidate_rank)} | "
+                    f"{rank_text(movement.rerank_rank)} | "
+                    f"{rank_delta_text(movement.rank_delta)} | "
+                    f"{score_text(movement.rerank_score)} | "
+                    f"{movement_labels_text(movement)} | "
+                    f"{md_cell(movement.note_path)} | "
+                    f"{md_cell(path_text(movement.heading_path))} |"
+                )
+        elif r.rerank_movements:
+            lines.append("- rerank_movement: no top-rerank/direct/hard-negative rows")
+        else:
+            lines.append("- rerank_movement: unavailable in trace")
         if not r.top_chunks:
             lines.append("\nNo chunks returned.\n")
             continue
@@ -1047,10 +1444,14 @@ def print_result(result: SmokeResult) -> None:
     status = "PASS" if result.passed else "FAIL"
     print(
         f"[{status}] {result.case.id} zero_hit={result.predicted_zero_hit} "
+        f"mode={result.rerank_mode} "
+        f"input_k={result.rerank_input_top_k} "
+        f"top_k={result.selected_top_k} "
+        f"parent_doc={result.parent_doc_mode} "
         f"hits={len(result.expected_hits)} "
         f"cand@50={percent_text(result.candidate_recall_at_50)} "
-        f"rerank@10={percent_text(result.rerank_recall_at_10)} "
-        f"mrr@10={percent_text(result.mrr_at_10)} "
+        f"selected@K={percent_text(result.rerank_recall_at_10)} "
+        f"mrr@K={percent_text(result.mrr_at_10)} "
         f"final={percent_text(result.final_context_recall)} "
         f"headings={len(result.expected_heading_hits)}/"
         f"{len(result.case.expected_heading_paths)} "
@@ -1118,7 +1519,51 @@ async def main() -> None:
             "without calling rewrite/search/rerank services."
         ),
     )
+    parser.add_argument(
+        "--rerank-mode",
+        choices=("provider", "none"),
+        default="provider",
+        help=(
+            "provider calls qwen3-rerank; none selects the hybrid RRF order "
+            "directly and records zero rerank cost."
+        ),
+    )
+    parser.add_argument(
+        "--selected-top-k",
+        type=int,
+        default=RERANK_TOP_K,
+        help="Number of selected seed chunks before optional parent-doc expansion.",
+    )
+    parser.add_argument(
+        "--rerank-input-top-k",
+        type=int,
+        default=QWEN3_RERANK_MAX_DOCUMENTS,
+        help=(
+            "Number of hybrid RRF chunks passed to the selected stage. "
+            "Use this to simulate coarse topK -> rerank topN."
+        ),
+    )
+    parser.add_argument(
+        "--parent-doc-mode",
+        choices=("on", "off"),
+        default="on",
+        help="on expands selected chunks to parent-doc context; off uses seeds only.",
+    )
     args = parser.parse_args()
+    if args.selected_top_k < 1:
+        raise SystemExit("--selected-top-k must be >= 1")
+    if args.selected_top_k > QWEN3_RERANK_MAX_DOCUMENTS:
+        raise SystemExit(
+            f"--selected-top-k must be <= {QWEN3_RERANK_MAX_DOCUMENTS}"
+        )
+    if args.rerank_input_top_k < 1:
+        raise SystemExit("--rerank-input-top-k must be >= 1")
+    if args.rerank_input_top_k > QWEN3_RERANK_MAX_DOCUMENTS:
+        raise SystemExit(
+            f"--rerank-input-top-k must be <= {QWEN3_RERANK_MAX_DOCUMENTS}"
+        )
+    if args.selected_top_k > args.rerank_input_top_k:
+        raise SystemExit("--selected-top-k must be <= --rerank-input-top-k")
 
     cases = load_cases(args.dataset)
     args.report_dir.mkdir(parents=True, exist_ok=True)
@@ -1168,7 +1613,14 @@ async def main() -> None:
     traces: list[SmokeTrace] = []
     try:
         for case in cases:
-            result, smoke_trace = await evaluate_case(case, sessionmaker)
+            result, smoke_trace = await evaluate_case(
+                case,
+                sessionmaker,
+                rerank_mode=args.rerank_mode,
+                rerank_input_top_k=args.rerank_input_top_k,
+                selected_top_k=args.selected_top_k,
+                parent_doc_mode=args.parent_doc_mode,
+            )
             results.append(result)
             traces.append(smoke_trace)
             print_result(result)

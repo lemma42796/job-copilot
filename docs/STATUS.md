@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-14
+last_updated: 2026-05-15
 purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指向其他文档。
 ---
 
@@ -32,6 +32,11 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - reranker metadata 已完成一轮 A/B:content-only 基线 `20260514-063244` 为 6/12、`rerank_recall@10` 73.33%;metadata 前置 `20260514-084642` 为 7/12、67.50%,不是净提升;当前保留代码为 direct-evidence instruct + `content + weak_source_context` 后置格式。
 - 当前保留版 smoke `hybrid-search-note-smoke-20260514-092218.md`:8/12,`candidate_recall@50` 95.00%,`rerank_recall@10` 69.17%,`mrr@10` 59.58%,`final_context_recall` 72.50%,zero-hit 0/2,成本 ¥0.251666;比前置 metadata 稳,但不是最终达标方案。
 - 本地 intent × chunk-type 降权已试跑但**未保留**:初版 `20260514-111912` 8/12、`rerank_recall@10` 63.33%;修正 hard-negative 误判后 `20260514-112042` 8/12、65.83%,hard-negative intrusion 从 4/12 降到 3/12、MRR 到 75.33%,但 direct evidence 覆盖下降,已回滚到弱 source context 方案。
+- smoke 脚本新增诊断/A-B 开关:`--rerank-mode provider|none`、`--rerank-input-top-k`、`--selected-top-k`、`--parent-doc-mode on|off`;trace/report 保存 `hybrid_rank → selected/rerank_rank`、`rank_delta`、`rerank_score`,report 改用 `selected_recall@K / mrr@K` 口径。
+- 纯 hybrid、无 parent-doc 曲线已跑:top20/30/40 均 7/12,`selected_recall@K` 72.50%/85.00%/91.67%,`final_context_precision` 13.00%/10.33%/8.50%,hard-negative 5/12,zero-hit 0/2。
+- provider rerank、无 parent-doc 曲线已跑:top20/30/40 为 6/12、6/12、5/12,`selected_recall@K` 84.17%/89.17%/95.00%,`final_context_precision` 15.50%/11.33%/9.00%,hard-negative 6/12、6/12、7/12,成本仍约 ¥0.251666。
+- 粗排→精排窄口径已跑:`10→5` 为 8/12、recall 56.67%、precision 30.00%、成本 ¥0.020096;`20→10` 为 8/12、61.67%、21.00%、¥0.040543;`30→20` 为 7/12、81.67%、15.00%、¥0.059062。
+- 当前判断:hybrid **召回强但排序不够好**。`candidate_recall@50` 仍 95%,但正样本有一批落在 hybrid 20 名后;`qwen3-rerank` 能救 `#2256/#2257/#2189` 等长尾,也会压低 `#491/#1066` 等本来靠前的正样本。先不要默认恢复 parent-doc 或 local selector。
 - 已补 `docs/6-EVAL_PLAN.md` 第 7 节:trace schema、离线 rescore 跑法、macro average 口径、0 命中 candidate 保存语义。
 - 已补 `docs/9-LESSONS.md` §3.4:CLI 评测脚本不要在 Langfuse noop 模式下频繁构造 SDK client。
 - 本轮代码侧已缓解 smoke 脚本收尾卡住:无 Langfuse key 时不构造 Langfuse SDK / `langfuse.openai` client;评测脚本 cleanup 只关闭已存在的 embedder / llm singleton 并 shutdown Langfuse singleton。后续多次 smoke 已正常结束并写出 report / trace。
@@ -65,6 +70,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **M2.1 Agentic RAG 方向锁定**:`InterviewCoachAgent` 不做泛化多 Agent,只做面试状态机:检索 → 出题 → 等答 → 评分 → 决策 → 追问 / 总结。
 - **hybrid_search smoke 标签已升级并复核一轮**:`evals/suites/hybrid_search/dataset.note_smoke.jsonl` 覆盖 M2/M3 边界、Context Cache、reranker/query rewrite、AnswerJudge、SSE 恢复、MVCC、Outbox、epoll、provider timeout/429、zero-hit;`direct_evidence_chunk_ids` 只放可直接回答 query 的 chunk。
 - **hybrid_search note/chunk smoke 脚本已落地**:`apps/api/scripts/eval_hybrid_search_note_smoke.py` 只读 DB / 写本地 report + trace(`evals/reports/` gitignore),输出 top notes、top chunks、heading/anchor coverage、hard-negative intrusion、zero-hit、召回指标与成本;`--score-trace` 支持只按新标签离线重算。
+- **hybrid_search A/B 诊断开关已落地**:可单独比较 provider rerank / 纯 hybrid、rerank 输入池大小、selected topK、parent-doc on/off,用于拆分"召回 / 粗排排序 / 精排 / parent-doc"责任。
 - **eval 脚本资源收尾已补强**:`infra.langfuse` 避免无 key/noop 场景构造 Langfuse SDK client;DashScope client 有 Langfuse key 才走 `langfuse.openai`;smoke cleanup 不再为关闭而懒加载 embedder / llm singleton。
 - **百炼价格 / rerank 限制已记录**:`qwen3.6-flash` 控制台价格、Responses 工具价、`qwen3-rerank` 500 docs / token 上限 / `gte-rerank-v2` 下线提醒已写入代码注释与常量;rerank 请求本地截断到 500 docs;当前 reranker document format 为 `content + weak_source_context`。
 - **CI 策略调整**:所有 GitHub workflow 改为手动触发,避免 push 自动跑测试和邮件通知。
@@ -73,12 +79,13 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **先给 smoke report 增加 reranker 诊断字段,再继续调降权**:不要把本地 intent × chunk-type penalty 直接进主路;先在 report/trace 打出 provider rank、chunk_type、query_intent、adjustment、adjusted_score,用脚本级 A/B 看哪些 penalty 误伤 direct evidence。
+1. **先分析 hybrid 粗排排序,不要先上 parent-doc / local selector**:给 top50 report 补 vector/lex/RRF 分解、每个 expanded query 的 rank,解释 direct evidence 为什么落到 20/30/40 名后。
 
 备选:
 
 - 为 zero-hit 增加 core entity / anchor coverage 守门:Rust、Kubernetes Operator 这类核心实体缺失时不能只靠向量近邻过门。
 - 针对 `hs_note_005` 分析 query rewrite 是否把 JobCopilot 私有恢复事实稀释成通用 SSE / WebSocket / 前端恢复 query。
+- 如果继续看 rerank,优先比较受限候选池(`20→10`、`30→20`)和正样本排名迁移,不要只看 headline pass。
 - 如果 metadata / content_type 方向继续做,优先作为可观测诊断与离线 A/B,不要只靠单条 query prompt 或默认 penalty 表微调。
 - smoke 评测闭环稳定后,开 M2.1 `InterviewCoachAgent` 状态机骨架和 `decide_next_action` / `generate_followup`。
 
