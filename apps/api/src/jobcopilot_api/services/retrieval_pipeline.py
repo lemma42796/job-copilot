@@ -33,6 +33,14 @@ from jobcopilot_api.models.note_chunk import NoteChunk
 from jobcopilot_api.schemas.retrieval import PipelineResult, RetrievedChunk
 from jobcopilot_api.services.query_rewriter import query_weights, rewrite_query
 from jobcopilot_api.services.reranker import rerank
+from jobcopilot_api.services.retrieval_governance import (
+    PROTECTED_ANCHOR_ROUTE_WEIGHT,
+    RetrievalGovernanceContext,
+    assess_query_support,
+    governance_context_from_rewrite,
+    protected_anchor_search,
+    source_multiplier,
+)
 from jobcopilot_api.services.search_service import global_hybrid_search
 
 logger = logging.getLogger(__name__)
@@ -59,6 +67,7 @@ async def run(
     rewrite_out = await rewrite_query(user_query)
     expanded_queries = rewrite_out.expanded_queries
     weights = query_weights(rewrite_out)
+    governance = governance_context_from_rewrite(rewrite_out)
 
     # 2. 各 expanded query 顺序跑 global_hybrid_search(SQLAlchemy AsyncSession
     # 不允许跨协程并发用同一 session;hybrid_search 内部 vector+lex 两路 gather
@@ -69,13 +78,28 @@ async def run(
             session, q, top_k=HYBRID_TOP_K_PER_QUERY
         )
         hybrid_rankings.append(ranking)
-    fused = multi_query_rrf(hybrid_rankings, k=RRF_K, weights=weights)
+    anchor_ranking = await protected_anchor_search(
+        session, governance, expanded_queries
+    )
+    if anchor_ranking:
+        hybrid_rankings.append(anchor_ranking)
+        weights.append(PROTECTED_ANCHOR_ROUTE_WEIGHT)
+    fused = multi_query_rrf(
+        hybrid_rankings, k=RRF_K, weights=weights, governance=governance
+    )
 
     # 3. 0 命中守门(rerank 不增加召回,放在 rerank 前判免一次 LLM 调用)
     if len(fused) < MIN_CHUNKS_FOR_QUIZ:
         raise NoChunksForQueryError(
             f"query='{user_query}' 命中 {len(fused)} 个 chunk,"
             f"少于守门阈值 {MIN_CHUNKS_FOR_QUIZ};请改 query 或先扩笔记"
+        )
+    support = assess_query_support(governance, expanded_queries, fused)
+    if not support.sufficient:
+        missing = ", ".join(support.missing_terms)
+        raise NoChunksForQueryError(
+            f"query='{user_query}' 缺少核心证据覆盖({support.reason});"
+            f"missing_terms=[{missing}];请改 query 或先扩笔记"
         )
 
     # 4. rerank(失败回退 hybrid 顺序前 RERANK_TOP_K)
@@ -110,11 +134,14 @@ def multi_query_rrf(
     rankings: list[list[NoteChunk]],
     k: int,
     weights: list[float] | None = None,
+    governance: RetrievalGovernanceContext | None = None,
 ) -> list[NoteChunk]:
     """跨 query 的加权 RRF 融合。
 
     各 query 内部已 RRF 过 vector + lex(search_service._rrf_fuse),这里
     把 K 个 ranked list 再融一次。score(d)=Σ weight_i/(k + rank_i(d))。
+    若传入 governance,会应用轻量候选治理:project_fact / boundary_question
+    走 source/type 调整;对比型 query 走 contrast evidence 调整。
     返回去重 + score 降序 + 同分按 chunk.id 升序(deterministic)。
     """
     scores: dict[int, float] = {}
@@ -128,6 +155,9 @@ def multi_query_rrf(
                 scores.get(ch.id, 0.0) + weight / (k + rank_idx)
             )
             by_id.setdefault(ch.id, ch)
+    if governance is not None:
+        for chunk_id, chunk in by_id.items():
+            scores[chunk_id] *= source_multiplier(chunk, governance)
     return sorted(by_id.values(), key=lambda c: (-scores[c.id], c.id))
 
 

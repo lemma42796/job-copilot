@@ -23,8 +23,8 @@ from dataclasses import dataclass
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from jobcopilot_api.agents.embedder.agent import embed_batch
 from jobcopilot_api.models.note_chunk import NoteChunk
+from jobcopilot_api.services.query_embedding_cache import embed_query_cached
 from jobcopilot_api.services.tokenize import to_tsquery_string
 
 DEFAULT_TOP_K = 30
@@ -63,7 +63,7 @@ async def hybrid_search_in_node(
     """节点 prefix 限定 hybrid search(M1)。
 
     流程:
-    1. embed query 走 agents/embedder.embed_batch([query])
+    1. embed query 走 query embedding cache;miss 时再调 provider
     2. 并发跑两路:vector cosine top-K + lexical tsvector top-K
     3. RRF 融合 + 去重 + 截 top_k
     4. lex query 为空(query 短到无 token)→ 优雅降级到纯向量
@@ -121,7 +121,7 @@ async def _hybrid_search(
     folder_path: list[str] | None,
     heading_path: list[str] | None,
 ) -> list[NoteChunk]:
-    embed_result = await embed_batch([query])
+    embed_result = await embed_query_cached(query)
     if not embed_result.vectors:
         return []
     vec = embed_result.vectors[0]
@@ -153,7 +153,7 @@ async def _hybrid_search_with_diagnostics(
     folder_path: list[str] | None,
     heading_path: list[str] | None,
 ) -> HybridSearchDiagnostics:
-    embed_result = await embed_batch([query])
+    embed_result = await embed_query_cached(query)
     if not embed_result.vectors:
         return HybridSearchDiagnostics(
             query=query,

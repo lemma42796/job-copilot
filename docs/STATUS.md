@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-15
+last_updated: 2026-05-16
 purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指向其他文档。
 ---
 
@@ -39,7 +39,13 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - 当前判断:hybrid **召回强但排序不够好**。`candidate_recall@50` 仍 95%,但正样本有一批落在 hybrid 20 名后;`qwen3-rerank` 能救 `#2256/#2257/#2189` 等长尾,也会压低 `#491/#1066` 等本来靠前的正样本。先不要默认恢复 parent-doc 或 local selector。
 - 粗排诊断代码已补强:smoke trace/report 记录 per-query vector / lexical / hybrid rank、跨 query RRF contribution、query vote、hard-negative/relevant 支持情况,并保留 q0 原话加权的 labeled-only 模拟。
 - Query Understanding v2 已接入代码:query_rewriter 输出 `intent / core_entities / must_keep_terms / weighted_queries`;用户原话 q0 固定 `weight=2.0`,改写 query 按 role 限权;`project_fact / boundary_question` 缺少保护词或 `zero_hit_candidate` 时保守只用原 query。
-- 生产检索已从等权跨 query RRF 改为加权 RRF:`retrieval_pipeline` 与 `quiz_service` 都使用 `weight/(60+rank)`。本轮收尾未跑 smoke / pytest;下一会话优先手动跑粗排 smoke 对比 top10/top30/top50 召回。
+- M2.1 RAG 第一刀 `source/type governance` 已保留:只在 `project_fact / boundary_question` 等 protected intent 下轻量调整候选来源权重。粗排 top10 从 `54.17% → 64.17%`,MRR `31.52% → 45.33%`,precision `17.00% → 20.00%`,hard-negative 仍 `1/12`。
+- 宽版 `protected_anchor_search` 已判定为负收益并回滚/收窄:它把 `candidate_recall@50 92.50% → 96.67%`,但 top10 从 `64.17%` 掉到 `60.83%`;根因是 anchor 补召回太宽,会把泛相关项目事实挤进紧窗口。
+- 当前保留的强锚点补召回是窄路由:状态恢复 query 只在 `JobCopilot + SSE/断线 + 恢复/重连` 语义同时出现时触发;provider failure query 只在 `provider/API + timeout + 429/rate-limit/retry-after` 同时出现时触发。二者都是精确失败样本修复,不是全局宽召回。
+- zero-hit 守门已从"候选数量"升级为"核心证据覆盖":`assess_query_support` 会检查 query 的强技术锚点是否被 top10 候选覆盖。Rust borrow checker / Kubernetes Operator 这类库内无证据 query 已能判 0 命中。
+- 对比型 query governance 已保留:`Outbox 和 MQ 有什么区别?` 这类 query 会识别两侧概念,优先抬含双方且有近距离 contrast 信号的直接证据,压只覆盖 MQ 一侧的泛相关内容。最终粗排 top10 report `20260515-163721`:12/12,`selected_recall@10 86.67%`,`MRR 67.00%`,`precision 29.00%`,hard-negative `0/12`,zero-hit `2/2`。
+- Provider 精排 top100→top10 已跑并判定暂不启用:`20260515-164421` 为 10/12,`selected_recall@10 69.17%`,`MRR 59.76%`,`precision 22.00%`,hard-negative `2/12`;问题不是 timeout/429,而是 reranker 忽略 source/type 与 contrast governance,会把已被粗排压下去的 hard-negative / 泛相关内容重新抬进 top10。
+- query embedding cache 已接入 `search_service`:粗排每个 expanded query 先查 `llm_response_cache(feature=query_embedding)`,miss 才调 `text-embedding-v4`;cache key 包含 `normalized_query + model + embed_version + dimensions`。这只缓存 query 向量,不重新缓存笔记 chunk embedding。
 - 已补 `docs/6-EVAL_PLAN.md` 第 7 节:trace schema、离线 rescore 跑法、macro average 口径、0 命中 candidate 保存语义。
 - 已补 `docs/9-LESSONS.md` §3.4:CLI 评测脚本不要在 Langfuse noop 模式下频繁构造 SDK client。
 - 本轮代码侧已缓解 smoke 脚本收尾卡住:无 Langfuse key 时不构造 Langfuse SDK / `langfuse.openai` client;评测脚本 cleanup 只关闭已存在的 embedder / llm singleton 并 shutdown Langfuse singleton。后续多次 smoke 已正常结束并写出 report / trace。
@@ -76,6 +82,8 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **hybrid_search A/B 诊断开关已落地**:可单独比较 provider rerank / 纯 hybrid、rerank 输入池大小、selected topK、parent-doc on/off,用于拆分"召回 / 粗排排序 / 精排 / parent-doc"责任。
 - **hybrid_search 粗排诊断已落地**:`search_service` 暴露 diagnostics-only 路径;smoke report 可解释 direct evidence 为什么在 top20/top50 后、哪条 expanded query 贡献 hard-negative、q0 加权会让哪些 labeled chunks 上下移动。
 - **Query Understanding v2 + weighted RRF 已落地**:query_rewriter 输出 intent / core entities / must-keep terms / weighted queries;跨 query RRF 已支持 query weights,用户原话固定两票。
+- **M2.1 coarse retrieval governance 已落地**:`retrieval_governance.py` 统一承载 source/type multiplier、窄 protected anchor route、zero-hit support gate、contrast query governance;`retrieval_pipeline` / `quiz_service` / smoke eval 已接入同一套逻辑。
+- **query embedding cache 已落地**:`search_service` 通过 `embed_query_cached` 复用 `llm_response_cache`;重复跑同一套粗排 / 精排时,相同 expanded query 不再重复请求 embedding provider。
 - **eval 脚本资源收尾已补强**:`infra.langfuse` 避免无 key/noop 场景构造 Langfuse SDK client;DashScope client 有 Langfuse key 才走 `langfuse.openai`;smoke cleanup 不再为关闭而懒加载 embedder / llm singleton。
 - **百炼价格 / rerank 限制已记录**:`qwen3.6-flash` 控制台价格、Responses 工具价、`qwen3-rerank` 500 docs / token 上限 / `gte-rerank-v2` 下线提醒已写入代码注释与常量;rerank 请求本地截断到 500 docs;当前 reranker document format 为 `content + weak_source_context`。
 - **CI 策略调整**:所有 GitHub workflow 改为手动触发,避免 push 自动跑测试和邮件通知。
@@ -84,14 +92,14 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **手动跑粗排 smoke 验证 weighted RRF**:优先跑 `--rerank-mode none --parent-doc-mode off`,对比 top10/top30/top50 召回、hard-negative intrusion、query vote weight,确认 q0 两票是否改善排序。
+1. **暂不启用 provider 精排,先决定精排治理策略**:当前粗排治理后 top10 已到 `86.67%`,provider top100→top10 会掉到 `69.17%` 且 hard-negative 回来。若继续修精排,先做"provider rerank 后再套 source/type + contrast + hard-negative clamp / blend"的小实验;如果产品链路要保持粗排结果,先加 rerank 开关或禁用默认 provider rerank。
 
 备选:
 
-- 为 zero-hit 增加 core entity / anchor coverage 守门:Rust、Kubernetes Operator 这类核心实体缺失时不能只靠向量近邻过门。
-- 针对 `hs_note_005` 分析 query rewrite 是否把 JobCopilot 私有恢复事实稀释成通用 SSE / WebSocket / 前端恢复 query。
-- 如果继续看 rerank,优先比较受限候选池(`20→10`、`30→20`)和正样本排名迁移,不要只看 headline pass。
-- 如果 metadata / content_type 方向继续做,优先作为可观测诊断与离线 A/B,不要只靠单条 query prompt 或默认 penalty 表微调。
+- 跑一次相同粗排 smoke 验证 query embedding cache 命中:第二次相同 expanded query 不应继续打满 `text-embedding-v4` 调用。
+- 把 provider 精排负收益补写进 `docs/9-LESSONS.md` 的 9.3 / 新小节,方便以后用大白话解释"为什么不是直接上 reranker"。
+- 如果继续看 rerank,优先比较 rerank 后治理 / 分数 blend,不要只看 headline pass。
+- 如果继续扩 zero-hit,保持 core entity / anchor coverage 守门:Rust、Kubernetes Operator 这类核心实体缺失时不能只靠向量近邻过门。
 - smoke 评测闭环稳定后,开 M2.1 `InterviewCoachAgent` 状态机骨架和 `decide_next_action` / `generate_followup`。
 
 # 已锁定关键决策
@@ -127,6 +135,8 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **[来自 M2.1] Agent 不做炫技多 Agent**:只做与面试陪练闭环直接相关的状态机、工具、分支、恢复、评测。
 - **[来自 M2.1] CLI / eval 脚本显式管理观测 SDK 生命周期**:Langfuse noop 不等于零资源;无 key 时不要构造 SDK client。
 - **[来自 M2.1] 项目私有事实 query 必须实体保真**:Query Understanding 不能把 JobCopilot / M2 / AnswerJudge 等私有实体泛化成行业常识;用户原话在跨 query RRF 中权重大于改写。
+- **[来自 M2.1] RAG 调参先判断失败层再改代码**:先看 trace 区分召回、粗排排序、精排、hard-negative、zero-hit,不要只凭单条 query 加宽规则。
+- **[来自 M2.1] Provider rerank 不默认等于净收益**:启用前必须验证它不会绕过 source/type、contrast、hard-negative 治理把噪声重新抬进紧窗口。
 
 # 文档导航
 

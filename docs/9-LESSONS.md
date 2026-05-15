@@ -1,8 +1,8 @@
 ---
 title: JobCopilot 工程踩坑录(Lessons Learned)
 owner: lemma42796
-last_updated: 2026-05-14
-purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因 + 解决方案,按主题分 8 类。每条字段统一为「症状 / 根因 / 修法 / 沉淀」,链接详细切片归档,作为面向外部读者(招聘 / 协作者 / 博客读者)的索引视图。
+last_updated: 2026-05-16
+purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因 + 解决方案,按主题分 9 类。每条字段统一为「症状 / 根因 / 修法 / 沉淀」,链接详细切片归档,作为面向外部读者(招聘 / 协作者 / 博客读者)的索引视图。
 ---
 
 > **单一可信源** = [STATUS.md](STATUS.md)("永久约束累积"区是各坑沉淀的不可变结论);本文档是**索引 + 详述**,原始细节散在 `slices/` 各切片归档。
@@ -406,6 +406,76 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 **反面教材**:v1 跑 30 条 dataset 评测,第 5 条 prompt 占位符忘填(`{question}` 字面输入)→ LLM 把"{question}"当字面看跑出一堆乱评分,29 条 cache 命中错值。手动重跑还得清 cache。
 
 **教训**:批量调用是**可以倒车的**(单样本 dry-run 不过就停)、**不可以盲冲的**(全量跑炸 30 条不仅烧钱还污染 cache)。**模型 ID / Provider / Prompt 三件事任何一件靠记忆推断不靠 dry-run 校验**,都是踩坑入口。
+
+---
+
+# 9. 困难复盘与面试故事素材
+
+> 本节记录"遇到困难 → 怎么拆 → 怎么解决"的过程。目标不是流水账,而是把 RAG、评分、Agent 状态机、多工具编排这类难题沉淀成以后面试能讲清楚的故事。
+
+## 9.1 复杂问题的四阶段解法
+
+后续遇到系统性难题,按下面四阶段推进,避免陷入"看资料很多,本地问题没变"。
+
+1. **先解本项目的具体失败样本**:从本地 trace / report / 原始输入 / LLM 输出 / 证据源入手,先判断问题到底在数据、召回、排序、prompt、schema、状态机还是产品口径。
+2. **再用官方文档校准供应商能力**:只查跟当前失败模式直接相关的 provider 文档,确认限制、推荐参数、接口语义和计费/延迟边界,防止把能力用反。
+3. **看开源项目借工程形态**:参考 LlamaIndex / Haystack / LangChain / RAGFlow / Dify / Open WebUI 等项目怎么做 metadata filter、rerank、context packing、tool boundary、状态恢复,只借结构,不照搬抽象。
+4. **最后看论文找方法灵感**:论文用于补充思路,例如 hybrid retrieval、multi-stage retrieval、corrective RAG、agentic RAG、judge calibration;不把论文方案直接当产品方案。
+
+**沉淀**:资料调研不能替代本地证据。最优顺序是"先解自己的 case,再用外部资料校准",不是反过来。
+
+## 9.2 困难复盘卡片模板
+
+每个值得讲的困难都按同一张卡记录,后续评分、追问、多 Agent / 状态机也复用:
+
+- **背景**:在哪个里程碑 / 哪条用户链路 / 为什么重要。
+- **症状**:用户或评测实际看到什么失败。
+- **证据**:report、trace、输入、输出、chunk、prompt、状态字段等。
+- **误导方向**:最开始容易以为是什么问题,但后来证明不完整或不对。
+- **根因**:最终定位到哪一层。
+- **尝试过的修法**:保留成功和失败方案,失败方案要写为什么失败。
+- **最终决策**:当前采用什么方案,哪些方案暂时不做。
+- **可迁移教训**:以后遇到同类问题怎么更快判断。
+- **面试讲法**:一句话冲突 + 两三步行动 + 结果数字 + trade-off。
+
+## 9.3 RAG 紧窗口召回不是"多捞一点"能解决(M2.1)⭐⭐
+
+- **背景**:M2 已跑通"聊天框主题 query → 全库 RAG → 出题 → 答题 → Judge 三层评分 → session 恢复"。M2.1 要做 `InterviewCoachAgent` 状态机,但状态机的高级感依赖可靠 evidence;如果 RAG 上下文脏或漏证据,后续追问、评分、纠偏都会被污染。
+- **症状**:粗排大窗口看起来有希望,但产品真实窗口不可用。2026-05-15 粗排 smoke 显示:`top10 selected_recall@K=54.17%`,`top30=89.17%`,`top50=92.50%`;同时 hard-negative intrusion 从 `top10 1/12` 增到 `top30 3/12`、`top50 7/12`。这说明问题不是"完全搜不到",而是正样本进不了紧窗口,扩大窗口又会把噪声带给下游。
+- **证据**:
+  - `evals/reports/hybrid-search-note-smoke-20260515-115607.md`:粗排 top10,`selected_recall@K=54.17%`,precision `17.00%`,hard-negative `1/12`。
+  - `evals/reports/hybrid-search-note-smoke-20260515-115630.md`:粗排 top30,`selected_recall@K=89.17%`,precision `10.33%`,hard-negative `3/12`。
+  - `evals/reports/hybrid-search-note-smoke-20260515-115648.md`:粗排 top50,`selected_recall@K=92.50%`,precision `6.60%`,hard-negative `7/12`。
+  - `hs_note_005` 的 `candidate@50=25.00%`,说明至少一类 query 是粗召回本身没捞够,不能靠 reranker 修。
+  - zero-hit 仍为 `0/2`,说明"没证据就停"还不是可靠能力。
+- **误导方向**:一开始容易继续调 `top_k`、query rewrite、reranker prompt 或 metadata 拼接,看 headline pass 数。但 top50 指标变好不等于产品可用,因为真实上下文预算更像"粗排 top10 → 精排 top5"。
+- **已尝试修法**:
+  - 2026-05-13:补 chunk-level smoke dataset / report / `direct_evidence_chunk_ids`。
+  - 2026-05-14:做 reranker metadata A/B,metadata 前置能救个别 case,但会把题库 / 评测样本 / hard-negative 抬高,不是净提升。
+  - 2026-05-14:做 intent × chunk-type 本地降权实验,hard-negative 有下降,但 direct evidence 覆盖也下降,没有进主路。
+  - 2026-05-15:接 Query Understanding v2 + weighted RRF,用户原话 q0 固定两票,改写 query 限权;粗排 top30 有改善,但 top10 仍不够。
+  - 2026-05-15 第一刀:加 `source/type governance`,只对 `project_fact / boundary_question` 做轻量 source multiplier,把项目事实优先级略抬、题库 / 评测样本 / hard-negative 降权。`evals/reports/hybrid-search-note-smoke-20260515-140350.md` 显示 top10 `selected_recall@K 54.17% → 64.17%`,`mrr@K 31.52% → 45.33%`,`final_context_precision 17.00% → 20.00%`,hard-negative 仍 `1/12`,是净收益。
+  - 2026-05-15 第二刀失败:尝试 `protected_anchor_search` 用 exact anchor 补召回。`evals/reports/hybrid-search-note-smoke-20260515-142902.md` 把 `candidate_recall@50 92.50% → 96.67%`,但 top10 `selected_recall@K 64.17% → 60.83%`。`hs_note_005` 的 `#2259/#2220/#2299/#1066` 都进入 candidate@50,却只排到 `#14/#16/#17/#33`,没有进 top10。失败原因不是 anchor 判断错,而是补召回太宽:凡是 `JobCopilot + SSE/session/恢复` 的泛相关项目事实都被第四路 RRF 强投票抬高,紧窗口被近邻占满。
+  - 2026-05-15 第三刀修复:保留第一刀,把 `protected_anchor_search` 收窄成"只在 `JobCopilot + SSE/断线 + 恢复/重连` 语义下触发的状态恢复强锚点路由",只返回 `top4`,要求 entity + transport + recovery evidence,并按 `SSE 断开不等于业务失败`、`SSE 只是通知通道`、`前端重连后查 DB 当前状态`、`/quiz?session` 等短句打分;同时把 `追问样本` 归为题库 / 样本类,避免被当 canonical project fact 抬权。`evals/reports/hybrid-search-note-smoke-20260515-144102.md` 显示 top10 `selected_recall@K 71.67%`,`mrr@K 55.33%`,`final_context_precision 23.00%`,hard-negative 仍 `1/12`;`hs_note_005` 变 PASS,top10 命中 `#1066/#2259/#2299`,anchor `4/4` 命中。
+- **source/type governance 大白话解释**:普通 hybrid search 只看"这段文字跟 query 像不像"。但 JobCopilot 的笔记库里同一个词会出现在很多不同来源里:正式项目笔记、项目边界文档、面试题库、eval 样本、hard-negative 清单、通用技术笔记。它们语义都可能很像,但回答私有事实问题时可信度不同。比如问"M2 是否支持岗位类 query",正式项目笔记里的"M2 不支持,放 M3 三源融合"是直接证据;题库里的"题 5:M2 query 类型"只是练习题;eval 样本里的 fabricated case 是测试材料;hard-negative 甚至可能故意长得像正确答案。source/type governance 做的事就是先给候选 chunk 粗分来源,再在 protected intent 下轻轻调分。
+- **source/type 分类**:当前不做 schema migration,先从 `folder_path / heading_path / content` 推断粗类型。`canonical_project_fact` 是放在 `项目/JobCopilot/...` 下的正式项目事实;`project_doc` 是其他带 JobCopilot 的工程映射笔记;`interview_question_bank` 是题库 / 追问题库 / 追问样本;`eval_case` 是评测 / fixture / smoke / baseline;`hard_negative` 是明确写着 hard negative / 对抗样本的材料;剩下是 `generic_background`。这不是完美分类器,但足够把"正式事实"和"练习/评测/干扰材料"分开。
+- **为什么是轻量 multiplier,不是硬过滤**:硬过滤风险太高,因为有些通用背景笔记确实是 direct evidence,例如 `hs_note_005` 的 `Linux IO epoll 与异步后端 > FastAPI SSE`。如果只保留 `项目/JobCopilot` 目录,会把这种真实证据砍掉。当前做法是对 `project_fact / boundary_question` 这种私有事实问题启用 multiplier:正式项目事实略加分,普通项目映射小幅加分,题库 / eval / hard-negative 降权,通用背景基本保持原状。它像"候选排序上的交通规则",不是"把路封死"。
+- **为什么只对 protected intent 生效**:如果用户问 MVCC、Outbox、epoll 这类普通技术主题,正式项目事实并不天然比专业技术笔记更可信。source/type governance 只在 Query Understanding 判断为 `project_fact / boundary_question` 时开启,避免把所有问题都变成"JobCopilot 项目笔记优先"。这也是第一刀能成为净收益的关键:它只在需要保护私有事实边界的时候动排序,不全局改检索偏好。
+- **source/type governance 面试讲法**:我不是直接调 embedding 或把 topK 拉大,而是发现同一个候选池里混着正式事实、题库、eval 和 hard-negative。对项目私有问题来说,这些来源的"可信角色"不同。所以我加了一层轻量候选治理:先推断 chunk source/type,再只在私有事实 / 边界问题里给正式项目事实小幅加权、给题库和干扰样本降权,但不硬过滤通用技术笔记。结果 top10 recall 从 54.17% 提到 64.17%,MRR 从 31.52% 提到 45.33%,hard-negative 没增加。
+- **根因**:retrieval 缺少结构化候选治理。题库、评测样本、项目事实、hard-negative、泛背景笔记混在同一个候选池里,只靠向量 / lexical / RRF / reranker 文本相关性,无法稳定区分"能直接回答 query 的证据"和"语义很像但会污染答案的近邻"。对 `hs_note_005` 这类项目状态恢复 query,普通 hybrid 会漏掉短项目事实;但补召回如果不够窄,又会把泛相关状态机 / SSE / session 近邻抬进 top10。
+- **最终决策**:停止把 `candidate_recall@50` 当主胜利指标。当前保留两层治理:第一层是 `source/type governance`,对 protected intent 做轻量 score multiplier;第二层是极窄的状态恢复 anchor route,只处理 `JobCopilot SSE 断线恢复` 这一类已验证失败模式。暂不保留宽泛 protected anchor,也不为了单 case 恢复 parent-doc 或上精排。下一步继续看 `hs_note_009` 紧窗口排序和 zero-hit false positive。
+- **可迁移教训**:RAG 不是"召回越多越好",而是"正确证据在紧窗口里足够靠前,噪声不能污染上下文"。当 top50 高、top10 低时,问题是排序和候选治理;当某 case `candidate@50` 本身低时,才回到 query rewrite / tokenization / chunker / embedding。补召回必须有触发条件、候选上限和强证据短句,不能把 anchor route 变成另一条宽检索。
+- **面试讲法**:我遇到一个 RAG 质量卡点,表面看 top50 recall 已经接近 90%+,但实际产品只吃 top5/top10,导致正样本经常不在可用窗口。于是我先搭 chunk-level eval 和 trace,拆出"粗召回、粗排排序、精排、hard-negative、zero-hit"五类责任,证明继续扩大 topK 只会提高噪声。第一刀用 source/type governance 把 top10 recall 从 54.17% 提到 64.17%;第二刀宽 anchor 虽然提高 top50,却拉低 top10;最后把 anchor 收窄到 JobCopilot SSE 状态恢复强证据,top10 recall 到 71.67%,同时 hard-negative 保持 1/12。
+
+## 9.4 后续困难也按同一条线记录
+
+未来优先沉淀这些故事,每个都要写清楚"失败样本 → 证据 → 取舍 → 指标":
+
+- **AnswerJudge 评分**:LLM 只给 evidence 和 label,总分由 Python 算;重点记录 fabricated 锁顶、证据不足、评分漂移、judge prompt 与 deterministic 权重的边界。
+- **InterviewCoachAgent 状态机**:不要讲"多 Agent 数量",要讲状态、工具、分支、恢复、追问依据、wait_user_answer 人类暂停点;重点记录追问什么时候继续、什么时候总结、什么时候承认证据不足。
+- **Tool use 边界**:tool 不是给 LLM 自由发挥,而是在最容易错的判定上提供验证手段;重点记录强制调工具、调几次、调不到怎么办、如何防循环。
+- **多源岗位类 query**:M3 会融合笔记 RAG、单条简历、JD 子集;重点记录三源 evidence 对齐、缺源降级、不能编造简历/JD 内容。
+- **zero-hit / insufficient evidence**:"答不上来"是能力,不是失败;重点记录怎样用 core entity、anchor、source diversity 和 score 组合守住边界。
 
 ---
 

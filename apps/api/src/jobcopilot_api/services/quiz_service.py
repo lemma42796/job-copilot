@@ -50,6 +50,12 @@ from jobcopilot_api.schemas.quiz import QuizSessionCreateIn
 from jobcopilot_api.schemas.retrieval import RetrievedChunk
 from jobcopilot_api.services.query_rewriter import query_weights, rewrite_query
 from jobcopilot_api.services.reranker import rerank
+from jobcopilot_api.services.retrieval_governance import (
+    PROTECTED_ANCHOR_ROUTE_WEIGHT,
+    assess_query_support,
+    governance_context_from_rewrite,
+    protected_anchor_search,
+)
 from jobcopilot_api.services.retrieval_pipeline import (
     HYBRID_TOP_K_PER_QUERY,
     MIN_CHUNKS_FOR_QUIZ,
@@ -103,6 +109,7 @@ async def start_session_sse(
         rewrite_out = await rewrite_query(payload.query)
         expanded_queries = rewrite_out.expanded_queries
         weights = query_weights(rewrite_out)
+        governance = governance_context_from_rewrite(rewrite_out)
         yield _ev(
             "progress",
             {
@@ -120,7 +127,18 @@ async def start_session_sse(
                     s, q, top_k=HYBRID_TOP_K_PER_QUERY
                 )
                 hybrid_rankings.append(ranking)
-            fused = multi_query_rrf(hybrid_rankings, k=RRF_K, weights=weights)
+            anchor_ranking = await protected_anchor_search(
+                s, governance, expanded_queries
+            )
+            if anchor_ranking:
+                hybrid_rankings.append(anchor_ranking)
+                weights.append(PROTECTED_ANCHOR_ROUTE_WEIGHT)
+            fused = multi_query_rrf(
+                hybrid_rankings,
+                k=RRF_K,
+                weights=weights,
+                governance=governance,
+            )
             yield _ev(
                 "progress",
                 {"phase": "hybrid_searching", "candidate_count": len(fused)},
@@ -131,6 +149,12 @@ async def start_session_sse(
                 raise NoChunksForQueryError(
                     f"笔记里没找到跟「{payload.query}」相关的内容,"
                     f"试试别的主题或先写一些笔记"
+                )
+            support = assess_query_support(governance, expanded_queries, fused)
+            if not support.sufficient:
+                raise NoChunksForQueryError(
+                    f"笔记里没找到能支撑「{payload.query}」的核心证据,"
+                    f"缺少:{', '.join(support.missing_terms)}"
                 )
 
             # 4. rerank

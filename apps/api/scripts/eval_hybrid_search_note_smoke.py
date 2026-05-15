@@ -37,6 +37,15 @@ from jobcopilot_api.services.reranker import (
     rerank,
     reset_http_client,
 )
+from jobcopilot_api.services.retrieval_governance import (
+    PROTECTED_ANCHOR_ROUTE_WEIGHT,
+    RetrievalGovernanceContext,
+    assess_query_support,
+    classify_chunk_source,
+    governance_context_from_rewrite,
+    protected_anchor_search,
+    source_multiplier,
+)
 from jobcopilot_api.services.retrieval_pipeline import (
     HYBRID_TOP_K_PER_QUERY,
     MIN_CHUNKS_FOR_QUIZ,
@@ -124,6 +133,8 @@ class TraceCoarseRankDiagnostic:
     chunk_id: int
     note_path: str
     heading_path: list[str]
+    source_type: str
+    source_multiplier: float
     candidate_rank: int | None
     cross_query_rrf_score: float | None
     content_preview: str
@@ -167,6 +178,8 @@ class CoarseRankDiagnostic:
     chunk_id: int
     note_path: str
     heading_path: list[str]
+    source_type: str
+    source_multiplier: float
     candidate_rank: int | None
     cross_query_rrf_score: float | None
     content_preview: str
@@ -346,6 +359,7 @@ async def run_pipeline_with_cost(
     rewrite_out = await rewrite_query(user_query)
     expanded_queries = rewrite_out.expanded_queries
     weights = query_weights(rewrite_out)
+    governance = governance_context_from_rewrite(rewrite_out)
 
     hybrid_rankings = []
     query_diagnostics: list[HybridSearchDiagnostics] = []
@@ -356,7 +370,15 @@ async def run_pipeline_with_cost(
         ranking = diagnostic.fused_chunks
         query_diagnostics.append(diagnostic)
         hybrid_rankings.append(ranking)
-    fused = multi_query_rrf(hybrid_rankings, k=RRF_K, weights=weights)
+    anchor_ranking = await protected_anchor_search(
+        session, governance, expanded_queries
+    )
+    if anchor_ranking:
+        hybrid_rankings.append(anchor_ranking)
+        weights.append(PROTECTED_ANCHOR_ROUTE_WEIGHT)
+    fused = multi_query_rrf(
+        hybrid_rankings, k=RRF_K, weights=weights, governance=governance
+    )
     rerank_input = fused[:rerank_input_top_k]
     candidate_base = fused[:COARSE_RANK_DIAGNOSTIC_TOP_K]
     coarse_rank_diagnostics = await build_trace_coarse_rank_diagnostics(
@@ -365,13 +387,16 @@ async def run_pipeline_with_cost(
         query_diagnostics,
         diagnostic_chunk_ids,
         weights,
+        governance,
+        hybrid_rankings,
     )
     diagnostic_top_k = min(
         max(RERANK_DIAGNOSTIC_TOP_K, selected_top_k),
         rerank_input_top_k,
     )
 
-    if len(fused) < MIN_CHUNKS_FOR_QUIZ:
+    support = assess_query_support(governance, expanded_queries, fused)
+    if len(fused) < MIN_CHUNKS_FOR_QUIZ or not support.sufficient:
         note_titles = await fetch_note_titles(
             session, list({chunk.note_id for chunk in candidate_base})
         )
@@ -386,6 +411,12 @@ async def run_pipeline_with_cost(
             for chunk in candidate_base
         ]
         detail = f"query='{user_query}' hit {len(fused)} chunks"
+        if not support.sufficient:
+            detail += (
+                f"; support={support.reason}"
+                f"; covered={list(support.covered_terms)}"
+                f"; missing={list(support.missing_terms)}"
+            )
         return PipelineTrace(
             result=PipelineResult(
                 expanded_queries=expanded_queries,
@@ -524,8 +555,10 @@ def cross_query_rrf_scores(
     *,
     k: int,
     weights: list[float] | None = None,
+    governance: RetrievalGovernanceContext | None = None,
 ) -> dict[int, float]:
     scores: dict[int, float] = {}
+    by_id: dict[int, NoteChunk] = {}
     effective_weights = normalize_rrf_weights(weights, len(rankings))
     for ranked, weight in zip(rankings, effective_weights, strict=False):
         if weight <= 0:
@@ -535,6 +568,10 @@ def cross_query_rrf_scores(
             scores[chunk_id] = scores.get(chunk_id, 0.0) + weight / (
                 k + rank_idx
             )
+            by_id.setdefault(chunk_id, chunk)
+    if governance is not None:
+        for chunk_id, chunk in by_id.items():
+            scores[chunk_id] *= source_multiplier(chunk, governance)
     return scores
 
 
@@ -566,6 +603,8 @@ async def build_trace_coarse_rank_diagnostics(
     query_diagnostics: list[HybridSearchDiagnostics],
     watched_chunk_ids: list[int],
     query_weights: list[float],
+    governance: RetrievalGovernanceContext,
+    cross_rankings: list[list[NoteChunk]],
 ) -> list[TraceCoarseRankDiagnostic]:
     candidate_rank_by_id = {
         int(chunk.id): rank
@@ -598,9 +637,10 @@ async def build_trace_coarse_rank_diagnostics(
         session, list({chunk.note_id for chunk in by_id.values()})
     )
     cross_scores = cross_query_rrf_scores(
-        [diagnostic.fused_chunks for diagnostic in query_diagnostics],
+        cross_rankings,
         k=RRF_K,
         weights=query_weights,
+        governance=governance,
     )
     effective_query_weights = normalize_rrf_weights(
         query_weights, len(query_diagnostics)
@@ -711,6 +751,8 @@ async def build_trace_coarse_rank_diagnostics(
                     chunk, note_titles.get(chunk.note_id, "")
                 ),
                 heading_path=list(chunk.heading_path),
+                source_type=classify_chunk_source(chunk),
+                source_multiplier=source_multiplier(chunk, governance),
                 candidate_rank=candidate_rank_by_id.get(chunk_id),
                 cross_query_rrf_score=cross_scores.get(chunk_id),
                 content_preview=normalized_preview(chunk.content),
@@ -925,6 +967,8 @@ def build_coarse_rank_diagnostics(
             chunk_id=item.chunk_id,
             note_path=item.note_path,
             heading_path=list(item.heading_path),
+            source_type=item.source_type,
+            source_multiplier=item.source_multiplier,
             candidate_rank=item.candidate_rank,
             cross_query_rrf_score=item.cross_query_rrf_score,
             content_preview=item.content_preview,
@@ -969,6 +1013,8 @@ def build_coarse_rank_diagnostics(
             chunk_id=item.chunk_id,
             note_path=item.note_path,
             heading_path=item.heading_path,
+            source_type=item.source_type,
+            source_multiplier=item.source_multiplier,
             candidate_rank=item.candidate_rank,
             cross_query_rrf_score=item.cross_query_rrf_score,
             content_preview=item.content_preview,
@@ -1132,6 +1178,8 @@ def trace_to_json(trace: SmokeTrace) -> dict[str, object]:
                 "chunk_id": row.chunk_id,
                 "note_path": row.note_path,
                 "heading_path": row.heading_path,
+                "source_type": row.source_type,
+                "source_multiplier": row.source_multiplier,
                 "candidate_rank": row.candidate_rank,
                 "cross_query_rrf_score": row.cross_query_rrf_score,
                 "content_preview": row.content_preview,
@@ -1217,6 +1265,10 @@ def trace_from_json(obj: dict[str, object]) -> SmokeTrace:
                 heading_path=[
                     str(part) for part in row.get("heading_path", [])
                 ],
+                source_type=str(
+                    row.get("source_type", "generic_background")
+                ),
+                source_multiplier=float(row.get("source_multiplier", 1.0)),
                 candidate_rank=(
                     int(row["candidate_rank"])
                     if row.get("candidate_rank") is not None
@@ -2387,6 +2439,14 @@ def render_report(
     coarse_counts = coarse_reason_counts(results)
     query_vote_counts = query_vote_reason_counts(results)
     original_weight_counts = original_weight_simulation_counts(results)
+    source_type_counts: dict[str, int] = {}
+    for result in results:
+        for row in result.coarse_rank_diagnostics:
+            if row.candidate_rank is None:
+                continue
+            source_type_counts[row.source_type] = (
+                source_type_counts.get(row.source_type, 0) + 1
+            )
 
     lines: list[str] = []
     lines.append("# Hybrid Search Note/Chunk Smoke Report\n")
@@ -2430,6 +2490,10 @@ def render_report(
     lines.append(
         f"- original_query_weight_simulation: q0_weight="
         f"{ORIGINAL_QUERY_WEIGHT_SIMULATION:g}, labeled_diagnostics_only"
+    )
+    lines.append(
+        f"- candidate_source_type_counts: "
+        f"{reason_counts_text(source_type_counts)}"
     )
     lines.append(
         "- original_query_weight_simulation_note: ranks are recomputed from "
@@ -2614,14 +2678,15 @@ def render_report(
         if coarse_rows:
             lines.append("")
             lines.append(
-                "| Chunk | Hybrid rank | Cross RRF | Best query rank | Per-query ranks | Best vector | Best lexical | Query support | Labels | Reason hints | Note | Heading | Preview |"
+                "| Chunk | Source | Hybrid rank | Cross RRF | Best query rank | Per-query ranks | Best vector | Best lexical | Query support | Labels | Reason hints | Note | Heading | Preview |"
             )
             lines.append(
-                "|-------|-------------|-----------|-----------------|-----------------|-------------|--------------|---------------|--------|--------------|------|---------|---------|"
+                "|-------|--------|-------------|-----------|-----------------|-----------------|-------------|--------------|---------------|--------|--------------|------|---------|---------|"
             )
             for row in coarse_rows:
                 lines.append(
                     f"| #{row.chunk_id} | "
+                    f"{row.source_type} x{row.source_multiplier:g} | "
                     f"{rank_text(row.candidate_rank)} | "
                     f"{score_text(row.cross_query_rrf_score)} | "
                     f"{md_cell(coarse_query_rank_text(best_query_rank_row(row)))} | "
