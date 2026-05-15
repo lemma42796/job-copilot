@@ -31,7 +31,7 @@ from jobcopilot_api.errors import NoChunksForQueryError
 from jobcopilot_api.models.note import Note
 from jobcopilot_api.models.note_chunk import NoteChunk
 from jobcopilot_api.schemas.retrieval import PipelineResult, RetrievedChunk
-from jobcopilot_api.services.query_rewriter import rewrite_query
+from jobcopilot_api.services.query_rewriter import query_weights, rewrite_query
 from jobcopilot_api.services.reranker import rerank
 from jobcopilot_api.services.search_service import global_hybrid_search
 
@@ -58,6 +58,7 @@ async def run(
     # 1. query_rewriter(失败回退原 query,不阻塞)
     rewrite_out = await rewrite_query(user_query)
     expanded_queries = rewrite_out.expanded_queries
+    weights = query_weights(rewrite_out)
 
     # 2. 各 expanded query 顺序跑 global_hybrid_search(SQLAlchemy AsyncSession
     # 不允许跨协程并发用同一 session;hybrid_search 内部 vector+lex 两路 gather
@@ -68,7 +69,7 @@ async def run(
             session, q, top_k=HYBRID_TOP_K_PER_QUERY
         )
         hybrid_rankings.append(ranking)
-    fused = multi_query_rrf(hybrid_rankings, k=RRF_K)
+    fused = multi_query_rrf(hybrid_rankings, k=RRF_K, weights=weights)
 
     # 3. 0 命中守门(rerank 不增加召回,放在 rerank 前判免一次 LLM 调用)
     if len(fused) < MIN_CHUNKS_FOR_QUIZ:
@@ -106,21 +107,40 @@ async def run(
 
 
 def multi_query_rrf(
-    rankings: list[list[NoteChunk]], k: int
+    rankings: list[list[NoteChunk]],
+    k: int,
+    weights: list[float] | None = None,
 ) -> list[NoteChunk]:
-    """跨 query 的 RRF 融合。
+    """跨 query 的加权 RRF 融合。
 
     各 query 内部已 RRF 过 vector + lex(search_service._rrf_fuse),这里
-    把 K 个 ranked list 再融一次。score(d) = Σ 1/(k + rank_i(d))。
+    把 K 个 ranked list 再融一次。score(d)=Σ weight_i/(k + rank_i(d))。
     返回去重 + score 降序 + 同分按 chunk.id 升序(deterministic)。
     """
     scores: dict[int, float] = {}
     by_id: dict[int, NoteChunk] = {}
-    for ranked in rankings:
+    effective_weights = _normalize_rrf_weights(weights, len(rankings))
+    for ranked, weight in zip(rankings, effective_weights, strict=False):
+        if weight <= 0:
+            continue
         for rank_idx, ch in enumerate(ranked, start=1):
-            scores[ch.id] = scores.get(ch.id, 0.0) + 1.0 / (k + rank_idx)
+            scores[ch.id] = (
+                scores.get(ch.id, 0.0) + weight / (k + rank_idx)
+            )
             by_id.setdefault(ch.id, ch)
     return sorted(by_id.values(), key=lambda c: (-scores[c.id], c.id))
+
+
+def _normalize_rrf_weights(
+    weights: list[float] | None,
+    ranking_count: int,
+) -> list[float]:
+    if weights is None:
+        return [1.0] * ranking_count
+    normalized = [max(float(weight), 0.0) for weight in weights[:ranking_count]]
+    if len(normalized) < ranking_count:
+        normalized.extend([1.0] * (ranking_count - len(normalized)))
+    return normalized
 
 
 async def expand_to_parent_docs(

@@ -37,12 +37,15 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - provider rerank、无 parent-doc 曲线已跑:top20/30/40 为 6/12、6/12、5/12,`selected_recall@K` 84.17%/89.17%/95.00%,`final_context_precision` 15.50%/11.33%/9.00%,hard-negative 6/12、6/12、7/12,成本仍约 ¥0.251666。
 - 粗排→精排窄口径已跑:`10→5` 为 8/12、recall 56.67%、precision 30.00%、成本 ¥0.020096;`20→10` 为 8/12、61.67%、21.00%、¥0.040543;`30→20` 为 7/12、81.67%、15.00%、¥0.059062。
 - 当前判断:hybrid **召回强但排序不够好**。`candidate_recall@50` 仍 95%,但正样本有一批落在 hybrid 20 名后;`qwen3-rerank` 能救 `#2256/#2257/#2189` 等长尾,也会压低 `#491/#1066` 等本来靠前的正样本。先不要默认恢复 parent-doc 或 local selector。
+- 粗排诊断代码已补强:smoke trace/report 记录 per-query vector / lexical / hybrid rank、跨 query RRF contribution、query vote、hard-negative/relevant 支持情况,并保留 q0 原话加权的 labeled-only 模拟。
+- Query Understanding v2 已接入代码:query_rewriter 输出 `intent / core_entities / must_keep_terms / weighted_queries`;用户原话 q0 固定 `weight=2.0`,改写 query 按 role 限权;`project_fact / boundary_question` 缺少保护词或 `zero_hit_candidate` 时保守只用原 query。
+- 生产检索已从等权跨 query RRF 改为加权 RRF:`retrieval_pipeline` 与 `quiz_service` 都使用 `weight/(60+rank)`。本轮收尾未跑 smoke / pytest;下一会话优先手动跑粗排 smoke 对比 top10/top30/top50 召回。
 - 已补 `docs/6-EVAL_PLAN.md` 第 7 节:trace schema、离线 rescore 跑法、macro average 口径、0 命中 candidate 保存语义。
 - 已补 `docs/9-LESSONS.md` §3.4:CLI 评测脚本不要在 Langfuse noop 模式下频繁构造 SDK client。
 - 本轮代码侧已缓解 smoke 脚本收尾卡住:无 Langfuse key 时不构造 Langfuse SDK / `langfuse.openai` client;评测脚本 cleanup 只关闭已存在的 embedder / llm singleton 并 shutdown Langfuse singleton。后续多次 smoke 已正常结束并写出 report / trace。
 - **M2 已由用户确认完成**:聊天框主题 query → 全库 RAG → 出题 → 答题 → Judge 三层评分 → session 恢复已跑通。
 - Context Cache 已验证 provider-side 命中,但因 5 分钟 TTL 不适合当前一次性答题流,已默认关闭显式 `cache_control`;后续多轮讨论面试题时再打开。
-- 最新保存主题:`eval: add trace scoring and langfuse cleanup`;下一次提交建议主题:`eval: document reranker metadata experiments`;M2 tag `v0.4-m2-end` 仍待用户确认。
+- 最新保存主题:`retrieval: add weighted query understanding for hybrid rrf`;M2 tag `v0.4-m2-end` 仍待用户确认。
 - M2 retrieval quiz pipeline 代码已提交:`103d882 feat: add m2 retrieval quiz pipeline`。
 - M2.1 Agentic RAG 文档已提交:`fd892fa docs: add agentic interview coach roadmap`。
 - M2 AnswerJudge 初版已落地:三层 evidence prompt / agent / submit SSE / Python 算分 / fabricated 锁顶。
@@ -71,6 +74,8 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **hybrid_search smoke 标签已升级并复核一轮**:`evals/suites/hybrid_search/dataset.note_smoke.jsonl` 覆盖 M2/M3 边界、Context Cache、reranker/query rewrite、AnswerJudge、SSE 恢复、MVCC、Outbox、epoll、provider timeout/429、zero-hit;`direct_evidence_chunk_ids` 只放可直接回答 query 的 chunk。
 - **hybrid_search note/chunk smoke 脚本已落地**:`apps/api/scripts/eval_hybrid_search_note_smoke.py` 只读 DB / 写本地 report + trace(`evals/reports/` gitignore),输出 top notes、top chunks、heading/anchor coverage、hard-negative intrusion、zero-hit、召回指标与成本;`--score-trace` 支持只按新标签离线重算。
 - **hybrid_search A/B 诊断开关已落地**:可单独比较 provider rerank / 纯 hybrid、rerank 输入池大小、selected topK、parent-doc on/off,用于拆分"召回 / 粗排排序 / 精排 / parent-doc"责任。
+- **hybrid_search 粗排诊断已落地**:`search_service` 暴露 diagnostics-only 路径;smoke report 可解释 direct evidence 为什么在 top20/top50 后、哪条 expanded query 贡献 hard-negative、q0 加权会让哪些 labeled chunks 上下移动。
+- **Query Understanding v2 + weighted RRF 已落地**:query_rewriter 输出 intent / core entities / must-keep terms / weighted queries;跨 query RRF 已支持 query weights,用户原话固定两票。
 - **eval 脚本资源收尾已补强**:`infra.langfuse` 避免无 key/noop 场景构造 Langfuse SDK client;DashScope client 有 Langfuse key 才走 `langfuse.openai`;smoke cleanup 不再为关闭而懒加载 embedder / llm singleton。
 - **百炼价格 / rerank 限制已记录**:`qwen3.6-flash` 控制台价格、Responses 工具价、`qwen3-rerank` 500 docs / token 上限 / `gte-rerank-v2` 下线提醒已写入代码注释与常量;rerank 请求本地截断到 500 docs;当前 reranker document format 为 `content + weak_source_context`。
 - **CI 策略调整**:所有 GitHub workflow 改为手动触发,避免 push 自动跑测试和邮件通知。
@@ -79,7 +84,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **先分析 hybrid 粗排排序,不要先上 parent-doc / local selector**:给 top50 report 补 vector/lex/RRF 分解、每个 expanded query 的 rank,解释 direct evidence 为什么落到 20/30/40 名后。
+1. **手动跑粗排 smoke 验证 weighted RRF**:优先跑 `--rerank-mode none --parent-doc-mode off`,对比 top10/top30/top50 召回、hard-negative intrusion、query vote weight,确认 q0 两票是否改善排序。
 
 备选:
 
@@ -121,6 +126,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **[来自 M2] 本地开发优先 Docker Postgres + 本机 API**:api 容器需额外处理 `DASHSCOPE_API_KEY` 映射,日常避免走全 compose。
 - **[来自 M2.1] Agent 不做炫技多 Agent**:只做与面试陪练闭环直接相关的状态机、工具、分支、恢复、评测。
 - **[来自 M2.1] CLI / eval 脚本显式管理观测 SDK 生命周期**:Langfuse noop 不等于零资源;无 key 时不要构造 SDK client。
+- **[来自 M2.1] 项目私有事实 query 必须实体保真**:Query Understanding 不能把 JobCopilot / M2 / AnswerJudge 等私有实体泛化成行业常识;用户原话在跨 query RRF 中权重大于改写。
 
 # 文档导航
 

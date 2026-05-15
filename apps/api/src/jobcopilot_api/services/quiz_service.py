@@ -48,7 +48,7 @@ from jobcopilot_api.schemas.agents.quiz_generator import (
 )
 from jobcopilot_api.schemas.quiz import QuizSessionCreateIn
 from jobcopilot_api.schemas.retrieval import RetrievedChunk
-from jobcopilot_api.services.query_rewriter import rewrite_query
+from jobcopilot_api.services.query_rewriter import query_weights, rewrite_query
 from jobcopilot_api.services.reranker import rerank
 from jobcopilot_api.services.retrieval_pipeline import (
     HYBRID_TOP_K_PER_QUERY,
@@ -102,6 +102,7 @@ async def start_session_sse(
         yield _ev("progress", {"phase": "query_rewriting"})
         rewrite_out = await rewrite_query(payload.query)
         expanded_queries = rewrite_out.expanded_queries
+        weights = query_weights(rewrite_out)
         yield _ev(
             "progress",
             {
@@ -119,7 +120,7 @@ async def start_session_sse(
                     s, q, top_k=HYBRID_TOP_K_PER_QUERY
                 )
                 hybrid_rankings.append(ranking)
-            fused = multi_query_rrf(hybrid_rankings, k=RRF_K)
+            fused = multi_query_rrf(hybrid_rankings, k=RRF_K, weights=weights)
             yield _ev(
                 "progress",
                 {"phase": "hybrid_searching", "candidate_count": len(fused)},

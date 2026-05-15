@@ -18,6 +18,8 @@ RRF_K / HYBRID_PER_PATH_K 常量在本文件,dogfood 后调动作只改这里。
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +30,27 @@ from jobcopilot_api.services.tokenize import to_tsquery_string
 DEFAULT_TOP_K = 30
 HYBRID_PER_PATH_K = 60  # 各路召回 K(进 RRF 前),最终截 top_k
 RRF_K = 60  # RRF 平滑常数(Cormack 2009)
+
+
+@dataclass(frozen=True)
+class HybridRouteHit:
+    """单一路召回结果,供 eval 脚本解释 coarse rank。"""
+
+    chunk: NoteChunk
+    rank: int
+    score: float
+
+
+@dataclass(frozen=True)
+class HybridSearchDiagnostics:
+    """单条 query 内 vector / lexical / RRF 的可解释账本。"""
+
+    query: str
+    vector_hits: list[HybridRouteHit]
+    lexical_hits: list[HybridRouteHit]
+    rrf_scores: dict[int, float]
+    fused_all_chunks: list[NoteChunk]
+    fused_chunks: list[NoteChunk]
 
 
 async def hybrid_search_in_node(
@@ -75,6 +98,21 @@ async def global_hybrid_search(
     )
 
 
+async def global_hybrid_search_with_diagnostics(
+    session: AsyncSession,
+    query: str,
+    top_k: int = 3,
+) -> HybridSearchDiagnostics:
+    """全用户笔记 hybrid search + 诊断字段,只给 eval/report 使用。"""
+    return await _hybrid_search_with_diagnostics(
+        session,
+        query=query,
+        top_k=top_k,
+        folder_path=None,
+        heading_path=None,
+    )
+
+
 async def _hybrid_search(
     session: AsyncSession,
     *,
@@ -107,6 +145,55 @@ async def _hybrid_search(
     return _by_score(vector_chunks, lexical_chunks, scores)[:top_k]
 
 
+async def _hybrid_search_with_diagnostics(
+    session: AsyncSession,
+    *,
+    query: str,
+    top_k: int,
+    folder_path: list[str] | None,
+    heading_path: list[str] | None,
+) -> HybridSearchDiagnostics:
+    embed_result = await embed_batch([query])
+    if not embed_result.vectors:
+        return HybridSearchDiagnostics(
+            query=query,
+            vector_hits=[],
+            lexical_hits=[],
+            rrf_scores={},
+            fused_all_chunks=[],
+            fused_chunks=[],
+        )
+    vec = embed_result.vectors[0]
+    lex_query = to_tsquery_string(query)
+    per_path_k = max(top_k * 2, HYBRID_PER_PATH_K)
+
+    # 顺序跑 vector / lex 两路:SQLAlchemy AsyncSession 不允许同 session 并发
+    # SQL(撞 InvalidRequestError "concurrent operations are not permitted")。
+    # 两路都是 indexed 查询(HNSW + GIN),串行延迟可控。
+    vector_hits = await _vector_search_with_scores(
+        session, folder_path, heading_path, vec, per_path_k
+    )
+    if lex_query:
+        lexical_hits = await _lexical_search_with_scores(
+            session, folder_path, heading_path, lex_query, per_path_k
+        )
+    else:
+        lexical_hits = []
+
+    vector_chunks = [hit.chunk for hit in vector_hits]
+    lexical_chunks = [hit.chunk for hit in lexical_hits]
+    scores = _rrf_fuse([vector_chunks, lexical_chunks])
+    fused = _by_score(vector_chunks, lexical_chunks, scores)
+    return HybridSearchDiagnostics(
+        query=query,
+        vector_hits=vector_hits,
+        lexical_hits=lexical_hits,
+        rrf_scores=scores,
+        fused_all_chunks=fused,
+        fused_chunks=fused[:top_k],
+    )
+
+
 def _apply_prefix_filters(
     stmt: sa.Select[tuple[NoteChunk]],
     folder_path: list[str] | None,
@@ -137,6 +224,25 @@ async def _vector_search(
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def _vector_search_with_scores(
+    session: AsyncSession,
+    folder_path: list[str] | None,
+    heading_path: list[str] | None,
+    vector: list[float],
+    k: int,
+) -> list[HybridRouteHit]:
+    """HNSW cosine top-K + distance。distance 越小越相似。"""
+    distance = NoteChunk.embedding.cosine_distance(vector)
+    stmt = sa.select(NoteChunk, distance).where(NoteChunk.embedding.is_not(None))
+    stmt = _apply_prefix_filters(stmt, folder_path, heading_path)
+    stmt = stmt.order_by(distance).limit(k)
+    rows = (await session.execute(stmt)).all()
+    return [
+        HybridRouteHit(chunk=row[0], rank=rank, score=float(row[1]))
+        for rank, row in enumerate(rows, start=1)
+    ]
+
+
 async def _lexical_search(
     session: AsyncSession,
     folder_path: list[str] | None,
@@ -156,6 +262,27 @@ async def _lexical_search(
     stmt = _apply_prefix_filters(stmt, folder_path, heading_path)
     stmt = stmt.order_by(rank.desc()).limit(k)
     return list((await session.execute(stmt)).scalars().all())
+
+
+async def _lexical_search_with_scores(
+    session: AsyncSession,
+    folder_path: list[str] | None,
+    heading_path: list[str] | None,
+    ts_query: str,
+    k: int,
+) -> list[HybridRouteHit]:
+    """tsvector lexical top-K + ts_rank。score 越大越匹配。"""
+    tsq = sa.func.to_tsquery("simple", ts_query)
+    content_tsv: sa.ColumnElement[str] = sa.literal_column("content_tsv")
+    rank = sa.func.ts_rank(content_tsv, tsq)
+    stmt = sa.select(NoteChunk, rank).where(content_tsv.op("@@")(tsq))
+    stmt = _apply_prefix_filters(stmt, folder_path, heading_path)
+    stmt = stmt.order_by(rank.desc()).limit(k)
+    rows = (await session.execute(stmt)).all()
+    return [
+        HybridRouteHit(chunk=row[0], rank=idx, score=float(row[1]))
+        for idx, row in enumerate(rows, start=1)
+    ]
 
 
 def _rrf_fuse(
