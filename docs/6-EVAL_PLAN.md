@@ -473,7 +473,7 @@ python -m jobcopilot_api.scripts.eval_resume_advisor \
 
 ## 7.1 评什么
 
-测 **用户主题 query → query rewrite → hybrid 召回 → reranker → parent-doc 扩展 → 最终 chunks** 这条完整 RAG 链路是否满足三件事:
+测 **用户主题 query → query rewrite → hybrid 召回 → reranker → post-rerank governance/blend → parent-doc 扩展 → 最终 chunks** 这条完整 RAG 链路是否满足三件事:
 
 1. **召回不漏**:该出现的 evidence 能进入候选、重排后靠前,最终上下文覆盖完整。
 2. **上下文不脏**:最终喂给 QuizGenerator / AnswerJudge 的 chunks 以直接证据和必要上下文为主,避免靠堆无关 chunk 换 recall。
@@ -485,9 +485,9 @@ python -m jobcopilot_api.scripts.eval_resume_advisor \
 
 | 指标 | 定义 | 阈值 |
 |------|------|------|
-| `candidate_recall@50` | 每个非 0 命中样本中,direct evidence chunk 进入 query rewrite + hybrid + RRF 后候选 Top-50 的比例;再做 macro average | ≥ 0.98 |
-| `rerank_recall@10` | 每个非 0 命中样本中,direct evidence chunk 进入 reranker Top-10 的比例;再做 macro average | ≥ 0.90 |
-| `mrr@10` | reranker Top-10 中首个 expected evidence 的 mean reciprocal rank | ≥ 0.60 |
+| `candidate_recall@15` | 每个非 0 命中样本中,direct evidence chunk 进入 query rewrite + hybrid + RRF 后候选 Top-15 的比例;再做 macro average | ≥ 0.70 |
+| `selected_recall@10` | 每个非 0 命中样本中,direct evidence chunk 进入最终 selected Top-10 的比例;`provider_blend` 下指 post-rerank governance/blend 后的 Top-10,再做 macro average | ≥ 0.90 |
+| `mrr@10` | selected Top-10 中首个 expected evidence 的 mean reciprocal rank | ≥ 0.60 |
 | `final_context_recall` | 每个非 0 命中样本中,parent-doc 扩展后最终 chunks 覆盖 direct evidence chunk 的比例;再做 macro average | ≥ 0.95 |
 | `final_context_precision` | 非 0 命中样本中,final context 内由 Codex 判为直接证据 / 必要上下文的 chunk 数 / final context chunk 总数 | ≥ 0.70 |
 | `zero_hit_precision` | 0 命中 / 近邻干扰样本没有被错误拿去出题的比例 | ≥ 0.90 |
@@ -495,8 +495,8 @@ python -m jobcopilot_api.scripts.eval_resume_advisor \
 
 解释:
 
-- `candidate_recall@50` 守"别漏":reranker 只能重排候选,不能找回没召回的 chunk。
-- `rerank_recall@10` / `mrr@10` 守"排准":QuizGenerator 不应吃大量边缘候选。
+- `candidate_recall@15` 守"粗排紧窗口是否够好":它不是 rerank input 上限;top50 继续保留为诊断窗口和 provider rerank input,用于发现排在 30+ 的长尾正样本。
+- `selected_recall@10` / `mrr@10` 守"排准":QuizGenerator 不应吃大量边缘候选;provider rerank 只提供 challenger 排序,最终成员还要过 governance/blend。
 - `final_context_recall` 守"最终可用":真正决定出题 / 评分质量的是 parent-doc 后的上下文,不是中间候选。
 - `final_context_precision` 守"最终干净":防止 parent-doc / top_k 扩太宽,把无关 chunk 塞给 LLM。
 - `unsafe_boundary_rate` 是 chunker 质量指标,发现问题优先调 chunker / parent-doc,不是换模型。
@@ -513,7 +513,8 @@ python -m jobcopilot_api.scripts.eval_resume_advisor \
 | `lexical_only` | 看 char_ngram / 英文 token 对术语、拼写、缩写的守门能力 |
 | `hybrid_no_rewrite` | 看 RRF 融合本身收益 |
 | `hybrid_with_rewrite` | 看 query rewrite 是否真实提召回,以及是否引入跑题 |
-| `hybrid_with_rewrite_rerank` | 看 reranker 是否把正确 evidence 推到 Top-10 |
+| `hybrid_with_rewrite_rerank` | 看 provider rerank 是否把正确 evidence 推入 challenger pool |
+| `post_rerank_governance_blend` | 看 source/type、contrast、route anchors 和 provider score blend 后,最终 selected Top-10 是否更干净 |
 | `final_context_parent_doc` | 看 parent-doc 是否补回被切断的语义上下文 |
 
 不接受只报最终均值。报告必须保留 per-case 的各阶段 chunk_ids / heading_path / score / failure_reason,否则无法知道该调 query rewrite、hybrid、reranker、chunker 还是 parent-doc。
@@ -592,8 +593,8 @@ MVP 起步 50 条主题 query,总 fixture 笔记 ≥ 10 万字。
   "git_sha": "...",
   "fixture_word_count": 157000,
   "summary": {
-    "candidate_recall@50": 0.98,
-    "rerank_recall@10": 0.92,
+    "candidate_recall@15": 0.70,
+    "selected_recall@10": 0.92,
     "mrr@10": 0.67,
     "final_context_recall": 0.96,
     "final_context_precision": 0.74,
@@ -607,7 +608,8 @@ MVP 起步 50 条主题 query,总 fixture 笔记 ≥ 10 万字。
       "vector_top_ids": [1, 2],
       "lexical_top_ids": [12, 15],
       "hybrid_top_ids": [12, 2, 15],
-      "rerank_top_ids": [12, 15],
+      "provider_top_ids": [12, 15],
+      "selected_top_ids": [12, 15],
       "final_context_ids": [12, 13, 15],
       "final_context_relevance": [
         {"chunk_id": 12, "label": "direct_evidence", "counted_relevant": true},
@@ -631,6 +633,17 @@ MVP 起步 50 条主题 query,总 fixture 笔记 ≥ 10 万字。
   "expanded_queries": ["M2 是否支持岗位类 query？", "..."],
   "candidate_chunk_ids": [2212, 2333, 434],
   "rerank_chunk_ids": [2212, 434],
+  "rerank_movements": [
+    {
+      "chunk_id": 2212,
+      "candidate_rank": 1,
+      "rerank_rank": 2,
+      "post_rank": 1,
+      "final_score": 0.8123,
+      "governance_score": 0.91,
+      "governance_flags": ["anchors_covered", "coarse_floor_selected"]
+    }
+  ],
   "final_chunks": [
     {
       "chunk_id": 2212,
@@ -648,7 +661,7 @@ MVP 起步 50 条主题 query,总 fixture 笔记 ≥ 10 万字。
 
 trace 保存的是**可按新标签重新求交集的阶段全集**,不是旧标签下的命中结果。后续只调整 `direct_evidence_chunk_ids` / `necessary_context_chunk_ids` / heading / anchor / hard-negative 标签时,必须复用 trace 离线重算,避免重复调用 query rewrite / rerank。只有改检索代码、prompt、reranker、DB 语料、embedding 或 chunker 时,才完整重跑 pipeline。
 
-注意:`candidate_chunk_ids` 在 0 命中守门前就会保存;即使 `predicted_zero_hit=true`,也能检查系统是否其实召回了 1-2 个正确证据、只是没达到出题阈值。`rerank_chunk_ids` 和 `final_chunks` 只有通过 0 命中守门后才会出现。
+注意:`candidate_chunk_ids` 在 0 命中守门前就会保存;即使 `predicted_zero_hit=true`,也能检查系统是否其实召回了 1-2 个正确证据、只是没达到出题阈值。`rerank_chunk_ids` 和 `final_chunks` 只有通过 0 命中守门后才会出现。`post_rank` 只给真正进入 post-rerank selected context 的 chunk;被 governance 拒绝的候选只保留 `final_score / governance_score / governance_flags` 供诊断。
 
 `failure_reason` 只能取固定枚举,便于统计:
 
@@ -657,7 +670,8 @@ trace 保存的是**可按新标签重新求交集的阶段全集**,不是旧标
 | `rewrite_drift` | rewrite 扩太宽,候选跑题 | query_rewriter prompt / expanded query 数量 |
 | `vector_miss` | dense 路漏召回 | embedding 模型 / chunk 内容粒度 |
 | `lexical_miss` | lexical 路漏召回 | char_ngram / tokenization / tsvector |
-| `rerank_drop` | hybrid 命中但 reranker 掉出 Top-10 | reranker top_k / instruct / 候选噪声 |
+| `rerank_drop` | hybrid 命中但 provider reranker 没捞进 challenger pool | reranker top_k / instruct / 候选噪声 |
+| `post_governance_drop` | provider 捞到但 post-rerank governance/blend 拒绝 | source/type / anchor coverage / contrast route / hard-negative clamp |
 | `parent_context_missing` | Top-10 命中但 final context 缺前提 | parent-doc 策略 |
 | `final_context_noise` | final context 召回到了证据,但混入过多无关 chunk | parent-doc 扩展范围 / final context top_k / 去重与 source diversity |
 | `chunk_boundary_unsafe` | 切片打断关键语义 | chunker / overlap / 结构化 markdown 保护 |
@@ -677,7 +691,19 @@ trace 保存的是**可按新标签重新求交集的阶段全集**,不是旧标
 uv run python apps/api/scripts/eval_hybrid_search_note_smoke.py
 ```
 
-该脚本读取 `evals/suites/hybrid_search/dataset.note_smoke.jsonl`,只读当前 DB,写 markdown report 到 `evals/reports/`,并同时写同时间戳的 `.trace.jsonl`。报告包含 top notes、top chunks、heading/anchor coverage、hard-negative rank、`candidate_recall@50`、`rerank_recall@10`、`mrr@10`、`final_context_recall`、`final_context_precision`、zero-hit 与成本。旧 note-level pass rule 暂时保留;chunk / heading / anchor 字段用于诊断。
+该脚本读取 `evals/suites/hybrid_search/dataset.note_smoke.jsonl`,只读当前 DB,写 markdown report 到 `evals/reports/`,并同时写同时间戳的 `.trace.jsonl`。报告包含 top notes、top chunks、heading/anchor coverage、hard-negative rank、`candidate_recall@15`、`selected_recall@10`、`mrr@10`、`final_context_recall`、`final_context_precision`、zero-hit 与成本。旧 note-level pass rule 暂时保留;chunk / heading / anchor 字段用于诊断。
+
+当前生产对齐跑法:
+
+```
+uv run python apps/api/scripts/eval_hybrid_search_note_smoke.py \
+    --rerank-mode provider_blend \
+    --rerank-input-top-k 50 \
+    --selected-top-k 10 \
+    --query-embedding-cache-policy cache-only
+```
+
+`cache-only` 是 eval/smoke 默认策略:相同 expanded query 必须命中本地 `query_embedding` cache,cache miss 直接失败,避免重复实验静默请求 embedding provider。需要刻意补缓存时,由用户显式切 `--query-embedding-cache-policy live-on-miss`。
 
 只改标签或打分口径时,不要完整重跑。复用上一次 trace 离线重算:
 
@@ -701,24 +727,25 @@ python -m jobcopilot_api.scripts.eval_hybrid_search \
 ## 7.8 不达标处理顺序
 
 1. 先看 per-case `failure_reason`,不要只看总均值。
-2. `candidate_recall@50` 不达标:优先调 query rewrite / hybrid top_k / tokenization / embedding,不要调 reranker。
-3. `rerank_recall@10` 不达标:优先调 reranker `top_k` / instruct / 候选去噪 / document format,尤其检查 metadata 是否把题库、评测样本、anchor 汇总、hard-negative 这类近邻材料抬高。
-4. `final_context_recall` 或 `unsafe_boundary_rate` 不达标:优先调 parent-doc / chunker / overlap / markdown 结构保护。
-5. `final_context_precision` 不达标:优先收紧 parent-doc 扩展范围 / final context top_k / 去重与 source diversity,不要靠减少 expected evidence 标注来抬分。
-6. `zero_hit_precision` 不达标:调整 0 命中守门的核心实体 / anchor / source diversity / score 阈值组合,不要让 LLM 兜底编。注意 reranker `relevance_score` 只适合本次请求内排序,不要未经标定就做跨请求绝对阈值。
-7. 调参后重跑全 suite,报告进 git history。
+2. `candidate_recall@15` 不达标但 top50 诊断能看到正样本:优先调粗排排序 / query weights / governance,不要把 provider input 收窄。
+3. top50 诊断也漏正样本:优先调 query rewrite / hybrid top_k / tokenization / embedding,不要调 reranker。
+4. `selected_recall@10` 不达标:优先查 provider challenger 是否捞到、post-rerank governance 是否误伤、blend 权重是否过强;再看 reranker `top_k` / instruct / document format。
+5. `final_context_recall` 或 `unsafe_boundary_rate` 不达标:优先调 parent-doc / chunker / overlap / markdown 结构保护。
+6. `final_context_precision` 不达标:优先调 dynamic clean-context selection / parent-doc 扩展范围 / 去重与 source diversity,不要靠减少 expected evidence 标注来抬分。
+7. `zero_hit_precision` 不达标:调整 0 命中守门的核心实体 / anchor / source diversity / score 阈值组合,不要让 LLM 兜底编。注意 reranker `relevance_score` 只适合本次请求内排序,不要未经标定就做跨请求绝对阈值。
+8. 调参后重跑全 suite,报告进 git history。
 
 ## 7.9 RAG / reranker 调参沉淀(百炼文档对照)
 
 百炼 RAG 优化文档和 qwen3-rerank 文档对本 suite 的可复用结论:
 
-1. **先有基线再调参**:每次改 query rewrite / chunker / reranker instruct / document format / top_k,都必须对比同一批 case 的 trace/report。只看总均值不够,要定位 `candidate_recall@50`、`rerank_recall@10`、`final_context_recall` 分别在哪一层变化。
+1. **先有基线再调参**:每次改 query rewrite / chunker / reranker instruct / document format / top_k,都必须对比同一批 case 的 trace/report。只看总均值不够,要定位 `candidate_recall@15`、top50 诊断、`selected_recall@10`、`final_context_recall` 分别在哪一层变化。
 2. **`instruct` 是排序策略,不是装饰参数**:qwen3-rerank 明确支持用 instruct 区分"问答检索"和"语义相似度"。JobCopilot 的目标是找"能直接作为笔记证据回答 query 的 chunk",不是找标题 / 文件夹 / 主题最相似的 chunk。默认 web-search instruct 只能作为 baseline,不算最终锁定策略。
-3. **metadata 拼进 document 后就是正文**:qwen3-rerank 的 `documents` 是字符串数组,没有结构化 metadata 字段。`folder_path` / `heading_path` 一旦被拼到正文前面,模型会把它们当强文本信号,可能把"题库 / 评测 / anchor 汇总 / hard negative"抬到 direct evidence 前面。metadata format 变更必须 A/B,并同时看 `rerank_recall@10`、hard-negative intrusion、token cost。
+3. **metadata 拼进 document 后就是正文**:qwen3-rerank 的 `documents` 是字符串数组,没有结构化 metadata 字段。`folder_path` / `heading_path` 一旦被拼到正文前面,模型会把它们当强文本信号,可能把"题库 / 评测 / anchor 汇总 / hard negative"抬到 direct evidence 前面。metadata format 变更必须 A/B,并同时看 `selected_recall@10`、hard-negative intrusion、token cost。
 4. **标签 / 元数据优先用于检索前过滤或降权**:百炼 RAG 文档里的标签过滤和元数据搜索语义是"先结构化筛选,再向量检索 / rerank",不是把标签粗暴拼进文本。JobCopilot 可考虑给 chunk 标轻量 `content_type`,例如 `project_fact` / `interview_question_bank` / `eval_case` / `anchor_summary` / `hard_negative` / `generic_background`;项目事实 query 优先事实笔记,题库和评测样本通常只能作为 necessary context 或噪声候选。
-5. **top_k 是召回兜底,不是根因修复**:提高 reranker `top_n` / final context K 可以救回排在 10 名外的 direct evidence,但会增加噪声、成本和生成端截断风险。只有在总结 / 列举 / 比较类 query 需要更多材料时才优先增 K;边界事实题优先做候选去噪和 direct-evidence instruct。
+5. **top_k 分两类**:provider rerank input 可以保留 top50,用于给排在 30+ 的正样本二次机会;final selected top10 不能硬塞满,应由 governance/blend 动态选 3-10 个干净 chunk。提高 final context K 会增加噪声、成本和生成端截断风险。
 6. **chunk 完整性单独排查**:如果 evidence 已进 top_k 但 final context 缺前提、否定、数值、步骤,优先查 chunker / parent-doc / markdown 结构保护,不要误归因为 reranker。
-7. **本地降权先做诊断,不要默认进主路**:2026-05-14 试过 intent × chunk-type soft adjustment,能把 hard-negative intrusion 从 4/12 压到 3/12、提升 MRR,但 `rerank_recall@10` 和 final recall 下降。后续若继续做,report/trace 必须打印 `query_intent`、`chunk_type`、provider rank、adjustment、adjusted_score,先离线 A/B penalty 表,再决定是否进产品路径。
+7. **本地降权先做诊断,不要默认进主路**:2026-05-14 试过 intent × chunk-type soft adjustment,能把 hard-negative intrusion 从 4/12 压到 3/12、提升 MRR,但 `selected_recall@10` 和 final recall 下降。后续若继续做,report/trace 必须打印 `query_intent`、`chunk_type`、provider rank、adjustment、adjusted_score,先离线 A/B penalty 表,再决定是否进产品路径。
 
 # 8. 防回归约束
 

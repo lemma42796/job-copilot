@@ -96,9 +96,9 @@ M3    弱点跟踪 + SR(空 query 系统自选)+ 岗位类出题(三源融合)+ 
 - [ ] `evals/suites/answer_judge/dataset.jsonl` 收 30 条人工标注样本
 - [ ] `scripts/eval_answer_judge.py` 跑通,Coverage / Fidelity kappa ≥ 0.7,Depth accuracy ≥ 0.75
 - [ ] `scripts/eval_quiz_generator.py` 跑通,结构合规率 ≥ 0.95
-- [x] `apps/api/scripts/eval_hybrid_search_note_smoke.py` smoke 脚本与 12 条主题类 / zero-hit query 标签已落地:数据集含 `direct_evidence_chunk_ids / necessary_context_chunk_ids / expected_heading_paths / evidence_anchors`,脚本支持输出 top chunks、anchor 命中、hard-negative rank、`candidate_recall@50 / rerank_recall@10 / mrr@10 / final_context_recall / final_context_precision`;2026-05-13 已生成首份 chunk-level report,随后完成一轮标签口径收紧,待重跑新基线
+- [x] `apps/api/scripts/eval_hybrid_search_note_smoke.py` smoke 脚本与 12 条主题类 / zero-hit query 标签已落地:数据集含 `direct_evidence_chunk_ids / necessary_context_chunk_ids / expected_heading_paths / evidence_anchors`,脚本支持输出 top chunks、anchor 命中、hard-negative rank、`candidate_recall@15 / selected_recall@10 / mrr@10 / final_context_recall / final_context_precision`;top50 保留为诊断窗口和 provider rerank input,2026-05-16 已接入 `provider_blend` 与 cache-only query embedding policy
 - [ ] 正式 `hybrid_search` suite 扩到 50 条 fixture query + ablation 矩阵(vector-only / lex-only / hybrid / rewrite / rerank / parent-doc),阈值以 6-EVAL §7 为准
-- [ ] Langfuse 按 session_id 过滤能看到完整 trace 树(query rewriting → hybrid → rerank → parent-doc → 出题 → 工具 → 评分嵌套)
+- [ ] Langfuse 按 session_id 过滤能看到完整 trace 树(query rewriting → hybrid → rerank/blend → parent-doc → 出题 → 工具 → 评分嵌套)
 
 # M2.1:InterviewCoachAgent(Agentic RAG 面试状态机)
 

@@ -38,11 +38,14 @@ from jobcopilot_api.services.reranker import (
     reset_http_client,
 )
 from jobcopilot_api.services.retrieval_governance import (
+    POST_RERANK_COARSE_KEEP_TOP_K,
     PROTECTED_ANCHOR_ROUTE_WEIGHT,
+    PostRerankGovernanceDetail,
     RetrievalGovernanceContext,
     assess_query_support,
     classify_chunk_source,
     governance_context_from_rewrite,
+    post_rerank_governance_blend,
     protected_anchor_search,
     source_multiplier,
 )
@@ -65,9 +68,16 @@ from jobcopilot_api.settings import settings
 
 RERANK_DIAGNOSTIC_TOP_K = 50
 COARSE_RANK_DIAGNOSTIC_TOP_K = 50
+FORMAL_CANDIDATE_RECALL_TOP_K = 15
+FORMAL_SELECTED_RECALL_TOP_K = 10
 COARSE_RANK_NEIGHBOR_WINDOW = 5
 LOW_COARSE_RANK_THRESHOLD = 20
 CONTENT_PREVIEW_CHARS = 360
+POST_RERANK_SELECTED_FLAGS = (
+    "coarse_floor_selected",
+    "challenger_selected",
+    "min_context_backfill",
+)
 ORIGINAL_QUERY_WEIGHT_SIMULATION = 2.0
 
 
@@ -109,6 +119,10 @@ class TraceRerankMovement:
     rerank_rank: int | None
     rank_delta: int | None
     rerank_score: float | None
+    post_rank: int | None = None
+    final_score: float | None = None
+    governance_score: float | None = None
+    governance_flags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -154,6 +168,10 @@ class RerankMovement:
     hard_negative_note: bool
     direct_evidence: bool
     necessary_context: bool
+    post_rank: int | None = None
+    final_score: float | None = None
+    governance_score: float | None = None
+    governance_flags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -298,8 +316,8 @@ class SmokeResult:
     hard_negative_hits: list[str]
     hard_negative_ranks: dict[str, int]
     failure_hints: list[str]
-    candidate_recall_at_50: float | None
-    rerank_recall_at_10: float | None
+    candidate_recall_at_15: float | None
+    selected_recall_at_10: float | None
     mrr_at_10: float | None
     final_context_recall: float | None
     final_context_precision: float | None
@@ -441,14 +459,27 @@ async def run_pipeline_with_cost(
             error=detail,
         )
 
-    if rerank_mode == "provider":
+    post_rerank_details: list[PostRerankGovernanceDetail] = []
+    if rerank_mode in {"provider", "provider_blend"}:
         rerank_result = await rerank(
             user_query,
             rerank_input,
             top_k=diagnostic_top_k,
         )
         diagnostic_scored = rerank_result.scored
-        top_scored = rerank_result.scored[:selected_top_k]
+        if rerank_mode == "provider_blend":
+            post_rerank = post_rerank_governance_blend(
+                rerank_input,
+                diagnostic_scored,
+                governance,
+                expanded_queries,
+                top_k=selected_top_k,
+                coarse_keep_top_k=POST_RERANK_COARSE_KEEP_TOP_K,
+            )
+            top_scored = post_rerank.selected
+            post_rerank_details = post_rerank.details
+        else:
+            top_scored = rerank_result.scored[:selected_top_k]
         rerank_tokens = rerank_result.total_tokens
         rerank_cost_cny = rerank_result.cost_cny
     elif rerank_mode == "none":
@@ -500,6 +531,7 @@ async def run_pipeline_with_cost(
         rerank_input,
         diagnostic_scored,
         note_titles,
+        post_rerank_details=post_rerank_details,
     )
     final_chunks = [
         RetrievedChunk(
@@ -767,6 +799,8 @@ def build_trace_rerank_movements(
     rerank_input_chunks: list[NoteChunk],
     rerank_scored: list[tuple[NoteChunk, float | None]],
     note_titles: dict[int, str],
+    *,
+    post_rerank_details: list[PostRerankGovernanceDetail] | None = None,
 ) -> list[TraceRerankMovement]:
     candidate_rank_by_id = {
         int(chunk.id): rank
@@ -782,11 +816,28 @@ def build_trace_rerank_movements(
             start=1,
         )
     }
+    post_detail_by_id = {
+        int(detail.chunk.id): detail
+        for detail in (post_rerank_details or [])
+    }
+    selected_post_rank_by_id = {
+        int(detail.chunk.id): rank
+        for rank, detail in enumerate(
+            [
+                detail
+                for detail in (post_rerank_details or [])
+                if post_rerank_detail_selected(detail)
+            ],
+            start=1,
+        )
+    }
     by_id: dict[int, NoteChunk] = {}
     for chunk in candidate_chunks:
         by_id.setdefault(int(chunk.id), chunk)
     for chunk, _ in rerank_scored[:RERANK_DIAGNOSTIC_TOP_K]:
         by_id.setdefault(int(chunk.id), chunk)
+    for detail in (post_rerank_details or [])[:RERANK_DIAGNOSTIC_TOP_K]:
+        by_id.setdefault(int(detail.chunk.id), detail.chunk)
 
     def sort_key(chunk: NoteChunk) -> tuple[int, int, int]:
         chunk_id = int(chunk.id)
@@ -809,6 +860,16 @@ def build_trace_rerank_movements(
             rerank_score = None
         else:
             rerank_rank, rerank_score = rerank_info
+        post_detail = post_detail_by_id.get(chunk_id)
+        post_rank = selected_post_rank_by_id.get(chunk_id)
+        if post_detail is None:
+            final_score = None
+            governance_score = None
+            governance_flags: tuple[str, ...] = ()
+        else:
+            final_score = post_detail.final_score
+            governance_score = post_detail.governance_score
+            governance_flags = post_detail.flags
         rank_delta = (
             rerank_rank - candidate_rank
             if candidate_rank is not None and rerank_rank is not None
@@ -825,9 +886,17 @@ def build_trace_rerank_movements(
                 rerank_rank=rerank_rank,
                 rank_delta=rank_delta,
                 rerank_score=rerank_score,
+                post_rank=post_rank,
+                final_score=final_score,
+                governance_score=governance_score,
+                governance_flags=governance_flags,
             )
         )
     return movements
+
+
+def post_rerank_detail_selected(detail: PostRerankGovernanceDetail) -> bool:
+    return any(flag in detail.flags for flag in POST_RERANK_SELECTED_FLAGS)
 
 
 def trace_final_chunk(item: RetrievedChunk) -> TraceFinalChunk:
@@ -946,6 +1015,10 @@ def build_rerank_movements(
             hard_negative_note=item.note_path in case.hard_negative_note_paths,
             direct_evidence=item.chunk_id in direct_evidence_chunk_ids,
             necessary_context=item.chunk_id in necessary_context_chunk_ids,
+            post_rank=item.post_rank,
+            final_score=item.final_score,
+            governance_score=item.governance_score,
+            governance_flags=tuple(item.governance_flags),
         )
         for item in trace_movements
     ]
@@ -1223,6 +1296,10 @@ def trace_to_json(trace: SmokeTrace) -> dict[str, object]:
                 "rerank_rank": movement.rerank_rank,
                 "rank_delta": movement.rank_delta,
                 "rerank_score": movement.rerank_score,
+                "post_rank": movement.post_rank,
+                "final_score": movement.final_score,
+                "governance_score": movement.governance_score,
+                "governance_flags": list(movement.governance_flags),
             }
             for movement in trace.rerank_movements
         ],
@@ -1408,6 +1485,25 @@ def trace_from_json(obj: dict[str, object]) -> SmokeTrace:
                     if movement.get("rerank_score") is not None
                     else None
                 ),
+                post_rank=(
+                    int(movement["post_rank"])
+                    if movement.get("post_rank") is not None
+                    else None
+                ),
+                final_score=(
+                    float(movement["final_score"])
+                    if movement.get("final_score") is not None
+                    else None
+                ),
+                governance_score=(
+                    float(movement["governance_score"])
+                    if movement.get("governance_score") is not None
+                    else None
+                ),
+                governance_flags=tuple(
+                    str(flag)
+                    for flag in (movement.get("governance_flags") or [])
+                ),
             )
             for movement in obj.get("rerank_movements", [])
             if isinstance(movement, dict)
@@ -1459,6 +1555,18 @@ def match_direct_evidence_hits(
     expected = set(direct_evidence_chunk_ids)
     return ordered_unique_int(
         [chunk_id for chunk_id in actual_chunk_ids if chunk_id in expected]
+    )
+
+
+def match_direct_evidence_hits_at_k(
+    direct_evidence_chunk_ids: list[int],
+    actual_chunk_ids: list[int],
+    *,
+    k: int,
+) -> list[int]:
+    return match_direct_evidence_hits(
+        direct_evidence_chunk_ids,
+        actual_chunk_ids[:k],
     )
 
 
@@ -1529,11 +1637,15 @@ def score_case_trace(case: SmokeCase, trace: SmokeTrace) -> SmokeResult:
         case, trace.coarse_rank_diagnostics
     )
     if trace.predicted_zero_hit:
-        candidate_hits = match_direct_evidence_hits(
-            case.direct_evidence_chunk_ids, trace.candidate_chunk_ids
+        candidate_hits = match_direct_evidence_hits_at_k(
+            case.direct_evidence_chunk_ids,
+            trace.candidate_chunk_ids,
+            k=FORMAL_CANDIDATE_RECALL_TOP_K,
         )
-        rerank_hits = match_direct_evidence_hits(
-            case.direct_evidence_chunk_ids, trace.rerank_chunk_ids
+        rerank_hits = match_direct_evidence_hits_at_k(
+            case.direct_evidence_chunk_ids,
+            trace.rerank_chunk_ids,
+            k=FORMAL_SELECTED_RECALL_TOP_K,
         )
         final_context_recall = (
             recall_ratio(case.direct_evidence_chunk_ids, [])
@@ -1566,14 +1678,15 @@ def score_case_trace(case: SmokeCase, trace: SmokeTrace) -> SmokeResult:
             hard_negative_hits=[],
             hard_negative_ranks={},
             failure_hints=[] if passed else ["unexpected_zero_hit"],
-            candidate_recall_at_50=recall_ratio(
+            candidate_recall_at_15=recall_ratio(
                 case.direct_evidence_chunk_ids, candidate_hits
             ),
-            rerank_recall_at_10=recall_ratio(
+            selected_recall_at_10=recall_ratio(
                 case.direct_evidence_chunk_ids, rerank_hits
             ),
             mrr_at_10=mrr_at_k(
-                case.direct_evidence_chunk_ids, trace.rerank_chunk_ids
+                case.direct_evidence_chunk_ids,
+                trace.rerank_chunk_ids[:FORMAL_SELECTED_RECALL_TOP_K],
             ),
             final_context_recall=final_context_recall,
             final_context_precision=None,
@@ -1583,11 +1696,15 @@ def score_case_trace(case: SmokeCase, trace: SmokeTrace) -> SmokeResult:
             error=trace.error,
         )
 
-    candidate_hits = match_direct_evidence_hits(
-        case.direct_evidence_chunk_ids, trace.candidate_chunk_ids
+    candidate_hits = match_direct_evidence_hits_at_k(
+        case.direct_evidence_chunk_ids,
+        trace.candidate_chunk_ids,
+        k=FORMAL_CANDIDATE_RECALL_TOP_K,
     )
-    rerank_hits = match_direct_evidence_hits(
-        case.direct_evidence_chunk_ids, trace.rerank_chunk_ids
+    rerank_hits = match_direct_evidence_hits_at_k(
+        case.direct_evidence_chunk_ids,
+        trace.rerank_chunk_ids,
+        k=FORMAL_SELECTED_RECALL_TOP_K,
     )
     top_chunks = build_chunk_hits(case, trace.final_chunks)
     top_notes = ordered_unique([chunk.note_path for chunk in trace.final_chunks])
@@ -1657,13 +1774,16 @@ def score_case_trace(case: SmokeCase, trace: SmokeTrace) -> SmokeResult:
         hard_negative_hits=hard_negative_hits,
         hard_negative_ranks=hard_negative_ranks,
         failure_hints=failure_hints,
-        candidate_recall_at_50=recall_ratio(
+        candidate_recall_at_15=recall_ratio(
             case.direct_evidence_chunk_ids, candidate_hits
         ),
-        rerank_recall_at_10=recall_ratio(
+        selected_recall_at_10=recall_ratio(
             case.direct_evidence_chunk_ids, rerank_hits
         ),
-        mrr_at_10=mrr_at_k(case.direct_evidence_chunk_ids, trace.rerank_chunk_ids),
+        mrr_at_10=mrr_at_k(
+            case.direct_evidence_chunk_ids,
+            trace.rerank_chunk_ids[:FORMAL_SELECTED_RECALL_TOP_K],
+        ),
         final_context_recall=recall_ratio(
             case.direct_evidence_chunk_ids, direct_evidence_hits
         ),
@@ -1831,6 +1951,10 @@ def movement_labels_text(chunk: RerankMovement) -> str:
     if chunk.hard_negative_note:
         labels.append("hard-negative")
     return ", ".join(labels) if labels else "-"
+
+
+def movement_flags_text(chunk: RerankMovement) -> str:
+    return list_text(list(chunk.governance_flags))
 
 
 def rank_text(rank: int | None) -> str:
@@ -2350,27 +2474,36 @@ def select_movement_rows(
             movement.rerank_rank is not None
             and movement.rerank_rank <= selected_top_k
         )
+        or (
+            movement.post_rank is not None
+            and movement.post_rank <= selected_top_k
+        )
     ]
 
     def priority(movement: RerankMovement) -> tuple[int, int, int]:
         if (
+            movement.post_rank is not None
+            and movement.post_rank <= selected_top_k
+        ):
+            group = 0
+        elif (
             movement.rerank_rank is not None
             and movement.rerank_rank <= selected_top_k
         ):
-            group = 0
-        elif movement.direct_evidence:
             group = 1
-        elif movement.hard_negative_note:
+        elif movement.direct_evidence:
             group = 2
-        else:
+        elif movement.hard_negative_note:
             group = 3
+        else:
+            group = 4
         return (
             group,
+            movement.post_rank
+            if movement.post_rank is not None
+            else 10**9,
             movement.rerank_rank
             if movement.rerank_rank is not None
-            else 10**9,
-            movement.candidate_rank
-            if movement.candidate_rank is not None
             else 10**9,
         )
 
@@ -2384,6 +2517,7 @@ def render_report(
     *,
     score_trace_path: Path | None = None,
     trace_output_path: Path | None = None,
+    query_embedding_cache_policy: str = "cache-only",
 ) -> str:
     total = len(results)
     passed = sum(1 for r in results if r.passed)
@@ -2422,9 +2556,9 @@ def render_report(
         1 for r in results if r.hard_negative_hits
     )
     candidate_recall = metric_avg(
-        [r.candidate_recall_at_50 for r in results]
+        [r.candidate_recall_at_15 for r in results]
     )
-    rerank_recall = metric_avg([r.rerank_recall_at_10 for r in results])
+    selected_recall = metric_avg([r.selected_recall_at_10 for r in results])
     mean_mrr = metric_avg([r.mrr_at_10 for r in results])
     final_context_recall = metric_avg(
         [r.final_context_recall for r in results]
@@ -2463,6 +2597,9 @@ def render_report(
         lines.append("- score_mode: live_pipeline")
     if trace_output_path is not None:
         lines.append(f"- trace_output: `{trace_output_path}`")
+    lines.append(
+        f"- query_embedding_cache_policy: {query_embedding_cache_policy}"
+    )
     lines.append(f"- cases: {total}")
     lines.append(f"- passed: {passed}/{total}")
     lines.append(f"- rerank_mode: {', '.join(rerank_modes)}")
@@ -2510,18 +2647,23 @@ def render_report(
         "hard-negative note; chunk/heading/anchor fields are diagnostics"
     )
     lines.append(
-        "- metric_average_rule: candidate/rerank/final recall and mrr are "
-        "macro averages over cases with direct_evidence_chunk_ids; expected "
-        "zero-hit cases are excluded, unexpected zero-hit cases count final "
-        "context recall as 0"
+        "- metric_average_rule: candidate_recall@15, selected_recall@10, "
+        "mrr@10, and final recall are macro averages over cases with "
+        "direct_evidence_chunk_ids; expected zero-hit cases are excluded, "
+        "unexpected zero-hit cases count final context recall as 0"
     )
     lines.append(
-        "- rerank_mode_note: selected recall/mrr use provider rerank topK in "
-        "`provider` mode and hybrid RRF topK in `none` mode"
+        "- rerank_mode_note: selected_recall@10/mrr@10 use provider rerank "
+        "top10 in `provider` mode, post-rerank governance/blend top10 in "
+        "`provider_blend` mode, and hybrid RRF top10 in `none` mode. "
+        "`provider_blend` uses dynamic clean-context selection: governed "
+        "coarse top10 enters first, high-confidence challengers may enter "
+        "from the rerank input pool, and low-confidence chunks are not used "
+        "just to fill top10"
     )
-    lines.append(f"- candidate_recall@50: {percent_text(candidate_recall)}")
-    lines.append(f"- selected_recall@K: {percent_text(rerank_recall)}")
-    lines.append(f"- mrr@K: {percent_text(mean_mrr)}")
+    lines.append(f"- candidate_recall@15: {percent_text(candidate_recall)}")
+    lines.append(f"- selected_recall@10: {percent_text(selected_recall)}")
+    lines.append(f"- mrr@10: {percent_text(mean_mrr)}")
     lines.append(f"- final_context_recall: {percent_text(final_context_recall)}")
     lines.append(
         f"- final_context_precision: {percent_text(final_context_precision)}"
@@ -2563,7 +2705,7 @@ def render_report(
     lines.append(f"- observed_cost_cny: {total_cost:.6f}")
     lines.append("\n## Cases\n")
     lines.append(
-        "| ID | Result | candidate@50 | selected@K | mrr@K | final recall | final precision | Zero-hit | Chunks | Failure hints |"
+        "| ID | Result | candidate@15 | selected@10 | mrr@10 | final recall | final precision | Zero-hit | Chunks | Failure hints |"
     )
     lines.append(
         "|----|--------|--------------|-----------|--------|--------------|-----------------|----------|--------|---------------|"
@@ -2574,8 +2716,8 @@ def render_report(
         hints = ", ".join(r.failure_hints) if r.failure_hints else "-"
         lines.append(
             f"| {r.case.id} | {result} | "
-            f"{percent_text(r.candidate_recall_at_50)} | "
-            f"{percent_text(r.rerank_recall_at_10)} | "
+            f"{percent_text(r.candidate_recall_at_15)} | "
+            f"{percent_text(r.selected_recall_at_10)} | "
             f"{percent_text(r.mrr_at_10)} | "
             f"{percent_text(r.final_context_recall)} | "
             f"{percent_text(r.final_context_precision)} | "
@@ -2590,18 +2732,18 @@ def render_report(
         lines.append(f"- expanded_queries: {list_text(r.expanded_queries)}")
         lines.append(f"- failure_hints: {list_text(r.failure_hints)}")
         lines.append(
-            f"- metrics: candidate_recall@50={percent_text(r.candidate_recall_at_50)}, "
-            f"selected_recall@K={percent_text(r.rerank_recall_at_10)}, "
-            f"mrr@K={percent_text(r.mrr_at_10)}, "
+            f"- metrics: candidate_recall@15={percent_text(r.candidate_recall_at_15)}, "
+            f"selected_recall@10={percent_text(r.selected_recall_at_10)}, "
+            f"mrr@10={percent_text(r.mrr_at_10)}, "
             f"final_context_recall={percent_text(r.final_context_recall)}, "
             f"final_context_precision={percent_text(r.final_context_precision)}"
         )
         lines.append(
-            f"- candidate_direct_evidence_hits: "
+            f"- candidate@15_direct_evidence_hits: "
             f"{int_list_text(r.candidate_direct_evidence_hits)}"
         )
         lines.append(
-            f"- rerank_direct_evidence_hits: "
+            f"- selected@10_direct_evidence_hits: "
             f"{int_list_text(r.rerank_direct_evidence_hits)}"
         )
         lines.append(f"- expected_note_hits: {list_text(r.expected_hits)}")
@@ -2768,18 +2910,22 @@ def render_report(
         if movement_rows:
             lines.append("")
             lines.append(
-                "| Chunk | Hybrid rank | Selected rank | Delta | Rerank score | Labels | Note | Heading |"
+                "| Chunk | Hybrid rank | Provider rank | Post rank | Provider delta | Rerank score | Final score | Governance | Flags | Labels | Note | Heading |"
             )
             lines.append(
-                "|-------|----------------|-------------|-------|--------------|--------|------|---------|"
+                "|-------|-------------|---------------|-----------|----------------|--------------|-------------|------------|-------|--------|------|---------|"
             )
             for movement in movement_rows:
                 lines.append(
                     f"| #{movement.chunk_id} | "
                     f"{rank_text(movement.candidate_rank)} | "
                     f"{rank_text(movement.rerank_rank)} | "
+                    f"{rank_text(movement.post_rank)} | "
                     f"{rank_delta_text(movement.rank_delta)} | "
                     f"{score_text(movement.rerank_score)} | "
+                    f"{score_text(movement.final_score)} | "
+                    f"{score_text(movement.governance_score)} | "
+                    f"{movement_flags_text(movement)} | "
                     f"{movement_labels_text(movement)} | "
                     f"{md_cell(movement.note_path)} | "
                     f"{md_cell(path_text(movement.heading_path))} |"
@@ -2793,7 +2939,7 @@ def render_report(
             continue
         lines.append("")
         lines.append(
-            "| Rank | Chunk | Note | Heading | Rerank score | Labels | Anchor hits |"
+            "| Rank | Chunk | Note | Heading | Selected score | Labels | Anchor hits |"
         )
         lines.append(
             "|------|-------|------|---------|--------------|--------|-------------|"
@@ -2818,9 +2964,9 @@ def print_result(result: SmokeResult) -> None:
         f"top_k={result.selected_top_k} "
         f"parent_doc={result.parent_doc_mode} "
         f"hits={len(result.expected_hits)} "
-        f"cand@50={percent_text(result.candidate_recall_at_50)} "
-        f"selected@K={percent_text(result.rerank_recall_at_10)} "
-        f"mrr@K={percent_text(result.mrr_at_10)} "
+        f"cand@15={percent_text(result.candidate_recall_at_15)} "
+        f"selected@10={percent_text(result.selected_recall_at_10)} "
+        f"mrr@10={percent_text(result.mrr_at_10)} "
         f"final={percent_text(result.final_context_recall)} "
         f"headings={len(result.expected_heading_hits)}/"
         f"{len(result.case.expected_heading_paths)} "
@@ -2890,11 +3036,13 @@ async def main() -> None:
     )
     parser.add_argument(
         "--rerank-mode",
-        choices=("provider", "none"),
+        choices=("provider", "provider_blend", "none"),
         default="provider",
         help=(
-            "provider calls qwen3-rerank; none selects the hybrid RRF order "
-            "directly and records zero rerank cost."
+            "provider calls qwen3-rerank and selects its order; "
+            "provider_blend calls qwen3-rerank then applies post-rerank "
+            "governance/blend; none selects the hybrid RRF order directly "
+            "and records zero rerank cost."
         ),
     )
     parser.add_argument(
@@ -2906,7 +3054,7 @@ async def main() -> None:
     parser.add_argument(
         "--rerank-input-top-k",
         type=int,
-        default=QWEN3_RERANK_MAX_DOCUMENTS,
+        default=POST_RERANK_COARSE_KEEP_TOP_K,
         help=(
             "Number of hybrid RRF chunks passed to the selected stage. "
             "Use this to simulate coarse topK -> rerank topN."
@@ -2918,7 +3066,20 @@ async def main() -> None:
         default="on",
         help="on expands selected chunks to parent-doc context; off uses seeds only.",
     )
+    parser.add_argument(
+        "--query-embedding-cache-policy",
+        choices=("cache-only", "live-on-miss"),
+        default="cache-only",
+        help=(
+            "cache-only refuses to call the embedding provider on query cache "
+            "miss; live-on-miss preserves the product fallback and writes "
+            "missing query embeddings into cache."
+        ),
+    )
     args = parser.parse_args()
+    settings.query_embedding_cache_only = (
+        args.query_embedding_cache_policy == "cache-only"
+    )
     if args.selected_top_k < 1:
         raise SystemExit("--selected-top-k must be >= 1")
     if args.selected_top_k > QWEN3_RERANK_MAX_DOCUMENTS:
@@ -2961,6 +3122,7 @@ async def main() -> None:
             llm_calls=0,
             llm_cost=Decimal("0"),
             score_trace_path=args.score_trace,
+            query_embedding_cache_policy="offline_trace",
         )
         path.write_text(report, encoding="utf-8")
 
@@ -3008,6 +3170,7 @@ async def main() -> None:
             llm_calls,
             llm_cost,
             trace_output_path=trace_path,
+            query_embedding_cache_policy=args.query_embedding_cache_policy,
         )
         path.write_text(report, encoding="utf-8")
 

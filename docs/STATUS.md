@@ -26,17 +26,17 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - 本地 dogfood 笔记库仍为 `test-notes/llm-notes` **119 篇 / 532,999 字符**;Docker Postgres 对齐 active notes 119 / chunks 2,090 / embedded 2,090 / pending 0。
 - `evals/suites/hybrid_search/` smoke 资产已进入 chunk-level 口径:15 篇 fixture + 12 条全库 chunk/anchor 标签;`direct_evidence_chunk_ids` 只放可直接回答 query 的 chunk。
 - `eval_hybrid_search_note_smoke.py` 已支持 live report + `.trace.jsonl` + `--score-trace` 离线重算;只改标签 / 打分口径时复用 trace,不重复调用 query rewrite / rerank。
-- 评测指标分母已澄清并落代码:`candidate_recall@50 / rerank_recall@10 / mrr@10 / final_context_recall` 对有 direct evidence 的非 0 命中样本做 macro average;expected zero-hit 排除,unexpected zero-hit 的 final recall 记 0。
+- 评测指标分母已澄清并落代码:`candidate_recall@15 / selected_recall@10 / mrr@10 / final_context_recall` 对有 direct evidence 的非 0 命中样本做 macro average;expected zero-hit 排除,unexpected zero-hit 的 final recall 记 0。top50 继续保留为诊断窗口 / rerank input,不再作为正式 candidate 指标名。
 - 0 命中分支已保存 `candidate_chunk_ids`:即使 `predicted_zero_hit=true`,也能检查系统是否召回了 1-2 个正确证据但未达出题阈值。
 - 新标签基线已按用户指令跑过:`evals/reports/hybrid-search-note-smoke-20260514-063244.md` + `.trace.jsonl`;12 cases 通过 6/12,`candidate_recall@50` 95.00%,`rerank_recall@10` 73.33%,`mrr@10` 70.83%,`final_context_recall` 73.33%,`final_context_precision` 6.63%,zero-hit 0/2,成本 ¥0.195307。
 - reranker metadata 已完成一轮 A/B:content-only 基线 `20260514-063244` 为 6/12、`rerank_recall@10` 73.33%;metadata 前置 `20260514-084642` 为 7/12、67.50%,不是净提升;当前保留代码为 direct-evidence instruct + `content + weak_source_context` 后置格式。
 - 当前保留版 smoke `hybrid-search-note-smoke-20260514-092218.md`:8/12,`candidate_recall@50` 95.00%,`rerank_recall@10` 69.17%,`mrr@10` 59.58%,`final_context_recall` 72.50%,zero-hit 0/2,成本 ¥0.251666;比前置 metadata 稳,但不是最终达标方案。
 - 本地 intent × chunk-type 降权已试跑但**未保留**:初版 `20260514-111912` 8/12、`rerank_recall@10` 63.33%;修正 hard-negative 误判后 `20260514-112042` 8/12、65.83%,hard-negative intrusion 从 4/12 降到 3/12、MRR 到 75.33%,但 direct evidence 覆盖下降,已回滚到弱 source context 方案。
-- smoke 脚本新增诊断/A-B 开关:`--rerank-mode provider|none`、`--rerank-input-top-k`、`--selected-top-k`、`--parent-doc-mode on|off`;trace/report 保存 `hybrid_rank → selected/rerank_rank`、`rank_delta`、`rerank_score`,report 改用 `selected_recall@K / mrr@K` 口径。
+- smoke 脚本新增诊断/A-B 开关:`--rerank-mode provider|provider_blend|none`、`--rerank-input-top-k`、`--selected-top-k`、`--parent-doc-mode on|off`、`--query-embedding-cache-policy cache-only|live-on-miss`;trace/report 保存 `hybrid_rank → provider_rank → post_rank`、`rank_delta`、`rerank_score`、`final_score`、`governance_score`、`governance_flags`。
 - 纯 hybrid、无 parent-doc 曲线已跑:top20/30/40 均 7/12,`selected_recall@K` 72.50%/85.00%/91.67%,`final_context_precision` 13.00%/10.33%/8.50%,hard-negative 5/12,zero-hit 0/2。
 - provider rerank、无 parent-doc 曲线已跑:top20/30/40 为 6/12、6/12、5/12,`selected_recall@K` 84.17%/89.17%/95.00%,`final_context_precision` 15.50%/11.33%/9.00%,hard-negative 6/12、6/12、7/12,成本仍约 ¥0.251666。
 - 粗排→精排窄口径已跑:`10→5` 为 8/12、recall 56.67%、precision 30.00%、成本 ¥0.020096;`20→10` 为 8/12、61.67%、21.00%、¥0.040543;`30→20` 为 7/12、81.67%、15.00%、¥0.059062。
-- 当前判断:hybrid **召回强但排序不够好**。`candidate_recall@50` 仍 95%,但正样本有一批落在 hybrid 20 名后;`qwen3-rerank` 能救 `#2256/#2257/#2189` 等长尾,也会压低 `#491/#1066` 等本来靠前的正样本。先不要默认恢复 parent-doc 或 local selector。
+- 当前判断:hybrid **召回强但排序不够好**。有些 direct evidence 落在 hybrid 30 名后,所以生产路径不能把 rerank input 收到 15;top50 仍要喂给 provider rerank。provider 只能当 challenger source,不能独占最终成员资格。
 - 粗排诊断代码已补强:smoke trace/report 记录 per-query vector / lexical / hybrid rank、跨 query RRF contribution、query vote、hard-negative/relevant 支持情况,并保留 q0 原话加权的 labeled-only 模拟。
 - Query Understanding v2 已接入代码:query_rewriter 输出 `intent / core_entities / must_keep_terms / weighted_queries`;用户原话 q0 固定 `weight=2.0`,改写 query 按 role 限权;`project_fact / boundary_question` 缺少保护词或 `zero_hit_candidate` 时保守只用原 query。
 - M2.1 RAG 第一刀 `source/type governance` 已保留:只在 `project_fact / boundary_question` 等 protected intent 下轻量调整候选来源权重。粗排 top10 从 `54.17% → 64.17%`,MRR `31.52% → 45.33%`,precision `17.00% → 20.00%`,hard-negative 仍 `1/12`。
@@ -44,14 +44,16 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - 当前保留的强锚点补召回是窄路由:状态恢复 query 只在 `JobCopilot + SSE/断线 + 恢复/重连` 语义同时出现时触发;provider failure query 只在 `provider/API + timeout + 429/rate-limit/retry-after` 同时出现时触发。二者都是精确失败样本修复,不是全局宽召回。
 - zero-hit 守门已从"候选数量"升级为"核心证据覆盖":`assess_query_support` 会检查 query 的强技术锚点是否被 top10 候选覆盖。Rust borrow checker / Kubernetes Operator 这类库内无证据 query 已能判 0 命中。
 - 对比型 query governance 已保留:`Outbox 和 MQ 有什么区别?` 这类 query 会识别两侧概念,优先抬含双方且有近距离 contrast 信号的直接证据,压只覆盖 MQ 一侧的泛相关内容。最终粗排 top10 report `20260515-163721`:12/12,`selected_recall@10 86.67%`,`MRR 67.00%`,`precision 29.00%`,hard-negative `0/12`,zero-hit `2/2`。
-- Provider 精排 top100→top10 已跑并判定暂不启用:`20260515-164421` 为 10/12,`selected_recall@10 69.17%`,`MRR 59.76%`,`precision 22.00%`,hard-negative `2/12`;问题不是 timeout/429,而是 reranker 忽略 source/type 与 contrast governance,会把已被粗排压下去的 hard-negative / 泛相关内容重新抬进 top10。
-- query embedding cache 已接入 `search_service`:粗排每个 expanded query 先查 `llm_response_cache(feature=query_embedding)`,miss 才调 `text-embedding-v4`;cache key 包含 `normalized_query + model + embed_version + dimensions`。这只缓存 query 向量,不重新缓存笔记 chunk embedding。
+- Provider 精排 top100→top10 已跑并判定不能裸用:`20260515-164421` 为 10/12,`selected_recall@10 69.17%`,`MRR 59.76%`,`precision 22.00%`,hard-negative `2/12`;问题不是 timeout/429,而是 reranker 忽略 source/type 与 contrast governance,会把已被粗排压下去的 hard-negative / 泛相关内容重新抬进 top10。
+- post-rerank governance/blend 已接入生产路径:`粗排 top50 → qwen3-rerank top50 → coarse/provider/governance blend → dynamic clean-context selection(3-10) → parent-doc`。粗排 top10 是 floor,top50 里的高置信 provider challenger 可以进最终上下文,低置信候选不为凑满 top10 被塞给下游。
+- `provider_blend` 初版 smoke 已跑:`evals/reports/hybrid-search-note-smoke-20260516-080038.md` 为 12/12,`candidate_recall@50 97.50%`,`selected_recall@K 86.67%`,`mrr@K 67.00%`,`final_context_precision 29.00%`,hard-negative `0/12`,cache-only。此后代码已改成正式 `candidate_recall@15 / selected_recall@10` 命名和 dynamic clean-context selection,尚待用户手动重跑 smoke 确认新口径。
+- query embedding cache 已接入 `search_service`:粗排每个 expanded query 先查 `llm_response_cache(feature=query_embedding)`,cache key 包含 `normalized_query + model + embed_version + dimensions`。smoke/eval 默认 `cache-only`,cache miss 直接失败,避免重复跑时继续请求 `text-embedding-v4`;产品链路默认仍允许 miss 后实时计算。
 - 已补 `docs/6-EVAL_PLAN.md` 第 7 节:trace schema、离线 rescore 跑法、macro average 口径、0 命中 candidate 保存语义。
 - 已补 `docs/9-LESSONS.md` §3.4:CLI 评测脚本不要在 Langfuse noop 模式下频繁构造 SDK client。
 - 本轮代码侧已缓解 smoke 脚本收尾卡住:无 Langfuse key 时不构造 Langfuse SDK / `langfuse.openai` client;评测脚本 cleanup 只关闭已存在的 embedder / llm singleton 并 shutdown Langfuse singleton。后续多次 smoke 已正常结束并写出 report / trace。
 - **M2 已由用户确认完成**:聊天框主题 query → 全库 RAG → 出题 → 答题 → Judge 三层评分 → session 恢复已跑通。
 - Context Cache 已验证 provider-side 命中,但因 5 分钟 TTL 不适合当前一次性答题流,已默认关闭显式 `cache_control`;后续多轮讨论面试题时再打开。
-- 最新保存主题:`retrieval: add weighted query understanding for hybrid rrf`;M2 tag `v0.4-m2-end` 仍待用户确认。
+- 最新保存主题:`retrieval: add post-rerank governance blend`;M2 tag `v0.4-m2-end` 仍待用户确认。
 - M2 retrieval quiz pipeline 代码已提交:`103d882 feat: add m2 retrieval quiz pipeline`。
 - M2.1 Agentic RAG 文档已提交:`fd892fa docs: add agentic interview coach roadmap`。
 - M2 AnswerJudge 初版已落地:三层 evidence prompt / agent / submit SSE / Python 算分 / fabricated 锁顶。
@@ -82,8 +84,8 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **hybrid_search A/B 诊断开关已落地**:可单独比较 provider rerank / 纯 hybrid、rerank 输入池大小、selected topK、parent-doc on/off,用于拆分"召回 / 粗排排序 / 精排 / parent-doc"责任。
 - **hybrid_search 粗排诊断已落地**:`search_service` 暴露 diagnostics-only 路径;smoke report 可解释 direct evidence 为什么在 top20/top50 后、哪条 expanded query 贡献 hard-negative、q0 加权会让哪些 labeled chunks 上下移动。
 - **Query Understanding v2 + weighted RRF 已落地**:query_rewriter 输出 intent / core entities / must-keep terms / weighted queries;跨 query RRF 已支持 query weights,用户原话固定两票。
-- **M2.1 coarse retrieval governance 已落地**:`retrieval_governance.py` 统一承载 source/type multiplier、窄 protected anchor route、zero-hit support gate、contrast query governance;`retrieval_pipeline` / `quiz_service` / smoke eval 已接入同一套逻辑。
-- **query embedding cache 已落地**:`search_service` 通过 `embed_query_cached` 复用 `llm_response_cache`;重复跑同一套粗排 / 精排时,相同 expanded query 不再重复请求 embedding provider。
+- **M2.1 retrieval governance 已落地**:`retrieval_governance.py` 统一承载 source/type multiplier、窄 protected anchor route、zero-hit support gate、contrast query governance、post-rerank governance/blend、dynamic clean-context selection;`retrieval_pipeline` / `quiz_service` / smoke eval 已接入同一套逻辑。
+- **query embedding cache 已落地**:`search_service` 通过 `embed_query_cached` 复用 `llm_response_cache`;smoke/eval 默认 cache-only,重复跑同一套粗排 / 精排时,相同 expanded query 不再重复请求 embedding provider,miss 直接暴露。
 - **eval 脚本资源收尾已补强**:`infra.langfuse` 避免无 key/noop 场景构造 Langfuse SDK client;DashScope client 有 Langfuse key 才走 `langfuse.openai`;smoke cleanup 不再为关闭而懒加载 embedder / llm singleton。
 - **百炼价格 / rerank 限制已记录**:`qwen3.6-flash` 控制台价格、Responses 工具价、`qwen3-rerank` 500 docs / token 上限 / `gte-rerank-v2` 下线提醒已写入代码注释与常量;rerank 请求本地截断到 500 docs;当前 reranker document format 为 `content + weak_source_context`。
 - **CI 策略调整**:所有 GitHub workflow 改为手动触发,避免 push 自动跑测试和邮件通知。
@@ -92,13 +94,13 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **暂不启用 provider 精排,先决定精排治理策略**:当前粗排治理后 top10 已到 `86.67%`,provider top100→top10 会掉到 `69.17%` 且 hard-negative 回来。若继续修精排,先做"provider rerank 后再套 source/type + contrast + hard-negative clamp / blend"的小实验;如果产品链路要保持粗排结果,先加 rerank 开关或禁用默认 provider rerank。
+1. **手动重跑 provider_blend smoke,确认新口径**:当前代码已变成粗排 top50 喂给精排、post-rerank governance/blend 动态选 3-10 个干净 chunk。下一步只需用户跑 `provider_blend --rerank-input-top-k 50 --selected-top-k 10 --query-embedding-cache-policy cache-only`,重点看 `candidate_recall@15 / selected_recall@10 / final_context_precision / hard-negative`。
 
 备选:
 
-- 跑一次相同粗排 smoke 验证 query embedding cache 命中:第二次相同 expanded query 不应继续打满 `text-embedding-v4` 调用。
-- 把 provider 精排负收益补写进 `docs/9-LESSONS.md` 的 9.3 / 新小节,方便以后用大白话解释"为什么不是直接上 reranker"。
-- 如果继续看 rerank,优先比较 rerank 后治理 / 分数 blend,不要只看 headline pass。
+- 若 smoke 回退,先看 trace 里的 `governance_flags` 和 `post_rank`,不要只看 headline pass。
+- 如 cache-only 因 query miss 失败,先确认是不是 query rewrite 内容变了;不要为了跑通悄悄切回 live-on-miss。
+- 如果继续看 rerank,优先调 blend / governance 阈值 / dynamic selection,不要把 rerank input 收到 15。
 - 如果继续扩 zero-hit,保持 core entity / anchor coverage 守门:Rust、Kubernetes Operator 这类核心实体缺失时不能只靠向量近邻过门。
 - smoke 评测闭环稳定后,开 M2.1 `InterviewCoachAgent` 状态机骨架和 `decide_next_action` / `generate_followup`。
 
@@ -108,7 +110,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 |----|------|
 | 出题入口 | 只走聊天框 query;笔记面板只查看 / 编辑 / 上传 / 导航,不触发出题。 |
 | M2 query | 仅主题类 query;岗位类与空 query 放 M3。 |
-| RAG pipeline | `query_rewriter → hybrid + RRF → reranker → parent-doc 扩展` + 0 命中守门。 |
+| RAG pipeline | `query_rewriter → hybrid + RRF → reranker(top50) → post-rerank governance/blend → dynamic clean-context selection → parent-doc 扩展` + 0 命中守门。 |
 | 0 命中 | 命中 chunks < 3 起步直接报"笔记里没这主题",不兜底让 LLM 编。 |
 | Reranker | 百炼 `qwen3-rerank`(`/compatible-api/v1/reranks`);本地 fallback 暂不做。 |
 | M2.1 Agent | `InterviewCoachAgent` 状态机;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不是多 Agent 数量。 |
@@ -137,6 +139,9 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **[来自 M2.1] 项目私有事实 query 必须实体保真**:Query Understanding 不能把 JobCopilot / M2 / AnswerJudge 等私有实体泛化成行业常识;用户原话在跨 query RRF 中权重大于改写。
 - **[来自 M2.1] RAG 调参先判断失败层再改代码**:先看 trace 区分召回、粗排排序、精排、hard-negative、zero-hit,不要只凭单条 query 加宽规则。
 - **[来自 M2.1] Provider rerank 不默认等于净收益**:启用前必须验证它不会绕过 source/type、contrast、hard-negative 治理把噪声重新抬进紧窗口。
+- **[来自 M2.1] Provider rerank 是 challenger source,不是最终成员裁判**:粗排 top50 可喂给精排,但最终 context 必须再过 deterministic governance/blend。
+- **[来自 M2.1] smoke/eval 默认 query embedding cache-only**:重复实验不得静默请求 embedding provider;cache miss 要显式失败或由用户指定 live-on-miss。
+- **[来自 M2.1] 正式指标名固定为 `candidate_recall@15 / selected_recall@10`**:top50 只作诊断窗口和 rerank input,不要再把 `candidate_recall@50` 当主 headline。
 
 # 文档导航
 

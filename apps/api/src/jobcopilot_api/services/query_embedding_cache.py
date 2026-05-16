@@ -52,12 +52,17 @@ _PUT_SQL = text(
 )
 
 
+class QueryEmbeddingCacheMissError(RuntimeError):
+    """Raised when query embedding cache-only mode cannot satisfy a query."""
+
+
 async def embed_query_cached(query: str) -> EmbeddingResult:
     """Embed one search query, using a persistent exact-query cache.
 
     The cache key includes normalized query text, model, embedding version, and
-    dimensions. Cache failures degrade to a live embedding call; retrieval
-    quality must never depend on cache availability.
+    dimensions. In normal product traffic, cache misses degrade to a live
+    embedding call. Eval/smoke can turn on cache-only mode to prevent accidental
+    provider calls during repeated runs.
     """
     normalized_query = normalize_query(query)
     embedder = get_embedder()
@@ -77,6 +82,13 @@ async def embed_query_cached(query: str) -> EmbeddingResult:
         )
         if cached is not None:
             return cached
+
+    if settings.query_embedding_cache_only:
+        raise QueryEmbeddingCacheMissError(
+            "query embedding cache miss in cache-only mode: "
+            f"query={normalized_query!r}, model={model}, "
+            f"dimensions={dimensions}, embed_version={EMBED_VERSION}"
+        )
 
     result = await embedder.embed([normalized_query])
     if settings.llm_cache_enabled and result.vectors:

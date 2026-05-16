@@ -392,7 +392,7 @@ data: {"ok": false}
 **后端落库顺序(M2 主题类)**:
 1. 收到请求,validate query / mode / question_count
 2. INSERT `quiz_sessions`(status=`in_progress`, query, mode)拿到 session_id,emit `started`
-3. retrieval pipeline:query rewrite → hybrid search → rerank → parent-doc 扩展(每段 emit `progress`)
+3. retrieval pipeline:query rewrite → hybrid search → rerank + post-rerank governance/blend → parent-doc 扩展(每段 emit `progress`)
 4. 0 命中守门:命中 chunks < 阈值 → emit `error{no_chunks_for_query}` + `done(false)` + UPDATE quiz_sessions.status=abandoned
 5. quiz_generator LLM 出 N 题(emit `progress{type_mix_decided}`)
 6. INSERT `questions` × N 拿到 ids

@@ -227,7 +227,7 @@ highly only because its folder path, heading path, interview question, summary,
 or loosely related topic matches the query.
 ```
 
-**document format 约束**:qwen3-rerank 的 `documents` 是字符串数组,没有结构化 metadata 字段。`folder_path` / `heading_path` 一旦拼进 document,模型会把它们当正文信号。后续不要把 metadata 前缀视为无风险增强;至少比较 `content_only` / `content_then_path` / `path_then_content`,并用 `hybrid_search` trace 看 `rerank_recall@10`、hard-negative intrusion、token cost。标签 / content_type 更适合在 rerank 前做过滤或降权,而不是只拼进文本。
+**document format 约束**:qwen3-rerank 的 `documents` 是字符串数组,没有结构化 metadata 字段。`folder_path` / `heading_path` 一旦拼进 document,模型会把它们当正文信号。后续不要把 metadata 前缀视为无风险增强;至少比较 `content_only` / `content_then_path` / `path_then_content`,并用 `hybrid_search` trace 看 `selected_recall@10`、hard-negative intrusion、token cost。标签 / content_type 更适合在 rerank 前做过滤或降权,而不是只拼进文本。
 
 # 3. QuizGenerator
 

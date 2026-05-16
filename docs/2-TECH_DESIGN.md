@@ -104,7 +104,7 @@ apps/api/src/jobcopilot_api/
 │   ├── chunk_service.py            # heading-aware markdown chunker(v1 改造)
 │   ├── tokenize.py                 # char_ngrams Python 实现(沿用 v1)
 │   ├── search_service.py           # 全库 hybrid search RRF(沿用 v1) + global_hybrid_search(M2 lookup tool)
-│   ├── retrieval_pipeline.py       # M2:出题前 retrieval 编排(query_rewrite → hybrid → rerank → parent-doc 扩展);0 命中守门
+│   ├── retrieval_pipeline.py       # M2:出题前 retrieval 编排(query_rewrite → hybrid → rerank/blend → parent-doc 扩展);0 命中守门
 │   ├── query_rewriter.py           # M2:LLM 改写 query(短词 → 同义/相邻概念集),走 llm.client + cache
 │   ├── reranker.py                 # M2:cross-encoder rerank(top 50 → top 10),选型见 PRD Q-07
 │   ├── quiz_service.py             # 出题编排(调 quiz_generator agent + 落库)
@@ -655,7 +655,7 @@ evals/suites/
 | Tracing 选型 | Langfuse 自部署 | LLM-native + 数据不出本地;详见 §6 |
 | Tool use 范围 | 仅 AnswerJudge 用 `lookup_in_notes_global`;Quiz / Embedder / JdParser / JdAggregator / ResumeAdvisor 不用 | 直击 LESSONS §1.1 假阳性,精准不滥用 |
 | 出题入口 | **聊天框 query**(M2 主题类 / M3 岗位类 + 空 query 自选);**笔记面板不再触发出题** | 笔记面板降级为查看 / 编辑 / 导航;PRD §6 锁定 |
-| M2 retrieval pipeline | **query_rewrite → hybrid + RRF → reranker → parent-doc 扩展** 四件;每段独立可观测进 Langfuse | 见 §5.2 数据流;0 命中守门 < 3 chunks → 返"笔记里没这主题"不兜底 |
+| M2 retrieval pipeline | **query_rewrite → hybrid + RRF → reranker(top50) → post-rerank governance/blend → dynamic clean-context selection → parent-doc 扩展**;每段独立可观测进 Langfuse | 见 §5.2 数据流;0 命中守门 < 3 chunks → 返"笔记里没这主题"不兜底;provider rerank 是 challenger source,不是最终成员裁判 |
 | Reranker 选型 | 百炼 **`qwen3-rerank`**(`/compatible-api/v1/reranks`,¥0.0005/k token);本地 bge-reranker-v2-m3 作 fallback 不实施 | 详见 5-AGENT §2.7.5 + memory `reference_aliyun_dashscope_rerank.md`;langfuse 不自动 instrument 要手动 generation 包 |
 | Parent-doc 扩展粒度 | **自适应**:命中段 < 200 字 → 扩到同 H2 父段;≥ 200 字 → 不扩 | 阈值在 M2 实施时按 dogfood 命中分布调 |
 | 简历存储模型 | 单条记录(全库一行 resumes);无"简历库 / 多份切换" | 一个人就一份简历;岗位类 query 拼"这一份 + 选定 JD 子集"已够 |

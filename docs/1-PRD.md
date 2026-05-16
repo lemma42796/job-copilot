@@ -159,7 +159,7 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 
 ## 5.2 出题与答题
 
-- **US-5(M2,主题类 query)**:作为用户,我可以在聊天框输入一个主题("考考我多线程" / "缓存一致性"),系统从全笔记库 RAG 找最相关 chunks(query rewriting → hybrid + RRF → reranker → parent-doc 扩展),出 3-10 道题。**0 命中(笔记里没这主题)直接报错,不兜底放宽**
+- **US-5(M2,主题类 query)**:作为用户,我可以在聊天框输入一个主题("考考我多线程" / "缓存一致性"),系统从全笔记库 RAG 找最相关 chunks(query rewriting → hybrid + RRF → reranker(top50) → post-rerank governance/blend → dynamic clean-context selection → parent-doc 扩展),出 3-10 道题。**0 命中(笔记里没这主题)直接报错,不兜底放宽**
 - **US-5a(M2.1,Agentic 面试教练)**:作为用户,我答完一道题后,系统不只是打分,还会基于 Coverage / Fidelity / Depth evidence 决定下一步:答得好进入下一题;漏关键点 / 编造依据 / 深度不足时最多追问一轮。追问必须基于原题的 `source_chunk_ids`,不允许脱离笔记自由发挥
 - **US-5b(M3,岗位类 query)**:作为用户,我可以输入岗位描述("模拟一面 Java 后端" / "应聘字节后端实习"),系统拼**三源**(笔记 RAG + 我那一份简历全文 + 我选定的 JD 子集职责/要求)出题,**重点考"简历写了 JD 也要"的交集 + "JD 强要求简历没写"的缺口**(直击"自己不会的也往简历上写,问到答不出"问题)
 - **US-5c(M3,空 query / 系统自选)**:作为用户,我可以输入"来模拟面试吧"或留空,系统按 SR 弱点排行自选一个主题,然后走主题类 RAG 流程出题
@@ -278,7 +278,7 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 | 简历输入源 | markdown / PDF(Qwen 多模态 OCR)| M3 |
 | JD 单次分析上限 | **200 条**(hierarchical reduce)| 超过提示拆分;M3+ 才考虑跨批增量聚合 |
 | 出题入口 | **聊天框 query**(三类:主题 / 岗位 / 空 → 系统自选);**笔记面板不再触发出题** | M2 主题 / M3 岗位 + 空 |
-| M2 retrieval pipeline | **query rewriting → hybrid + RRF → reranker → parent-doc 扩展** 四件 | RAG 主战场;每段独立可观测进 Langfuse trace |
+| M2 retrieval pipeline | **query rewriting → hybrid + RRF → reranker(top50) → post-rerank governance/blend → dynamic clean-context selection → parent-doc 扩展** | RAG 主战场;每段独立可观测进 Langfuse trace;provider rerank 是 challenger source,不是最终成员裁判 |
 | 0 命中策略 | retrieval < 阈值 chunks → **直接报"笔记里没这主题"**,不兜底放宽 | 守住"笔记是主角"边界,LLM 不凭训练数据补 |
 | 简历存储 | **单条记录**,不做"简历库 / 多份切换" | 一个人就一份简历;岗位类 query 拼"这一份 + 选定 JD 子集"已够 |
 | 题型 | 开放式 + 八股 两类(M3 岗位类多 "**项目深挖题**") | 不做代码 / 系统设计 / 选择题 |

@@ -2,7 +2,7 @@
 
 职责:
 - POST /api/quiz/sessions(SSE)入口
-- 内联 retrieval 5 步(query_rewriter → multi-query hybrid → rerank →
+- 内联 retrieval 5 步(query_rewriter → multi-query hybrid → rerank/blend →
   parent-doc 扩展 → enrich note_title)+ quiz_generator LLM 出题
 - service 后处理:[N] → DB id 映射 + 完整性校验
   (reference_chunk_ids ⊆ source_chunk_ids / weight 之和 ∈ [0.99, 1.01] /
@@ -54,11 +54,13 @@ from jobcopilot_api.services.retrieval_governance import (
     PROTECTED_ANCHOR_ROUTE_WEIGHT,
     assess_query_support,
     governance_context_from_rewrite,
+    post_rerank_governance_blend,
     protected_anchor_search,
 )
 from jobcopilot_api.services.retrieval_pipeline import (
     HYBRID_TOP_K_PER_QUERY,
     MIN_CHUNKS_FOR_QUIZ,
+    POST_RERANK_PROVIDER_TOP_K,
     RERANK_TOP_K,
     RRF_K,
     expand_to_parent_docs,
@@ -157,15 +159,24 @@ async def start_session_sse(
                     f"缺少:{', '.join(support.missing_terms)}"
                 )
 
-            # 4. rerank
+            # 4. rerank + dynamic clean-context selection
             yield _ev("progress", {"phase": "reranking"})
             rerank_result = await rerank(
-                payload.query, fused, top_k=RERANK_TOP_K
+                payload.query,
+                fused,
+                top_k=min(POST_RERANK_PROVIDER_TOP_K, len(fused)),
+            )
+            post_rerank = post_rerank_governance_blend(
+                fused,
+                rerank_result.scored,
+                governance,
+                expanded_queries,
+                top_k=RERANK_TOP_K,
             )
 
             # 5. parent-doc 扩展 + enrich note_title
             expanded_scored = await expand_to_parent_docs(
-                s, rerank_result.scored
+                s, post_rerank.selected
             )
             note_ids = list({chunk.note_id for chunk, _ in expanded_scored})
             note_titles = await fetch_note_titles(s, note_ids)

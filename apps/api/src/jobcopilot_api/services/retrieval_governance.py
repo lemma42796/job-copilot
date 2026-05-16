@@ -42,6 +42,18 @@ SOURCE_MULTIPLIERS_FOR_PROTECTED_INTENT: dict[ChunkSourceType, float] = {
     "eval_case": 0.78,
     "hard_negative": 0.62,
 }
+POST_RERANK_COARSE_WEIGHT = 0.50
+POST_RERANK_PROVIDER_WEIGHT = 0.32
+POST_RERANK_GOVERNANCE_WEIGHT = 0.18
+POST_RERANK_COARSE_KEEP_TOP_K = 50
+POST_RERANK_DYNAMIC_MIN_K = 3
+POST_RERANK_DYNAMIC_TARGET_K = 8
+POST_RERANK_FLOOR_MIN_GOVERNANCE = 0.62
+POST_RERANK_CHALLENGER_MIN_GOVERNANCE = 0.70
+POST_RERANK_EXTRA_MIN_GOVERNANCE = 0.78
+POST_RERANK_HARD_NEGATIVE_CAP = 0.22
+POST_RERANK_EVAL_CASE_CAP = 0.50
+POST_RERANK_QUESTION_BANK_CAP = 0.58
 PROTECTED_ANCHOR_ROUTE_WEIGHT = 5.0
 PROTECTED_ANCHOR_TOP_K = 4
 PROTECTED_ANCHOR_SQL_LIMIT = 200
@@ -246,6 +258,31 @@ class QuerySupportAssessment:
     missing_terms: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class PostRerankGovernanceDetail:
+    """Explain how a candidate moved after provider rerank + governance blend."""
+
+    chunk: NoteChunk
+    coarse_rank: int | None
+    rerank_rank: int | None
+    coarse_score: float
+    rerank_score: float | None
+    normalized_rerank_score: float
+    governance_score: float
+    final_score: float
+    source_type: ChunkSourceType
+    source_multiplier: float
+    flags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PostRerankGovernanceResult:
+    """Selected chunks plus diagnostics for post-rerank governance."""
+
+    selected: list[tuple[NoteChunk, float]]
+    details: list[PostRerankGovernanceDetail]
+
+
 def governance_context_from_rewrite(
     output: QueryRewriteOutput,
 ) -> RetrievalGovernanceContext:
@@ -257,6 +294,110 @@ def governance_context_from_rewrite(
         must_keep_terms=tuple(output.must_keep_terms),
         contrast_sides=_contrast_sides_from_rewrite(output),
         enabled=output.intent in PROTECTED_QUERY_INTENTS,
+    )
+
+
+def post_rerank_governance_blend(
+    coarse_ranked: list[NoteChunk],
+    rerank_scored: list[tuple[NoteChunk, float]],
+    context: RetrievalGovernanceContext,
+    expanded_queries: list[str],
+    *,
+    top_k: int,
+    coarse_keep_top_k: int = POST_RERANK_COARSE_KEEP_TOP_K,
+) -> PostRerankGovernanceResult:
+    """Blend coarse rank, provider rerank, and deterministic governance.
+
+    Provider rerank is challenger input, not full membership authority. The
+    governed coarse top-K enters the competition first, then high-confidence
+    provider-selected candidates from the wider pool can challenge weak slots.
+    Final context is dynamic: keep enough clean evidence, avoid filling top-K
+    with low-confidence related chunks.
+    """
+
+    if top_k <= 0 or not coarse_ranked:
+        return PostRerankGovernanceResult(selected=[], details=[])
+
+    coarse_rank_by_id = {
+        int(chunk.id): rank
+        for rank, chunk in enumerate(coarse_ranked, start=1)
+    }
+    rerank_rank_by_id = {
+        int(chunk.id): rank
+        for rank, (chunk, _) in enumerate(rerank_scored, start=1)
+    }
+    rerank_score_by_id = {
+        int(chunk.id): float(score) for chunk, score in rerank_scored
+    }
+    rerank_norm_by_id = _normalize_rerank_scores(rerank_score_by_id)
+
+    pool_by_id: dict[int, NoteChunk] = {}
+    coarse_pool_size = min(
+        len(coarse_ranked),
+        max(top_k, coarse_keep_top_k, len(rerank_scored)),
+    )
+    for chunk in coarse_ranked[:coarse_pool_size]:
+        pool_by_id[int(chunk.id)] = chunk
+    for chunk, _ in rerank_scored:
+        pool_by_id.setdefault(int(chunk.id), chunk)
+
+    details: list[PostRerankGovernanceDetail] = []
+    for chunk_id, chunk in pool_by_id.items():
+        coarse_rank = coarse_rank_by_id.get(chunk_id)
+        rerank_rank = rerank_rank_by_id.get(chunk_id)
+        coarse_score = _rank_score(coarse_rank)
+        normalized_rerank_score = rerank_norm_by_id.get(chunk_id, 0.0)
+        governance = _post_rerank_governance_score(
+            chunk,
+            context,
+            expanded_queries,
+        )
+        final_score = (
+            POST_RERANK_COARSE_WEIGHT * coarse_score
+            + POST_RERANK_PROVIDER_WEIGHT * normalized_rerank_score
+            + POST_RERANK_GOVERNANCE_WEIGHT * governance.governance_score
+        )
+        if governance.score_cap is not None:
+            final_score = min(final_score, governance.score_cap)
+        details.append(
+            PostRerankGovernanceDetail(
+                chunk=chunk,
+                coarse_rank=coarse_rank,
+                rerank_rank=rerank_rank,
+                coarse_score=coarse_score,
+                rerank_score=rerank_score_by_id.get(chunk_id),
+                normalized_rerank_score=normalized_rerank_score,
+                governance_score=governance.governance_score,
+                final_score=final_score,
+                source_type=governance.source_type,
+                source_multiplier=governance.source_multiplier,
+                flags=governance.flags,
+            )
+        )
+
+    selected_details = _select_dynamic_post_rerank_details(
+        details,
+        coarse_ranked,
+        top_k=top_k,
+    )
+    selected_id_set = {int(item.chunk.id) for item in selected_details}
+    rejected_details = [
+        _with_selection_flag(item, "dynamic_rejected_low_confidence")
+        for item in details
+        if int(item.chunk.id) not in selected_id_set
+    ]
+    rejected_details.sort(
+        key=lambda item: (
+            -item.final_score,
+            item.coarse_rank if item.coarse_rank is not None else 10**9,
+            item.rerank_rank if item.rerank_rank is not None else 10**9,
+            int(item.chunk.id),
+        )
+    )
+    details = [*selected_details, *rejected_details]
+    return PostRerankGovernanceResult(
+        selected=[(item.chunk, item.final_score) for item in selected_details],
+        details=details,
     )
 
 
@@ -429,6 +570,396 @@ def source_multiplier(
             multiplier = min(multiplier + 0.03, 1.15)
     multiplier *= _contrast_multiplier(chunk, context)
     return multiplier
+
+
+@dataclass(frozen=True)
+class _PostRerankGovernanceScore:
+    governance_score: float
+    score_cap: float | None
+    source_type: ChunkSourceType
+    source_multiplier: float
+    flags: tuple[str, ...]
+
+
+def _post_rerank_governance_score(
+    chunk: NoteChunk,
+    context: RetrievalGovernanceContext,
+    expanded_queries: list[str],
+) -> _PostRerankGovernanceScore:
+    source_type = classify_chunk_source(chunk)
+    multiplier = source_multiplier(chunk, context)
+    score = _clamp(0.70 + (multiplier - 1.0) * 1.20)
+    score_cap: float | None = None
+    flags: list[str] = []
+    text = _support_norm(
+        " ".join([*chunk.folder_path, *chunk.heading_path, chunk.content])
+    )
+    required_terms = _query_support_terms(context, expanded_queries)
+    covered_terms = tuple(
+        term
+        for term in required_terms
+        if _text_contains_support_term(text, term)
+    )
+    current_query_evidence_like = _looks_like_current_query_evidence(
+        context,
+        text,
+        required_terms,
+        covered_terms,
+    )
+
+    if source_type == "hard_negative":
+        if current_query_evidence_like:
+            flags.append("source_hard_negative_allowed_by_current_query")
+        else:
+            score -= 0.45
+            score_cap = _min_cap(score_cap, POST_RERANK_HARD_NEGATIVE_CAP)
+            flags.append("source_hard_negative_clamped")
+    elif context.enabled and source_type == "eval_case":
+        score -= 0.22
+        score_cap = _min_cap(score_cap, POST_RERANK_EVAL_CASE_CAP)
+        flags.append("source_eval_case_clamped")
+    elif context.enabled and source_type == "interview_question_bank":
+        score -= 0.18
+        score_cap = _min_cap(score_cap, POST_RERANK_QUESTION_BANK_CAP)
+        flags.append("source_question_bank_clamped")
+
+    if required_terms:
+        min_covered = min(ZERO_HIT_MIN_REQUIRED_TERMS, len(required_terms))
+        if required_terms[0] not in covered_terms:
+            score -= 0.26
+            score_cap = _min_cap(score_cap, 0.56)
+            flags.append("primary_anchor_missing")
+        elif len(covered_terms) < min_covered:
+            score -= 0.16
+            score_cap = _min_cap(score_cap, 0.66)
+            flags.append("too_few_anchors_covered")
+        else:
+            score += 0.04
+            flags.append("anchors_covered")
+
+    contrast_score, contrast_cap, contrast_flags = (
+        _post_rerank_contrast_adjustment(chunk, context, text)
+    )
+    score += contrast_score
+    score_cap = _min_cap(score_cap, contrast_cap)
+    flags.extend(contrast_flags)
+
+    route_score, route_cap, route_flags = _post_rerank_route_adjustment(
+        context,
+        expanded_queries,
+        text,
+    )
+    score += route_score
+    score_cap = _min_cap(score_cap, route_cap)
+    flags.extend(route_flags)
+
+    return _PostRerankGovernanceScore(
+        governance_score=_clamp(score),
+        score_cap=score_cap,
+        source_type=source_type,
+        source_multiplier=multiplier,
+        flags=tuple(dict.fromkeys(flags)),
+    )
+
+
+def _select_dynamic_post_rerank_details(
+    details: list[PostRerankGovernanceDetail],
+    coarse_ranked: list[NoteChunk],
+    *,
+    top_k: int,
+) -> list[PostRerankGovernanceDetail]:
+    details_by_id = {int(item.chunk.id): item for item in details}
+    coarse_floor_ids = [int(chunk.id) for chunk in coarse_ranked[:top_k]]
+    coarse_floor_id_set = set(coarse_floor_ids)
+
+    floor_candidates = [
+        details_by_id[chunk_id]
+        for chunk_id in coarse_floor_ids
+        if chunk_id in details_by_id
+        and _is_floor_candidate(details_by_id[chunk_id])
+    ]
+    challenger_candidates = [
+        item
+        for item in details
+        if int(item.chunk.id) not in coarse_floor_id_set
+        and _is_challenger_candidate(item)
+    ]
+
+    preferred_max = min(top_k, POST_RERANK_DYNAMIC_TARGET_K)
+    selected: list[PostRerankGovernanceDetail] = []
+    seen: set[int] = set()
+    for item in sorted(
+        [*floor_candidates, *challenger_candidates],
+        key=_post_rerank_selection_key,
+    ):
+        chunk_id = int(item.chunk.id)
+        if chunk_id in seen:
+            continue
+        if (
+            len(selected) >= preferred_max
+            and not _is_extra_evidence_candidate(item)
+        ):
+            continue
+        if len(selected) >= top_k:
+            break
+        flag = (
+            "challenger_selected"
+            if chunk_id not in coarse_floor_id_set
+            else "coarse_floor_selected"
+        )
+        selected.append(_with_selection_flag(item, flag))
+        seen.add(chunk_id)
+
+    if len(selected) >= min(POST_RERANK_DYNAMIC_MIN_K, top_k):
+        return selected
+
+    # Last-resort backfill keeps the pipeline usable for sparse queries without
+    # letting clamped hard-negatives in if any cleaner coarse candidate exists.
+    for chunk_id in coarse_floor_ids:
+        if len(selected) >= min(POST_RERANK_DYNAMIC_MIN_K, top_k):
+            break
+        item = details_by_id.get(chunk_id)
+        if item is None or int(item.chunk.id) in seen:
+            continue
+        if _is_blocked_by_governance(item):
+            continue
+        selected.append(_with_selection_flag(item, "min_context_backfill"))
+        seen.add(int(item.chunk.id))
+
+    return selected
+
+
+def _is_floor_candidate(detail: PostRerankGovernanceDetail) -> bool:
+    if _is_blocked_by_governance(detail):
+        return False
+    return detail.governance_score >= POST_RERANK_FLOOR_MIN_GOVERNANCE
+
+
+def _is_challenger_candidate(detail: PostRerankGovernanceDetail) -> bool:
+    if detail.rerank_rank is None:
+        return False
+    if _is_blocked_by_governance(detail):
+        return False
+    return (
+        detail.governance_score >= POST_RERANK_CHALLENGER_MIN_GOVERNANCE
+        or _is_extra_evidence_candidate(detail)
+    )
+
+
+def _is_extra_evidence_candidate(detail: PostRerankGovernanceDetail) -> bool:
+    if _is_blocked_by_governance(detail):
+        return False
+    return (
+        detail.governance_score >= POST_RERANK_EXTRA_MIN_GOVERNANCE
+        or _has_any_flag(
+            detail,
+            (
+                "contrast_direct_evidence",
+                "state_recovery_route_supported",
+                "provider_failure_route_supported",
+            ),
+        )
+    )
+
+
+def _is_blocked_by_governance(detail: PostRerankGovernanceDetail) -> bool:
+    blocking_prefixes = (
+        "source_hard_negative_clamped",
+        "source_eval_case_clamped",
+        "source_question_bank_clamped",
+        "primary_anchor_missing",
+        "too_few_anchors_covered",
+        "contrast_single_side_clamped",
+        "contrast_weak_side_match",
+        "project_anchor_missing",
+        "state_recovery_transport_missing",
+        "state_recovery_state_missing",
+        "provider_anchor_missing",
+    )
+    return _has_any_flag(detail, blocking_prefixes)
+
+
+def _has_any_flag(
+    detail: PostRerankGovernanceDetail,
+    flags: tuple[str, ...],
+) -> bool:
+    return any(flag in detail.flags for flag in flags)
+
+
+def _post_rerank_selection_key(
+    detail: PostRerankGovernanceDetail,
+) -> tuple[float, float, int, int]:
+    coarse_rank = (
+        detail.coarse_rank if detail.coarse_rank is not None else 10**9
+    )
+    rerank_rank = (
+        detail.rerank_rank if detail.rerank_rank is not None else 10**9
+    )
+    return (
+        -detail.final_score,
+        -detail.governance_score,
+        coarse_rank,
+        rerank_rank,
+    )
+
+
+def _with_selection_flag(
+    detail: PostRerankGovernanceDetail,
+    flag: str,
+) -> PostRerankGovernanceDetail:
+    return PostRerankGovernanceDetail(
+        chunk=detail.chunk,
+        coarse_rank=detail.coarse_rank,
+        rerank_rank=detail.rerank_rank,
+        coarse_score=detail.coarse_score,
+        rerank_score=detail.rerank_score,
+        normalized_rerank_score=detail.normalized_rerank_score,
+        governance_score=detail.governance_score,
+        final_score=detail.final_score,
+        source_type=detail.source_type,
+        source_multiplier=detail.source_multiplier,
+        flags=tuple(dict.fromkeys((*detail.flags, flag))),
+    )
+
+
+def _post_rerank_contrast_adjustment(
+    chunk: NoteChunk,
+    context: RetrievalGovernanceContext,
+    text: str,
+) -> tuple[float, float | None, tuple[str, ...]]:
+    if len(context.contrast_sides) < 2:
+        return 0.0, None, ()
+
+    left, right = context.contrast_sides[:2]
+    left_hit = _side_covered(left, text)
+    right_hit = _side_covered(right, text)
+    if left_hit and right_hit:
+        if _has_direct_contrast_signal(left, right, text):
+            return 0.14, None, ("contrast_direct_evidence",)
+        return 0.04, None, ("contrast_both_sides",)
+    if left_hit or right_hit:
+        return -0.26, 0.60, ("contrast_single_side_clamped",)
+    if _contains_any_term(chunk, (*left, *right)):
+        return -0.12, 0.70, ("contrast_weak_side_match",)
+    return 0.0, None, ()
+
+
+def _looks_like_current_query_evidence(
+    context: RetrievalGovernanceContext,
+    text: str,
+    required_terms: tuple[str, ...],
+    covered_terms: tuple[str, ...],
+) -> bool:
+    if len(context.contrast_sides) >= 2:
+        left, right = context.contrast_sides[:2]
+        return (
+            _side_covered(left, text)
+            and _side_covered(right, text)
+            and _has_direct_contrast_signal(left, right, text)
+        )
+    if not required_terms:
+        return False
+    min_covered = min(ZERO_HIT_MIN_REQUIRED_TERMS, len(required_terms))
+    return (
+        required_terms[0] in covered_terms
+        and len(covered_terms) >= min_covered
+    )
+
+
+def _post_rerank_route_adjustment(
+    context: RetrievalGovernanceContext,
+    expanded_queries: list[str],
+    text: str,
+) -> tuple[float, float | None, tuple[str, ...]]:
+    route = _protected_anchor_route(context, expanded_queries)
+    if route == "state_recovery":
+        return _state_recovery_route_adjustment(text)
+    if route == "provider_failure":
+        return _provider_failure_route_adjustment(text)
+    return 0.0, None, ()
+
+
+def _state_recovery_route_adjustment(
+    text: str,
+) -> tuple[float, float | None, tuple[str, ...]]:
+    score = 0.0
+    cap: float | None = None
+    flags: list[str] = []
+    if "jobcopilot" not in text:
+        score -= 0.28
+        cap = _min_cap(cap, 0.52)
+        flags.append("project_anchor_missing")
+    if not _has_any(text, STATE_RECOVERY_TRANSPORT_TERMS):
+        score -= 0.20
+        cap = _min_cap(cap, 0.58)
+        flags.append("state_recovery_transport_missing")
+    if not _has_any(text, STATE_RECOVERY_STATE_TERMS):
+        score -= 0.18
+        cap = _min_cap(cap, 0.62)
+        flags.append("state_recovery_state_missing")
+    if not flags:
+        score += 0.08
+        flags.append("state_recovery_route_supported")
+    return score, cap, tuple(flags)
+
+
+def _provider_failure_route_adjustment(
+    text: str,
+) -> tuple[float, float | None, tuple[str, ...]]:
+    score = 0.0
+    cap: float | None = None
+    flags: list[str] = []
+    has_provider = _has_any(text, PROVIDER_FAILURE_ENTITY_TERMS)
+    has_timeout = _has_any(text, PROVIDER_FAILURE_TIMEOUT_TERMS)
+    has_rate_limit = _has_any(text, PROVIDER_FAILURE_RATE_LIMIT_TERMS)
+    if not has_provider:
+        score -= 0.22
+        cap = _min_cap(cap, 0.58)
+        flags.append("provider_anchor_missing")
+    if not has_timeout:
+        score -= 0.12
+        flags.append("timeout_anchor_missing")
+    if not has_rate_limit:
+        score -= 0.12
+        flags.append("rate_limit_anchor_missing")
+    if not has_timeout and not has_rate_limit:
+        cap = _min_cap(cap, 0.58)
+    if not flags:
+        score += 0.08
+        flags.append("provider_failure_route_supported")
+    return score, cap, tuple(flags)
+
+
+def _rank_score(rank: int | None) -> float:
+    if rank is None or rank <= 0:
+        return 0.0
+    return 1.0 / (rank**0.5)
+
+
+def _normalize_rerank_scores(scores: dict[int, float]) -> dict[int, float]:
+    if not scores:
+        return {}
+    values = list(scores.values())
+    low = min(values)
+    high = max(values)
+    if high <= low:
+        return {chunk_id: 0.0 for chunk_id in scores}
+    return {
+        chunk_id: _clamp((score - low) / (high - low))
+        for chunk_id, score in scores.items()
+    }
+
+
+def _min_cap(current: float | None, candidate: float | None) -> float | None:
+    if candidate is None:
+        return current
+    if current is None:
+        return candidate
+    return min(current, candidate)
+
+
+def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
+    return min(max(value, low), high)
 
 
 def _contains_any_term(chunk: NoteChunk, terms: tuple[str, ...]) -> bool:

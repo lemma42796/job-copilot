@@ -11,7 +11,8 @@
     fused chunks(top ~50 候选)
       ↓ 0 命中守门(< MIN_CHUNKS_FOR_QUIZ → raise NoChunksForQueryError)
       ↓ reranker (qwen3-rerank,失败回退 hybrid 顺序)
-    rerank top 10
+      ↓ post-rerank governance + dynamic clean-context selection
+    selected 3-10 chunks
       ↓ parent-doc 自适应扩展(命中段 < 200 字 → 扩同 H2 兄弟)
       ↓ batch enrich note_title
     PipelineResult{expanded_queries, retrieved_chunks}
@@ -38,6 +39,7 @@ from jobcopilot_api.services.retrieval_governance import (
     RetrievalGovernanceContext,
     assess_query_support,
     governance_context_from_rewrite,
+    post_rerank_governance_blend,
     protected_anchor_search,
     source_multiplier,
 )
@@ -48,6 +50,7 @@ logger = logging.getLogger(__name__)
 # §2.7 / DATA_MODEL §5.4 — 阈值常量(dogfood 后调动作只改这几行)
 HYBRID_TOP_K_PER_QUERY = 50
 RERANK_TOP_K = 10
+POST_RERANK_PROVIDER_TOP_K = 50
 MIN_CHUNKS_FOR_QUIZ = 3  # PRD Q-10:< 3 chunks → 0 命中守门
 PARENT_DOC_THRESHOLD_CHARS = 200  # 命中段 < 200 字 → 扩同 H2 兄弟
 RRF_K = 60  # 跨 query RRF 平滑常数(同 search_service 内部 RRF 一致)
@@ -60,8 +63,8 @@ async def run(
     """全库 RAG retrieval。
 
     成功 → 返回 PipelineResult(expanded_queries + retrieved_chunks);
-    rerank top 10 后命中数 ≥ MIN_CHUNKS_FOR_QUIZ 守门通过(parent-doc 扩展
-    不参与守门,仅扩上下文);< 3 抛 NoChunksForQueryError(422)。
+    rerank/governance 后动态选择干净 context;0 命中守门仍在 rerank 前执行,
+    parent-doc 扩展不参与守门,仅扩上下文。
     """
     # 1. query_rewriter(失败回退原 query,不阻塞)
     rewrite_out = await rewrite_query(user_query)
@@ -102,17 +105,29 @@ async def run(
             f"missing_terms=[{missing}];请改 query 或先扩笔记"
         )
 
-    # 4. rerank(失败回退 hybrid 顺序前 RERANK_TOP_K)
-    rerank_result = await rerank(user_query, fused, top_k=RERANK_TOP_K)
+    # 4. rerank + post-rerank governance/blend. provider 只负责补语义眼力;
+    # 最终 context 动态选择干净证据,不为凑满 top10 塞低置信 chunk。
+    rerank_result = await rerank(
+        user_query,
+        fused,
+        top_k=min(POST_RERANK_PROVIDER_TOP_K, len(fused)),
+    )
+    post_rerank = post_rerank_governance_blend(
+        fused,
+        rerank_result.scored,
+        governance,
+        expanded_queries,
+        top_k=RERANK_TOP_K,
+    )
 
     # 5. parent-doc 自适应扩展
-    expanded_scored = await expand_to_parent_docs(session, rerank_result.scored)
+    expanded_scored = await expand_to_parent_docs(session, post_rerank.selected)
 
     # 6. enrich note_title(batch JOIN 一次)
     note_ids = list({chunk.note_id for chunk, _ in expanded_scored})
     note_titles = await fetch_note_titles(session, note_ids)
 
-    # 7. 组装 RetrievedChunk(保留 rerank 顺序;sibling 扩展插在源 chunk 之后)
+    # 7. 组装 RetrievedChunk(保留 selected 顺序;sibling 扩展插在源 chunk 之后)
     retrieved = [
         RetrievedChunk(
             chunk=chunk,
