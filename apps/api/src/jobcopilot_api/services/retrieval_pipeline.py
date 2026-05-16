@@ -12,8 +12,7 @@
       ↓ 0 命中守门(< MIN_CHUNKS_FOR_QUIZ → raise NoChunksForQueryError)
       ↓ reranker (qwen3-rerank,失败回退 hybrid 顺序)
       ↓ post-rerank governance + dynamic clean-context selection
-    selected 3-10 chunks
-      ↓ parent-doc 自适应扩展(命中段 < 200 字 → 扩同 H2 兄弟)
+    selected 3-10 seed chunks(parent-doc 默认禁用)
       ↓ batch enrich note_title
     PipelineResult{expanded_queries, retrieved_chunks}
 
@@ -63,8 +62,8 @@ async def run(
     """全库 RAG retrieval。
 
     成功 → 返回 PipelineResult(expanded_queries + retrieved_chunks);
-    rerank/governance 后动态选择干净 context;0 命中守门仍在 rerank 前执行,
-    parent-doc 扩展不参与守门,仅扩上下文。
+    rerank/governance 后动态选择干净 seed context;0 命中守门仍在
+    rerank 前执行。parent-doc 扩展当前默认禁用,避免背景 chunk 稀释证据。
     """
     # 1. query_rewriter(失败回退原 query,不阻塞)
     rewrite_out = await rewrite_query(user_query)
@@ -120,14 +119,15 @@ async def run(
         top_k=RERANK_TOP_K,
     )
 
-    # 5. parent-doc 自适应扩展
-    expanded_scored = await expand_to_parent_docs(session, post_rerank.selected)
+    # 5. Use selected seed chunks only; parent-doc expansion is intentionally
+    # disabled for production until evidence/background chunks are separated.
+    selected_scored = post_rerank.selected
 
     # 6. enrich note_title(batch JOIN 一次)
-    note_ids = list({chunk.note_id for chunk, _ in expanded_scored})
+    note_ids = list({chunk.note_id for chunk, _ in selected_scored})
     note_titles = await fetch_note_titles(session, note_ids)
 
-    # 7. 组装 RetrievedChunk(保留 selected 顺序;sibling 扩展插在源 chunk 之后)
+    # 7. 组装 RetrievedChunk(保留 selected 顺序)
     retrieved = [
         RetrievedChunk(
             chunk=chunk,
@@ -136,7 +136,7 @@ async def run(
             note_title=note_titles.get(chunk.note_id, ""),
             rerank_score=score,
         )
-        for chunk, score in expanded_scored
+        for chunk, score in selected_scored
     ]
 
     return PipelineResult(
@@ -193,6 +193,9 @@ async def expand_to_parent_docs(
     scored: list[tuple[NoteChunk, float]],
 ) -> list[tuple[NoteChunk, float]]:
     """命中段 < PARENT_DOC_THRESHOLD_CHARS 字的 chunk 扩到同 H2 的 sibling。
+
+    当前生产路径默认不调用;保留给 smoke A/B 或后续显式 evidence/background
+    分层后再启用。
 
     实现:
     - 收集所有"待扩"chunk 的 (note_id, h2_first_seg) 键,记最高 rerank_score

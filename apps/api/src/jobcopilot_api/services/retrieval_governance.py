@@ -47,7 +47,15 @@ POST_RERANK_PROVIDER_WEIGHT = 0.32
 POST_RERANK_GOVERNANCE_WEIGHT = 0.18
 POST_RERANK_COARSE_KEEP_TOP_K = 50
 POST_RERANK_DYNAMIC_MIN_K = 3
-POST_RERANK_DYNAMIC_TARGET_K = 8
+POST_RERANK_DYNAMIC_TARGET_K = 6
+POST_RERANK_DIVERSITY_SOFT_K = 3
+POST_RERANK_MAX_PER_NOTE_AFTER_SOFT_K = 2
+POST_RERANK_MAX_PER_HEADING_AFTER_SOFT_K = 1
+POST_RERANK_LATE_STRONG_MIN_FINAL_SCORE = 0.54
+POST_RERANK_LATE_STRONG_MIN_GOVERNANCE = 0.88
+POST_RERANK_LATE_PROVIDER_MIN_FINAL_SCORE = 0.60
+POST_RERANK_LATE_PROVIDER_MIN_NORM_SCORE = 0.90
+POST_RERANK_LATE_PROVIDER_MIN_GOVERNANCE = 0.76
 POST_RERANK_FLOOR_MIN_GOVERNANCE = 0.62
 POST_RERANK_CHALLENGER_MIN_GOVERNANCE = 0.70
 POST_RERANK_EXTRA_MIN_GOVERNANCE = 0.78
@@ -695,9 +703,16 @@ def _select_dynamic_post_rerank_details(
         chunk_id = int(item.chunk.id)
         if chunk_id in seen:
             continue
+        strong_late_evidence = _is_late_strong_evidence_candidate(item)
         if (
             len(selected) >= preferred_max
-            and not _is_extra_evidence_candidate(item)
+            and not strong_late_evidence
+        ):
+            continue
+        if (
+            len(selected) >= min(POST_RERANK_DIVERSITY_SOFT_K, top_k)
+            and _is_redundant_context_candidate(item, selected)
+            and not strong_late_evidence
         ):
             continue
         if len(selected) >= top_k:
@@ -760,6 +775,63 @@ def _is_extra_evidence_candidate(detail: PostRerankGovernanceDetail) -> bool:
             ),
         )
     )
+
+
+def _is_late_strong_evidence_candidate(
+    detail: PostRerankGovernanceDetail,
+) -> bool:
+    """Allow a small number of high-confidence chunks past the target size."""
+    if _is_blocked_by_governance(detail):
+        return False
+    if _has_any_flag(
+        detail,
+        (
+            "contrast_direct_evidence",
+            "state_recovery_route_supported",
+            "provider_failure_route_supported",
+        ),
+    ):
+        return True
+    if (
+        detail.source_type in {"canonical_project_fact", "project_doc"}
+        and detail.final_score >= POST_RERANK_LATE_STRONG_MIN_FINAL_SCORE
+        and detail.governance_score >= POST_RERANK_LATE_STRONG_MIN_GOVERNANCE
+    ):
+        return True
+    return (
+        detail.final_score >= POST_RERANK_LATE_PROVIDER_MIN_FINAL_SCORE
+        and
+        detail.normalized_rerank_score
+        >= POST_RERANK_LATE_PROVIDER_MIN_NORM_SCORE
+        and detail.governance_score >= POST_RERANK_LATE_PROVIDER_MIN_GOVERNANCE
+    )
+
+
+def _is_redundant_context_candidate(
+    detail: PostRerankGovernanceDetail,
+    selected: list[PostRerankGovernanceDetail],
+) -> bool:
+    note_count = sum(
+        1 for item in selected if item.chunk.note_id == detail.chunk.note_id
+    )
+    if note_count >= POST_RERANK_MAX_PER_NOTE_AFTER_SOFT_K:
+        return True
+
+    heading_key = _chunk_heading_key(detail.chunk)
+    if heading_key is None:
+        return False
+    heading_count = sum(
+        1
+        for item in selected
+        if _chunk_heading_key(item.chunk) == heading_key
+    )
+    return heading_count >= POST_RERANK_MAX_PER_HEADING_AFTER_SOFT_K
+
+
+def _chunk_heading_key(chunk: NoteChunk) -> tuple[int, tuple[str, ...]] | None:
+    if not chunk.heading_path:
+        return None
+    return (int(chunk.note_id), tuple(chunk.heading_path))
 
 
 def _is_blocked_by_governance(detail: PostRerankGovernanceDetail) -> bool:

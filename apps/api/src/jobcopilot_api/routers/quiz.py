@@ -39,7 +39,7 @@ async def create_session(payload: QuizSessionCreateIn) -> EventSourceResponse:
     """4-API_SPEC §4.1。
 
     入参 `{query, mode, question_count, jd_ids?}`,SSE 流见 §4.6:
-    started → progress(query_rewriting / hybrid / rerank / parent_doc /
+    started → progress(query_rewriting / hybrid / rerank / context_selecting /
     generating / type_mix_decided)→ question_ready × N → done。
     """
     # 4-API_SPEC §4.1 错误码(M2 阶段):

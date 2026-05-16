@@ -45,8 +45,9 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - zero-hit 守门已从"候选数量"升级为"核心证据覆盖":`assess_query_support` 会检查 query 的强技术锚点是否被 top10 候选覆盖。Rust borrow checker / Kubernetes Operator 这类库内无证据 query 已能判 0 命中。
 - 对比型 query governance 已保留:`Outbox 和 MQ 有什么区别?` 这类 query 会识别两侧概念,优先抬含双方且有近距离 contrast 信号的直接证据,压只覆盖 MQ 一侧的泛相关内容。最终粗排 top10 report `20260515-163721`:12/12,`selected_recall@10 86.67%`,`MRR 67.00%`,`precision 29.00%`,hard-negative `0/12`,zero-hit `2/2`。
 - Provider 精排 top100→top10 已跑并判定不能裸用:`20260515-164421` 为 10/12,`selected_recall@10 69.17%`,`MRR 59.76%`,`precision 22.00%`,hard-negative `2/12`;问题不是 timeout/429,而是 reranker 忽略 source/type 与 contrast governance,会把已被粗排压下去的 hard-negative / 泛相关内容重新抬进 top10。
-- post-rerank governance/blend 已接入生产路径:`粗排 top50 → qwen3-rerank top50 → coarse/provider/governance blend → dynamic clean-context selection(3-10) → parent-doc`。粗排 top10 是 floor,top50 里的高置信 provider challenger 可以进最终上下文,低置信候选不为凑满 top10 被塞给下游。
-- `provider_blend` 初版 smoke 已跑:`evals/reports/hybrid-search-note-smoke-20260516-080038.md` 为 12/12,`candidate_recall@50 97.50%`,`selected_recall@K 86.67%`,`mrr@K 67.00%`,`final_context_precision 29.00%`,hard-negative `0/12`,cache-only。此后代码已改成正式 `candidate_recall@15 / selected_recall@10` 命名和 dynamic clean-context selection,尚待用户手动重跑 smoke 确认新口径。
+- post-rerank governance/blend 已接入生产路径:`粗排 top50 → qwen3-rerank top50 → coarse/provider/governance blend → dynamic clean-context selection(3-10) → QuizGenerator evidence verifier`。粗排 top10 是 floor,top50 里的高置信 provider challenger 可以进最终上下文,低置信候选不为凑满 top10 被塞给下游;parent-doc 默认永久关闭,只保留作手动 A/B 诊断。
+- `provider_blend` 稳定生产口径已跑:`evals/reports/hybrid-search-note-smoke-20260516-095536.md` 为 12/12,`candidate_recall@15 91.67%`,`selected_recall@10 95.00%`,`final_context_recall 95.00%`,`final_context_precision 40.00%`,hard-negative `0/12`,zero-hit `2/2`,parent-doc off,query embedding cache-only。
+- selected topK=8 已判定为负收益并回滚:`evals/reports/hybrid-search-note-smoke-20260516-100624.md` precision `40.00% → 41.75%`,但 `selected_recall@10 / final_context_recall 95.00% → 90.00%`,说明最终材料包不能只追求更短,要守住 direct evidence。
 - query embedding cache 已接入 `search_service`:粗排每个 expanded query 先查 `llm_response_cache(feature=query_embedding)`,cache key 包含 `normalized_query + model + embed_version + dimensions`。smoke/eval 默认 `cache-only`,cache miss 直接失败,避免重复跑时继续请求 `text-embedding-v4`;产品链路默认仍允许 miss 后实时计算。
 - 已补 `docs/6-EVAL_PLAN.md` 第 7 节:trace schema、离线 rescore 跑法、macro average 口径、0 命中 candidate 保存语义。
 - 已补 `docs/9-LESSONS.md` §3.4:CLI 评测脚本不要在 Langfuse noop 模式下频繁构造 SDK client。
@@ -85,6 +86,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **hybrid_search 粗排诊断已落地**:`search_service` 暴露 diagnostics-only 路径;smoke report 可解释 direct evidence 为什么在 top20/top50 后、哪条 expanded query 贡献 hard-negative、q0 加权会让哪些 labeled chunks 上下移动。
 - **Query Understanding v2 + weighted RRF 已落地**:query_rewriter 输出 intent / core entities / must-keep terms / weighted queries;跨 query RRF 已支持 query weights,用户原话固定两票。
 - **M2.1 retrieval governance 已落地**:`retrieval_governance.py` 统一承载 source/type multiplier、窄 protected anchor route、zero-hit support gate、contrast query governance、post-rerank governance/blend、dynamic clean-context selection;`retrieval_pipeline` / `quiz_service` / smoke eval 已接入同一套逻辑。
+- **parent-doc 默认禁用 + 出题引用校验已落地**:QuizGenerator 只拿 post-rerank 选出的干净 seed chunks;题目保存前校验 `reference_answer` 引用、`reference_chunk_ids / evidence_chunk_ids` 越界、采分点与声明证据的基础重合,避免 LLM 把背景材料包装成评分依据。
 - **query embedding cache 已落地**:`search_service` 通过 `embed_query_cached` 复用 `llm_response_cache`;smoke/eval 默认 cache-only,重复跑同一套粗排 / 精排时,相同 expanded query 不再重复请求 embedding provider,miss 直接暴露。
 - **eval 脚本资源收尾已补强**:`infra.langfuse` 避免无 key/noop 场景构造 Langfuse SDK client;DashScope client 有 Langfuse key 才走 `langfuse.openai`;smoke cleanup 不再为关闭而懒加载 embedder / llm singleton。
 - **百炼价格 / rerank 限制已记录**:`qwen3.6-flash` 控制台价格、Responses 工具价、`qwen3-rerank` 500 docs / token 上限 / `gte-rerank-v2` 下线提醒已写入代码注释与常量;rerank 请求本地截断到 500 docs;当前 reranker document format 为 `content + weak_source_context`。
@@ -94,11 +96,11 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **手动重跑 provider_blend smoke,确认新口径**:当前代码已变成粗排 top50 喂给精排、post-rerank governance/blend 动态选 3-10 个干净 chunk。下一步只需用户跑 `provider_blend --rerank-input-top-k 50 --selected-top-k 10 --query-embedding-cache-policy cache-only`,重点看 `candidate_recall@15 / selected_recall@10 / final_context_precision / hard-negative`。
+1. **补泛化评测集**:当前 12 条 smoke 证明关键路径和高风险样本不回退,但不能证明任意新 query 都泛化。下一刀建议补 query 改写集、新主题 holdout、强干扰集,验证 source/type governance、reranker challenger、parent-doc off、出题引用校验不是只贴着 12 条 query 调出来的。
 
 备选:
 
-- 若 smoke 回退,先看 trace 里的 `governance_flags` 和 `post_rank`,不要只看 headline pass。
+- 若继续跑 smoke,先看 trace 里的 `governance_flags` 和 `post_rank`,不要只看 headline pass。
 - 如 cache-only 因 query miss 失败,先确认是不是 query rewrite 内容变了;不要为了跑通悄悄切回 live-on-miss。
 - 如果继续看 rerank,优先调 blend / governance 阈值 / dynamic selection,不要把 rerank input 收到 15。
 - 如果继续扩 zero-hit,保持 core entity / anchor coverage 守门:Rust、Kubernetes Operator 这类核心实体缺失时不能只靠向量近邻过门。
@@ -110,7 +112,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 |----|------|
 | 出题入口 | 只走聊天框 query;笔记面板只查看 / 编辑 / 上传 / 导航,不触发出题。 |
 | M2 query | 仅主题类 query;岗位类与空 query 放 M3。 |
-| RAG pipeline | `query_rewriter → hybrid + RRF → reranker(top50) → post-rerank governance/blend → dynamic clean-context selection → parent-doc 扩展` + 0 命中守门。 |
+| RAG pipeline | `query_rewriter → hybrid + RRF → reranker(top50 challenger) → post-rerank governance/blend → dynamic clean-context selection → evidence verifier` + 0 命中守门;parent-doc 默认关闭。 |
 | 0 命中 | 命中 chunks < 3 起步直接报"笔记里没这主题",不兜底让 LLM 编。 |
 | Reranker | 百炼 `qwen3-rerank`(`/compatible-api/v1/reranks`);本地 fallback 暂不做。 |
 | M2.1 Agent | `InterviewCoachAgent` 状态机;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不是多 Agent 数量。 |
@@ -142,6 +144,8 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **[来自 M2.1] Provider rerank 是 challenger source,不是最终成员裁判**:粗排 top50 可喂给精排,但最终 context 必须再过 deterministic governance/blend。
 - **[来自 M2.1] smoke/eval 默认 query embedding cache-only**:重复实验不得静默请求 embedding provider;cache miss 要显式失败或由用户指定 live-on-miss。
 - **[来自 M2.1] 正式指标名固定为 `candidate_recall@15 / selected_recall@10`**:top50 只作诊断窗口和 rerank input,不要再把 `candidate_recall@50` 当主 headline。
+- **[来自 M2.1] parent-doc 默认关闭**:出题 / 评分只能引用 post-rerank 选出的 seed chunks;parent-doc 只作为人工 A/B 背景诊断,不能进入 source/reference/evidence ids。
+- **[来自 M2.1] RAG 指标必须说明泛化边界**:12 条 smoke 是关键路径防回归,不是任意 query 泛化证明;下一步要用改写集 / holdout / 强干扰集补证据。
 
 # 文档导航
 

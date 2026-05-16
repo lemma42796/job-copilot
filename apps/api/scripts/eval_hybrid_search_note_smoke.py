@@ -3063,8 +3063,11 @@ async def main() -> None:
     parser.add_argument(
         "--parent-doc-mode",
         choices=("on", "off"),
-        default="on",
-        help="on expands selected chunks to parent-doc context; off uses seeds only.",
+        default="off",
+        help=(
+            "off uses selected seed chunks only(default); on expands selected "
+            "chunks to parent-doc context for A/B diagnostics."
+        ),
     )
     parser.add_argument(
         "--query-embedding-cache-policy",

@@ -3,7 +3,7 @@
 职责:
 - POST /api/quiz/sessions(SSE)入口
 - 内联 retrieval 5 步(query_rewriter → multi-query hybrid → rerank/blend →
-  parent-doc 扩展 → enrich note_title)+ quiz_generator LLM 出题
+  selected seed chunks → enrich note_title)+ quiz_generator LLM 出题
 - service 后处理:[N] → DB id 映射 + 完整性校验
   (reference_chunk_ids ⊆ source_chunk_ids / weight 之和 ∈ [0.99, 1.01] /
   reference_points evidence_chunk_ids ⊆ source_chunk_ids)
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -63,13 +64,34 @@ from jobcopilot_api.services.retrieval_pipeline import (
     POST_RERANK_PROVIDER_TOP_K,
     RERANK_TOP_K,
     RRF_K,
-    expand_to_parent_docs,
     fetch_note_titles,
     multi_query_rrf,
 )
 from jobcopilot_api.services.search_service import global_hybrid_search
 
 logger = logging.getLogger(__name__)
+
+REFERENCE_POINTS_MIN = 2
+REFERENCE_POINTS_MAX = 5
+EVIDENCE_SUPPORT_MIN_SCORE = 0.18
+EVIDENCE_SUPPORT_MIN_HITS = 2
+_CITATION_RE = re.compile(r"\[(\d+)\]")
+_LATIN_TERM_RE = re.compile(
+    r"[a-zA-Z][a-zA-Z0-9_+.-]{1,}|\d+(?:\.\d+)?[a-zA-Z]*"
+)
+_EVIDENCE_STOPWORDS = {
+    "and",
+    "are",
+    "for",
+    "how",
+    "the",
+    "this",
+    "that",
+    "what",
+    "when",
+    "why",
+    "with",
+}
 
 
 class IntegrityCheckError(JobCopilotError):
@@ -174,11 +196,10 @@ async def start_session_sse(
                 top_k=RERANK_TOP_K,
             )
 
-            # 5. parent-doc 扩展 + enrich note_title
-            expanded_scored = await expand_to_parent_docs(
-                s, post_rerank.selected
-            )
-            note_ids = list({chunk.note_id for chunk, _ in expanded_scored})
+            # 5. Keep only selected seed chunks. Parent-doc expansion is
+            # disabled until evidence/background chunks are separated.
+            selected_scored = post_rerank.selected
+            note_ids = list({chunk.note_id for chunk, _ in selected_scored})
             note_titles = await fetch_note_titles(s, note_ids)
 
         retrieved_chunks = [
@@ -189,12 +210,12 @@ async def start_session_sse(
                 note_title=note_titles.get(chunk.note_id, ""),
                 rerank_score=score,
             )
-            for chunk, score in expanded_scored
+            for chunk, score in selected_scored
         ]
         yield _ev(
             "progress",
             {
-                "phase": "parent_doc_expanding",
+                "phase": "context_selecting",
                 "chunk_count": len(retrieved_chunks),
             },
         )
@@ -378,7 +399,8 @@ def _build_question_rows(
 
     LLM 输出的 source_chunk_ids / reference_chunk_ids / evidence_chunk_ids
     都是 1-based [N] 编号(对应 USER 段渲染顺序),映射到 chunks[N-1].id。
-    任何越界 / 集合包含违反 / weight 之和不在 [0.99, 1.01] → IntegrityCheckError。
+    任何越界 / 集合包含违反 / evidence 引用不可信 / weight 之和不在
+    [0.99, 1.01] → IntegrityCheckError。
     """
     type_mix = gen_output.type_mix
     if type_mix.open_ended + type_mix.definition != len(gen_output.questions):
@@ -409,8 +431,10 @@ def _build_question_rows(
                 raise IntegrityCheckError(
                     f"reference_chunk_ids [{n}] 不在 source_chunk_ids {sorted(source_set)} 里"
                 )
+        _validate_reference_answer_citations(q)
         ref_db = [chunk_db_ids[n - 1] for n in q.reference_chunk_ids]
 
+        _validate_reference_points_shape(q)
         weight_sum = sum(p.weight for p in q.reference_points)
         if not (0.99 <= weight_sum <= 1.01):
             raise IntegrityCheckError(
@@ -437,6 +461,8 @@ def _build_question_rows(
                 }
             )
 
+        _validate_question_evidence_support(q, gen_chunks)
+
         rows.append(
             {
                 "originated_query": query,
@@ -455,6 +481,102 @@ def _build_question_rows(
             }
         )
     return rows
+
+
+def _validate_reference_answer_citations(
+    q: GeneratedQuestion,
+) -> None:
+    """Ensure reference_answer cites declared local chunk ids."""
+    if not q.reference_chunk_ids:
+        raise IntegrityCheckError(
+            f"题 '{q.prompt[:30]}...' reference_chunk_ids 为空"
+        )
+    cited = {int(raw) for raw in _CITATION_RE.findall(q.reference_answer)}
+    if not cited:
+        raise IntegrityCheckError(
+            f"题 '{q.prompt[:30]}...' reference_answer 缺少 [N] 引用"
+        )
+    reference_set = set(q.reference_chunk_ids)
+    invalid = sorted(cited - reference_set)
+    if invalid:
+        raise IntegrityCheckError(
+            f"题 '{q.prompt[:30]}...' reference_answer 引用了非 reference chunks:{invalid}"
+        )
+    missing = sorted(reference_set - cited)
+    if missing:
+        raise IntegrityCheckError(
+            f"题 '{q.prompt[:30]}...' reference_answer 未引用 reference_chunk_ids:{missing}"
+        )
+
+
+def _validate_reference_points_shape(q: GeneratedQuestion) -> None:
+    point_count = len(q.reference_points)
+    if not (REFERENCE_POINTS_MIN <= point_count <= REFERENCE_POINTS_MAX):
+        raise IntegrityCheckError(
+            f"题 '{q.prompt[:30]}...' reference_points 数量 {point_count} "
+            f"不在 [{REFERENCE_POINTS_MIN}, {REFERENCE_POINTS_MAX}]"
+        )
+    point_ids = [p.id for p in q.reference_points]
+    if len(point_ids) != len(set(point_ids)):
+        raise IntegrityCheckError(
+            f"题 '{q.prompt[:30]}...' reference_points id 重复"
+        )
+    for p in q.reference_points:
+        if p.weight <= 0:
+            raise IntegrityCheckError(
+                f"题 '{q.prompt[:30]}...' reference_point '{p.id}' weight 非正"
+            )
+        if not p.evidence_chunk_ids:
+            raise IntegrityCheckError(
+                f"题 '{q.prompt[:30]}...' reference_point '{p.id}' "
+                "evidence_chunk_ids 为空"
+            )
+
+
+def _validate_question_evidence_support(
+    q: GeneratedQuestion,
+    chunks: list[QuizGenChunkInput],
+) -> None:
+    chunk_by_local = {idx: chunk for idx, chunk in enumerate(chunks, start=1)}
+    for p in q.reference_points:
+        evidence_text = "\n".join(
+            chunk_by_local[n].content for n in p.evidence_chunk_ids
+        )
+        support = _evidence_support(p.text, evidence_text)
+        if not support:
+            raise IntegrityCheckError(
+                f"题 '{q.prompt[:30]}...' reference_point '{p.id}' "
+                "和 evidence_chunk_ids 缺少足够文本重合"
+            )
+
+
+def _evidence_support(claim_text: str, evidence_text: str) -> bool:
+    claim_units = _evidence_units(claim_text)
+    if not claim_units:
+        return bool(claim_text.strip() and claim_text.strip() in evidence_text)
+    evidence_units = _evidence_units(evidence_text)
+    hits = claim_units & evidence_units
+    if len(claim_units) <= 3:
+        return bool(hits)
+    return (
+        len(hits) >= min(EVIDENCE_SUPPORT_MIN_HITS, len(claim_units))
+        and len(hits) / len(claim_units) >= EVIDENCE_SUPPORT_MIN_SCORE
+    )
+
+
+def _evidence_units(text: str) -> set[str]:
+    normalized = text.lower()
+    units = {
+        item
+        for item in _LATIN_TERM_RE.findall(normalized)
+        if item not in _EVIDENCE_STOPWORDS
+    }
+    cjk_chars = [ch for ch in normalized if "\u4e00" <= ch <= "\u9fff"]
+    units.update(
+        "".join(cjk_chars[idx : idx + 2])
+        for idx in range(max(len(cjk_chars) - 1, 0))
+    )
+    return units
 
 
 async def _insert_questions_and_answers(

@@ -1,9 +1,9 @@
 """Retrieval pipeline 输出 schema(M2)。
 
 5-AGENT_DESIGN §3.1 RetrievedChunk + §2.7 PipelineResult — pipeline 把
-query_rewrite → multi-query hybrid → RRF → rerank → parent-doc 编排成的
-最终 chunk 集合(每个 chunk 含 heading_path / note_title / rerank_score
-元数据,直接喂 quiz_generator USER 段)。
+query_rewrite → multi-query hybrid → RRF → rerank/blend → clean-context
+selection 编排成最终 seed chunk 集合(每个 chunk 含 heading_path /
+note_title / rerank_score 元数据,直接喂 quiz_generator USER 段)。
 
 NoteChunk ORM 实体放进 RetrievedChunk.chunk(不复制字段),quiz_service
 渲染 USER 段时拿 chunk.id / chunk.content;heading_path 反规范化字段从
