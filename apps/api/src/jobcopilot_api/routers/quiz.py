@@ -20,11 +20,12 @@ from jobcopilot_api.errors import (
 from jobcopilot_api.infra.db import get_sessionmaker
 from jobcopilot_api.schemas.quiz import (
     AnswerDraftIn,
+    AnswerTurnSubmitIn,
     QuizSessionCreateIn,
     QuizSessionDetailOut,
     QuizSessionListOut,
 )
-from jobcopilot_api.services import answer_service, quiz_service
+from jobcopilot_api.services import answer_service, interview_service, quiz_service
 
 router = APIRouter(tags=["quiz"], prefix="/quiz")
 
@@ -107,6 +108,26 @@ async def save_answer(
             payload=payload,
         )
     return {"ok": True}
+
+
+@router.post(
+    "/sessions/{session_id}/answers/{order_index}/turns",
+    summary="提交单题一轮答案并推进 InterviewCoachAgent(SSE)",
+)
+async def submit_answer_turn(
+    session_id: int,
+    order_index: int,
+    payload: AnswerTurnSubmitIn,
+) -> EventSourceResponse:
+    sessionmaker = get_sessionmaker()
+    return EventSourceResponse(
+        interview_service.submit_answer_turn_sse(
+            sessionmaker,
+            session_id,
+            order_index,
+            payload,
+        )
+    )
 
 
 @router.post(

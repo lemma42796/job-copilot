@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import BigInteger, DateTime, Numeric, String, Text, text
 from sqlalchemy.dialects import postgresql
@@ -73,6 +74,13 @@ class QuizSession(Base, IDMixin, TimestampMixin):
         nullable=False,
         server_default="in_progress",
     )
+
+    agent_state: Mapped[dict[str, Any]] = mapped_column(
+        postgresql.JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
+    )
+    last_agent_node: Mapped[str | None] = mapped_column(String(50))
 
     total_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
     coverage_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))

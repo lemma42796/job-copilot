@@ -1,7 +1,7 @@
 ---
 title: EVAL PLAN - JobCopilot v2(评测套件 + Cohen's kappa 守门)
 owner: lemma42796
-last_updated: 2026-05-14
+last_updated: 2026-05-16
 purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、不达标处理流程
 ---
 
@@ -14,7 +14,7 @@ purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、
 | `hybrid_search` | M2 补测 | RAG 召回 + final context 干净度 + chunk 语义完整性 | final_context_recall ≥ 0.95 / final_context_precision ≥ 0.70 |
 | `quiz_generator` | M2 | 出题结构合规 + type_mix 决策合理 | 合规率 ≥ 0.95 / type_mix 一致率 ≥ 0.7 |
 | `answer_judge` | M2 | 三层 label 跟人工标注一致性 | Cohen's `κ ≥ 0.7`(三层独立) |
-| `interview_coach` | M2.1 | Agent 状态机是否走到人工期望分支 | branch accuracy ≥ 0.8 / recovery case 全过 |
+| `interview_coach` | M2.1 | Agent 状态机是否走到人工期望分支 + 多轮纠偏是否正确退出 | branch accuracy ≥ 0.8 / recovery + context + hallucination case 全过 |
 | `jd_aggregator` | M2.5 | 同义合并准确 + 频次重算正确 | F1 ≥ 0.85 / freq MAE ≤ 0.03 |
 | `resume_advisor` | M3 | anchored ratio + 锚点正确率 + 永不替写文案 | anchored ≥ 0.7 / forbidden 触发率 ≤ 0.05 |
 
@@ -747,7 +747,78 @@ python -m jobcopilot_api.scripts.eval_hybrid_search \
 6. **chunk 完整性单独排查**:如果 evidence 已进 top_k 但 final context 缺前提、否定、数值、步骤,优先查 chunker / parent-doc / markdown 结构保护,不要误归因为 reranker。
 7. **本地降权先做诊断,不要默认进主路**:2026-05-14 试过 intent × chunk-type soft adjustment,能把 hard-negative intrusion 从 4/12 压到 3/12、提升 MRR,但 `selected_recall@10` 和 final recall 下降。后续若继续做,report/trace 必须打印 `query_intent`、`chunk_type`、provider rank、adjustment、adjusted_score,先离线 A/B penalty 表,再决定是否进产品路径。
 
-# 8. 防回归约束
+# 8. `interview_coach` suite(M2.1 DoD)
+
+## 8.1 评什么
+
+本 suite 守的是 **Agent harness 行为**:同一题多轮答不好时,系统是否能提示具体缺口、引导补答、对累计答案重评,并在合理条件下继续或退出。它不重新评 Judge label 质量;Judge 本身仍由 `answer_judge` suite 守门。
+
+重点风险:
+
+1. **分支错误**:该纠偏时直接下一题,或答得好仍反复追问。
+2. **纠偏无效**:系统只说泛泛建议,没有指出漏掉的 reference point / fabricated claim / depth 缺口。
+3. **无限循环**:没有固定 1 轮上限后,必须靠达标、用户跳过、无明显提升、偏题、token budget 等条件退出。
+4. **长上下文污染**:多轮后把全量聊天塞进 prompt,挤掉 source chunks / reference points / unresolved gaps。
+5. **追问幻觉**:纠偏 prompt 引入 source chunks 之外的新标准答案来源。
+
+## 8.2 dataset.jsonl schema
+
+每行是一个流程型 fixture:
+
+```json
+{
+  "fixture_id": "coach_coverage_001",
+  "query": "考考我 Outbox 和 MQ 的区别",
+  "question": {
+    "text": "Outbox 和 MQ 的核心差异是什么?",
+    "reference_point_ids": ["rp_1", "rp_2", "rp_3"],
+    "source_chunk_ids": [101, 102]
+  },
+  "turns": [
+    {"role": "user", "text": "MQ 就是发消息,Outbox 也是发消息。"},
+    {"role": "expected_agent", "expected_action": "remediate", "triggered_by": "coverage", "missing_reference_point_ids": ["rp_2", "rp_3"]},
+    {"role": "user", "text": "补充:Outbox 先和业务事务一起落库,再异步投递。"}
+  ],
+  "expected_final": {
+    "action": "ask_next",
+    "min_coverage_score": 80,
+    "max_fabricated_ratio": 0.1
+  },
+  "context_expectation": {
+    "must_include": ["question", "source_chunks", "reference_points", "cumulative_answer", "unresolved_gaps"],
+    "must_not_include": ["full_raw_transcript_when_over_budget"]
+  },
+  "notes": "测 coverage 缺口 → 补答 → 累计答案重评"
+}
+```
+
+## 8.3 指标
+
+| 指标 | 定义 | 阈值 |
+|------|------|------|
+| `branch_accuracy` | 每个 decision node 是否走到人工期望 action(`remediate` / `ask_next` / `summarize` / `finish`) | ≥ 0.8 |
+| `remediation_target_accuracy` | 纠偏 prompt 的 `triggered_by`、缺口 id、claim id、depth 维度是否命中人工标签 | ≥ 0.8 |
+| `cumulative_rejudge_pass` | 补答后 Judge 输入是否为累计答案,不是只评最后一句 | 1.0 |
+| `loop_exit_pass` | 达标 / 用户跳过 / 连续提升很小 / 偏题 / token budget 场景是否正确退出 | 1.0 |
+| `context_pack_pass` | context pack 是否保留必需字段并压缩旧轮次 | 1.0 |
+| `hallucination_guard_pass` | 纠偏 prompt 是否只围绕 source chunks / reference_points / Judge gaps | 1.0 |
+| `recovery_pass` | 从 `wait_user_answer` / `judge_answer` 后恢复能继续同一节点 | 1.0 |
+
+## 8.4 覆盖矩阵
+
+至少 10 条:
+
+| 类别 | 数量 | 期望 |
+|------|------|------|
+| 答得好 | 2 | 不纠偏,直接下一题 / 总结 |
+| coverage 缺口 | 2 | 指出漏掉 reference point,补答后重评 |
+| fabricated 高 | 2 | 追问依据来源,不直接下一题 |
+| depth 缺维度 | 1 | 明确追问 tradeoff / why / boundary |
+| 多轮无明显提升 | 1 | 退出纠偏并总结缺口 |
+| 中途恢复 | 1 | 从 `wait_user_answer` 恢复 |
+| 长上下文压缩 | 1 | 旧轮次摘要化,必需证据不丢 |
+
+# 9. 防回归约束
 
 跨各 suite 通用规则(沿用 v1 LESSONS §8.2):
 
@@ -758,11 +829,11 @@ python -m jobcopilot_api.scripts.eval_hybrid_search \
 
 修正:`evals/reports/` **要进 git**,不 ignore。理由是 ablation / 对比模型 / prompt 演化必须有时间线。
 
-# 9. dataset 标注协议
+# 10. dataset 标注协议
 
 为了 kappa 算得准,标注规范要锁死(沿用 v1 LESSONS §8.2 "Prompt 是产品代码"延伸 — dataset 也是)。
 
-## 9.1 单人标注 vs 双人标注
+## 10.1 单人标注 vs 双人标注
 
 MVP **单人主标注 + 抽样复核**,不上双人 inter-rater agreement。理由:
 - hybrid_search 的 ground_truth / unsafe boundary 由 Codex 主标注,用户抽样复核与争议裁决,降低人工负担
@@ -772,7 +843,7 @@ MVP **单人主标注 + 抽样复核**,不上双人 inter-rater agreement。理�
 
 风险:单人 / Codex 标注偏差进 dataset。**对冲手段**:每条 fixture 必须填 `notes` 字段说"这条想测什么";Codex 低置信样本标 `needs_review: true`;用户抽查失败样本与争议样本。
 
-## 9.2 Coverage label 边界
+## 10.2 Coverage label 边界
 
 | label | 标注准则 |
 |-------|--------|
@@ -780,7 +851,7 @@ MVP **单人主标注 + 抽样复核**,不上双人 inter-rater agreement。理�
 | `partial` | 用户答提到 point 主题但缺关键细节(缺至少一个具体步骤 / 命名 / 数值)|
 | `miss` | 用户答完全没提 point 主题(不是"提了但讲错"— 讲错走 partial)|
 
-## 9.3 Fidelity label 边界
+## 10.3 Fidelity label 边界
 
 | label | 标注准则 |
 |-------|--------|
@@ -790,7 +861,7 @@ MVP **单人主标注 + 抽样复核**,不上双人 inter-rater agreement。理�
 
 **关键判断**:`inferred` 和 `fabricated` 的边界是"这条声明,如果一个该领域稍有经验的从业者看到,会不会皱眉"。会皱眉 → fabricated;不会 → inferred。
 
-## 9.4 Depth label 边界
+## 10.4 Depth label 边界
 
 | 维度 | covered=true 条件 |
 |------|------------------|
@@ -798,11 +869,11 @@ MVP **单人主标注 + 抽样复核**,不上双人 inter-rater agreement。理�
 | `why` | 用户答解释了"为什么这样设计"或"动机是什么"(关键词:"为了"、"因为"、"目的是")|
 | `boundary` | 用户答提了适用 / 不适用场景,或边界条件(关键词:"在...时不适用"、"局限"、"前提是")|
 
-# 10. 已锁定的关键决策
+# 11. 已锁定的关键决策
 
 | 项 | 决策 | 备注 |
 |----|------|------|
-| 核心 suite | hybrid_search(M2 补测)/ quiz_generator(M2)/ answer_judge(M2) | hybrid_search 先补 RAG 召回 + chunk 完整性 |
+| 核心 suite | hybrid_search(M2 补测)/ quiz_generator(M2)/ answer_judge(M2)/ interview_coach(M2.1) | M2.1 重点守状态机分支、多轮纠偏、恢复、长上下文与幻觉治理 |
 | Cohen's kappa 阈值 | Coverage / Fidelity 各 ≥ 0.7;Depth 用 accuracy ≥ 0.75 | Depth 二值 + 三维度,kappa 抖动大 |
 | 不达标处理 | 改 prompt(bump version)+ 重跑;**不切模型** | 沿用 5-AGENT_DESIGN §2.1 |
 | dataset 容量 | hybrid_search 50 条起;quiz_generator / answer_judge 各 30 条起;新 bug 进 dataset(永不删)| hybrid_search 要覆盖 chunk 边界 / 0 命中 / ablation,样本更宽 |
@@ -818,7 +889,7 @@ MVP **单人主标注 + 抽样复核**,不上双人 inter-rater agreement。理�
 | dogfood 笔记 fixture | hybrid_search suite 强依赖固定笔记库(notes_fixture/ 或 notes_fixture.zip)| chunk_id 稳定才能比;chunker 改动后用 heading_path + anchors 复核 |
 | 跑评测 CLI | `eval_<suite>.py --suite <dir> --prompt-version <v> --output <path>` | 各 suite 统一 |
 
-# 11. 上次会话遗留的开放问题
+# 12. 上次会话遗留的开放问题
 
 - **EQ-01** 第一批样本怎么齐?hybrid_search 50 条、quiz_generator / answer_judge 各 30 条,偏向 dogfood 边跑边标(标 = 顺便审产品)
 - **EQ-02** dataset PR review 谁审?MVP 没团队,作者自审 + 1 周 cooldown 再 merge?

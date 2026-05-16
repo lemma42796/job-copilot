@@ -1,13 +1,13 @@
 ---
 title: DATA MODEL - JobCopilot v2(笔记 / 题 / 答 / 弱点 schema)
 owner: lemma42796
-last_updated: 2026-05-10
+last_updated: 2026-05-16
 purpose: 锁所有表 schema、字段语义、JSONB 子结构、索引、迁移路径
 ---
 
 # 1. 一句话总览
 
-笔记切 chunks 入库 → 出题(带 source_chunk_ids 反幻觉)→ 答(纯文本)→ 三层 LLM Judge 评分(每层带 evidence)→ 按 `(folder_path, heading_path)` 维度跟踪弱点 + SR 排期。
+笔记切 chunks 入库 → 出题(带 source_chunk_ids 反幻觉)→ 多轮答题 / 补答 → 三层 LLM Judge 评分(每层带 evidence)→ InterviewCoachAgent 记录纠偏事件与上下文摘要 → 按 `(folder_path, heading_path)` 维度跟踪弱点 + SR 排期。
 
 # 2. 实体关系总览
 
@@ -21,12 +21,13 @@ purpose: 锁所有表 schema、字段语义、JSONB 子结构、索引、迁移�
 ┌──────────────┐ 1   N ┌──────────────────┐                  ┌────────────┐
 │ quiz_sessions│───────│ session_answers  │ ────────────────►│ questions  │
 └──────────────┘       └──────────────────┘  (FK question_id) └────────────┘
-       │                       │
-       │ ↓ 评分后 upsert        │ ↓ 评分后 upsert
+       │ 1                     │
+       │ N                     │ ↓ 评分后 upsert
        ▼                       ▼
-                        ┌────────────────┐
-                        │ knowledge_gaps │  按 (folder_path, heading_path) 唯一
-                        └────────────────┘
+┌──────────────┐
+│session_events│             ┌────────────────┐
+└──────────────┘             │ knowledge_gaps │  按 (folder_path, heading_path) 唯一
+                             └────────────────┘
 ```
 
 辅助表(沿用 v1,跟核心闭环正交):
@@ -57,7 +58,7 @@ M1-M3 是单用户本地 dogfood,**所有业务表均不带 `user_id`**。M4+ Sa
 
 - 所有"主体表"(notes / questions / quiz_sessions / knowledge_gaps)有 `created_at` / `updated_at` / `deleted_at`(全 `TIMESTAMPTZ`)
 - 软删 = `deleted_at IS NOT NULL`;唯一约束改用 partial index(`WHERE deleted_at IS NULL`)
-- "子表"(note_chunks / session_answers)走 `ON DELETE CASCADE` 硬删,跟父表生命周期绑死
+- "子表"(note_chunks / session_answers / session_events)走 `ON DELETE CASCADE` 硬删,跟父表生命周期绑死
 
 ## 3.4 主键 / 外键
 
@@ -238,6 +239,10 @@ CREATE TABLE quiz_sessions (
 
   status          quiz_session_status NOT NULL DEFAULT 'in_progress',
 
+  -- M2.1 InterviewCoachAgent checkpoint / 恢复审计:
+  agent_state     JSONB NOT NULL DEFAULT '{}'::jsonb, -- 当前节点、current_question_index、unresolved_gaps、question_summaries、next_action 等
+  last_agent_node VARCHAR(50),                        -- retrieve_context / wait_user_answer / judge_answer / decide_next_action / ...
+
   -- 评分汇总(全部题答完后由 Python 算 + 写回):
   total_score     NUMERIC(5, 2),                       -- 0-100
   coverage_score  NUMERIC(5, 2),
@@ -269,15 +274,16 @@ CREATE INDEX ix_quiz_sessions_mode ON quiz_sessions (mode) WHERE deleted_at IS N
 - **出题入口 = query**:M2 起聊天框 query 替代节点点击,字段从 `node_folder_path` / `node_heading_path` 改成 `query` + `mode`。`query` 一律必填(`mode=auto` 时由后端 SR 调度填入 heading_path 末段,**不允许空字符串**入库)
 - **`mode` 三态**:`topic`(M2 唯一可用)/ `job`(M3 岗位类,需 `jd_ids`)/ `auto`(M3 SR 自选,需 `trigger='sr_review'`)
 - **`expanded_queries` / `retrieved_chunk_ids` audit 字段**:retrieval pipeline 每段输出落库,evals/suites/hybrid_search/ 和 dogfood debug 直接读这两列,不必走 Langfuse trace 抽数据
+- **`agent_state` 是可恢复 checkpoint,不是聊天全文**:原始多轮事件在 `session_events`;`agent_state` 只放恢复节点、当前题、未解决 gaps、每题摘要、下一步 action 等结构化状态
 - **三层分数 + total_score 都存**:Python 算的加权总分写回 DB 是 audit 需要;权重 SSoT 在代码(`0.5 / 0.4 / 0.1`),不让 Judge 算总分(防 LLM 算术错误)
 - **`abandoned_at` 字段而非状态**:用户中途退出 → `status='abandoned'` + `abandoned_at=now()`;0 命中守门时后端也用同一字段标 abandoned
 - **`trigger` 字段直接落地不延后**:M2 起就有 from-review 端点(M3 才接 SR 队列),trigger 字段 M2 就建好;M2 阶段全部值 = `'manual'`,M3 SR 启用时新增 `'sr_review'`
 
-## 5.5 `session_answers`(单题答 + 评分)
+## 5.5 `session_answers`(单题累计答 + 评分)
 
-一行 = session 里的一道题 + 用户答 + 三层评分。
+一行 = session 里的一道题 + 用户累计答 + 最新三层评分。
 
-session 出题时立即落 N 行(answer 字段 NULL),用户每答一题 UPDATE 该行,Judge 跑完再 UPDATE 一次评分。中途退出留 NULL 行表示"没答"。
+session 出题时立即落 N 行(answer 字段 NULL),用户每答一题或补答一轮 UPDATE 该行,Judge 跑完再 UPDATE 一次评分。中途退出留 NULL 行表示"没答"。M2.1 起 `user_answer` 表示**累计答案**(初答 + 后续补答合并),每轮原文放 `answer_turns` 和 `session_events` 供回放。
 
 ```sql
 CREATE TABLE session_answers (
@@ -286,8 +292,12 @@ CREATE TABLE session_answers (
   question_id         BIGINT NOT NULL REFERENCES questions(id),
   order_index         INTEGER NOT NULL,                -- 0-based,同 session 内顺序
 
-  user_answer         TEXT,                            -- NULL = 还没答 / 退出未答
+  user_answer         TEXT,                            -- NULL = 还没答 / 退出未答;M2.1 起为累计答案
+  answer_turns        JSONB NOT NULL DEFAULT '[]'::jsonb, -- 每轮原始答案 / 补答,按 round_index 排序
   answer_submitted_at TIMESTAMPTZ,
+
+  -- M2.1 纠偏状态:
+  remediation_state   JSONB NOT NULL DEFAULT '{}'::jsonb, -- unresolved_gaps、last_decision、exit_reason、prior_turn_summary 等
 
   -- 三层评分(JSONB 字段 schema 见 §6):
   coverage_score      NUMERIC(5, 2),
@@ -318,10 +328,46 @@ CREATE INDEX ix_session_answers_session ON session_answers (session_id, order_in
 设计要点:
 
 - **没有 `deleted_at`**:跟 quiz_sessions 走 CASCADE 硬删
+- **`user_answer` 是累计答案**:Judge 每轮重评都看累计答案,避免用户补齐后只评最后一句;单轮原文保留在 `answer_turns`
+- **`remediation_state` 只存当前题结构化状态**:缺口、上一轮 decision、退出原因、压缩摘要;完整事件流看 `session_events`
 - **三层 evidence 是 JSONB**:Judge 输出的结构化证据原样存,前端展开 reference 对照(US-9 / US-10)直接读这里
 - **总分由 Python 算**:`total_score = 0.5 * coverage + 0.4 * fidelity + 0.1 * depth`(SSoT 在 service / agents/answer_judge,不在 prompt 里让 LLM 自己算)
 
-## 5.6 `knowledge_gaps`(弱点 + SR 队列)
+## 5.6 `session_events`(M2.1 Agent 状态事件)
+
+一行 = InterviewCoachAgent 在 session 中发生的一个可回放事件。它是多轮面试的原始事件日志,用于恢复、debug、Langfuse 对齐和长上下文压缩;不替代 `session_answers` 的最新累计状态。
+
+```sql
+CREATE TABLE session_events (
+  id              BIGSERIAL PRIMARY KEY,
+  session_id      BIGINT NOT NULL REFERENCES quiz_sessions(id) ON DELETE CASCADE,
+  answer_id       BIGINT REFERENCES session_answers(id) ON DELETE CASCADE,
+  question_id     BIGINT REFERENCES questions(id),
+
+  event_type      VARCHAR(40) NOT NULL,      -- answer_submitted / context_pack_built / judge_completed / decision_made / remediation_prompted / context_compacted / session_finished
+  agent_node      VARCHAR(50),               -- wait_user_answer / build_context_pack / judge_answer / decide_next_action / generate_remediation_prompt / ...
+  round_index     INTEGER NOT NULL DEFAULT 0, -- 当前题内第几轮答 / 补答
+  payload         JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX ix_session_events_session
+  ON session_events (session_id, id);
+
+CREATE INDEX ix_session_events_answer
+  ON session_events (answer_id, round_index)
+  WHERE answer_id IS NOT NULL;
+```
+
+设计要点:
+
+- **append-only**:事件只追加不更新;当前状态落 `quiz_sessions.agent_state` / `session_answers.remediation_state`
+- **长上下文压缩可审计**:`context_compacted` 事件记录压缩前摘要来源、保留字段、丢弃字段,保证不是悄悄丢证据
+- **纠偏幻觉可审计**:`remediation_prompted` payload 必须有 `triggered_by`、`missing_reference_point_ids` / `fabricated_claim_ids` / `missing_depth_dimensions`、`evidence_chunk_ids` 或 lookup 结果
+- **Langfuse 对齐**:payload 可保存 `trace_id` / `span_id`,便于从 DB 事件跳到 trace
+
+## 5.7 `knowledge_gaps`(弱点 + SR 队列)
 
 一行 = 一个被跟踪的知识点节点(`folder_path` + `heading_path`)。session 评分后 upsert。
 
@@ -777,6 +823,8 @@ LLM 一次调用基于 aggregated_requirements 输出的 markdown,**不约束严
 | `resumes` | `unique ((true)) WHERE deleted_at IS NULL` | 全库 1 行单条记录约束 |
 | `session_answers` | `(session_id, order_index)` | 拉一个 session 的所有题 |
 | `session_answers` | `uq_session_question (session_id, question_id)` | 每题最多答一次 |
+| `session_events` | `(session_id, id)` | 回放一个 session 的 Agent 事件流 |
+| `session_events` | `(answer_id, round_index) WHERE answer_id IS NOT NULL` | 查当前题的多轮答 / 纠偏事件 |
 | `knowledge_gaps` | `uq_kg_path (folder_path, heading_path)` | upsert 主键 |
 | `knowledge_gaps` | `(next_review_at) WHERE next_review_at IS NOT NULL` | "今日复习"队列 |
 
@@ -824,7 +872,7 @@ DROP TYPE IF EXISTS chunk_granularity;
 
 **留下来不动的**:`prompt_versions` / `llm_calls` / `llm_response_cache` / `char_ngrams()` 函数 / `pgvector` / `vector_cosine_ops` HNSW operator class 等扩展。
 
-**建 v2 表**:本文档 §5 全部 + ENUM 全部,顺序 `notes → note_chunks → questions → quiz_sessions → session_answers → knowledge_gaps`。
+**建 v2 表**:本文档 §5 全部 + ENUM 全部,顺序 `notes → note_chunks → questions → quiz_sessions → session_answers → session_events → knowledge_gaps`。
 
 **downgrade**:不写(v2 是单向重构,v1 数据已确认无价值,git tag `v0.1-jobcopilot-v1` 留档足够)。
 
@@ -834,7 +882,7 @@ DROP TYPE IF EXISTS chunk_granularity;
 |----|------|------|
 | 路径表示 | `text[]` 一维数组,长度上限 8 层 | 不用 ltree(中文不友好)/ 不用 `text/`(prefix 慢) |
 | 单用户(MVP) | 不加 `user_id` 字段;M4+ SaaS 时统一 ALTER | 简化 schema,迁移成本低 |
-| 软删 | `deleted_at`(notes / questions / quiz_sessions / knowledge_gaps);chunks / answers 走 CASCADE 硬删 | 子表跟父表生命周期绑死 |
+| 软删 | `deleted_at`(notes / questions / quiz_sessions / knowledge_gaps);chunks / answers / events 走 CASCADE 硬删 | 子表跟父表生命周期绑死 |
 | chunk 元数据反规范化 | `note_chunks.folder_path` 冗余存 | 出题 / 弱点统计是高频查询路径 |
 | 三层评分 evidence | 各自 JSONB,不拆子表 | 跟单题强绑、不会跨题查询 |
 | 总分计算 | Python 算加权,SSoT 在代码 | `0.5×Cov + 0.4×Fid + 0.1×Dep`;不让 Judge 算 |
@@ -849,6 +897,7 @@ DROP TYPE IF EXISTS chunk_granularity;
 | 简历存储 | resumes 表 + parsed_chunks JSONB,**不进 hybrid search 索引**;**全库一条记录**(`uq_resumes_singleton`)| 简历短,直接全文喂 LLM;一个人就一份简历,不做"库" |
 | 出题入口字段 | quiz_sessions 用 `query` + `mode` + `jd_ids` 替代 `node_folder_path` / `node_heading_path`;questions 加 `originated_query` + `originated_mode` | M2 起聊天框 query 出题;笔记面板不再触发出题 |
 | retrieval pipeline 审计 | quiz_sessions 加 `expanded_queries` + `retrieved_chunk_ids` 字段 | evals/suites/hybrid_search/ 直接读这两列;不必走 Langfuse trace |
+| M2.1 Agent 状态 | quiz_sessions 加 `agent_state` / `last_agent_node`;session_answers 加 `answer_turns` / `remediation_state`;新增 `session_events` | 原始多轮事件可回放,当前状态可恢复;LLM 当前输入由 context pack 生成 |
 | `quiz_session_mode` ENUM | `topic` / `job` / `auto` | M2 仅 `topic`;`job` / `auto` M3 启用 |
 | 简历诊断 | resume_analyses 快照,两方锚点严格(req_id + resume_position 双非空 = anchored)| 永不输出改写文案 |
 | 截图入库 | jds.raw_text 存 OCR 文本(不存原图)| Qwen 多模态 OCR 后即扔 |

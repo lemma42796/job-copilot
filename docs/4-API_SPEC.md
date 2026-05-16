@@ -1,13 +1,13 @@
 ---
 title: API SPEC - JobCopilot v2(REST + SSE 端点契约)
 owner: lemma42796
-last_updated: 2026-05-10
+last_updated: 2026-05-16
 purpose: 锁前后端接口契约;每个端点的 path / method / 请求 / 响应 / SSE 事件序列
 ---
 
 # 1. 一句话总览
 
-REST 走标准 JSON,慢请求(出题 / 评分 / JD 一键分析 / 简历诊断)走 SSE 推进度。**单用户本地部署,无 auth,无版本前缀**(端点直接挂 `/api/`,FastAPI 默认)。
+REST 走标准 JSON,慢请求(出题 / 单轮评分纠偏 / 整场评分 / JD 一键分析 / 简历诊断)走 SSE 推进度。**单用户本地部署,无 auth,无版本前缀**(端点直接挂 `/api/`,FastAPI 默认)。
 
 # 2. 通用约定
 
@@ -413,6 +413,11 @@ session 详情(载入历史 / 续答用)。
   "mode": "topic",
   "jd_ids": null,
   "status": "in_progress",
+  "agent_state": {
+    "last_agent_node": "wait_user_answer",
+    "current_question_index": 0,
+    "next_action": "remediate"
+  },
   "started_at": "2026-05-08T03:00:00Z",
   "submitted_at": null,
   "scores": null,
@@ -426,8 +431,18 @@ session 详情(载入历史 / 续答用)。
         "source_chunk_ids": [5001, 5002]
       },
       "user_answer": "锁升级的过程是...",
+      "answer_turns": [
+        {"round_index": 0, "turn_type": "initial", "text": "锁升级的过程是..."}
+      ],
       "answer_submitted_at": "2026-05-08T03:05:00Z",
-      "judged": false
+      "judged": true,
+      "latest_scores": {"coverage": 55.0, "fidelity": 90.0, "depth": 40.0, "total": 67.5},
+      "next_action": "remediate",
+      "remediation_prompt": {
+        "text": "你提到了锁升级,但还没解释为什么会从偏向锁升级到轻量级锁。请补充触发条件和代价。",
+        "triggered_by": "coverage",
+        "evidence_chunk_ids": [5001]
+      }
     },
     ...
   ]
@@ -437,6 +452,8 @@ session 详情(载入历史 / 续答用)。
 `mode='job'` 时 `jd_ids` 数组非空(M3 岗位类);`mode='auto'` 时 `query` 为后端 SR 调度自选的 heading_path 末段(M3 系统自选)。
 
 `status='submitted'` 时 `scores` 字段填充三层 + 总分,且每题带 `evidence`(coverage_evidence / fidelity_evidence / depth_evidence)。
+
+M2.1 起,in_progress session 可返回当前题最新 `remediation_prompt` 和 `answer_turns`,用于用户刷新页面后从 `wait_user_answer` 继续补答。
 
 **重要**:这个端点**不返回 `reference_answer` / `reference_points`**,除非 `status='submitted'`。MVP 是 active recall 强约束,答题过程中前端拿不到 reference,防作弊。
 
@@ -462,6 +479,96 @@ session 详情(载入历史 / 续答用)。
 ```
 
 错误:`409 session_not_in_progress`(session 已 submitted / abandoned)/ `404 order_index_not_found`
+
+### 4.3.1 `POST /api/quiz/sessions/{id}/answers/{order_index}/turns`(**SSE,M2.1**)
+
+提交当前题的一轮答案 / 补答,并推进 `InterviewCoachAgent`:
+
+```
+wait_user_answer
+→ build_context_pack
+→ judge_answer
+→ decide_next_action
+→ generate_remediation_prompt? / ask_next / summarize
+```
+
+这个端点是 M2.1 多轮纠偏主入口。`PUT /answers/{order_index}` 仍负责草稿保存;本端点负责"用户确认提交这一轮"后的评分与分支。
+
+请求:
+
+```json
+{
+  "text": "补充:Outbox 会和业务事务一起落库,再由后台任务投递 MQ。",
+  "turn_type": "initial",
+  "client_turn_id": "local-uuid-optional"
+}
+```
+
+`turn_type` 取值:`initial` / `remediation`。后端会把本轮文本追加到 `answer_turns`,并重建 `user_answer` 累计答案。
+
+SSE 事件:
+
+```
+event: started
+data: {"job_id": "01HX...", "resource_id": 789, "order_index": 0, "round_index": 1}
+
+event: progress
+data: {"phase": "context_pack_built", "included": ["question", "source_chunks", "reference_points", "cumulative_answer", "unresolved_gaps"], "compacted": true}
+
+event: judge_done
+data: {
+  "order_index": 0,
+  "round_index": 1,
+  "scores": {"coverage": 82.0, "fidelity": 92.0, "depth": 70.0, "total": 84.2},
+  "unresolved_gaps": []
+}
+
+event: decision_done
+data: {
+  "next_action": "ask_next",
+  "decision_reason": "coverage 达标且 fabricated 很低",
+  "exit_reason": "target_reached"
+}
+
+event: result
+data: {
+  "session_id": 789,
+  "order_index": 0,
+  "round_index": 1,
+  "next_action": "ask_next",
+  "cumulative_answer": "锁升级的过程是...\n补充:...",
+  "remediation_prompt": null
+}
+
+event: done
+data: {"ok": true}
+```
+
+若需要继续纠偏:
+
+```json
+{
+  "next_action": "remediate",
+  "remediation_prompt": {
+    "text": "你已经说到 Outbox 会落库,但还没解释它为什么能和业务事务保持一致。请补充事务边界和失败重试怎么处理。",
+    "triggered_by": "coverage",
+    "missing_reference_point_ids": ["rp_2"],
+    "fabricated_claim_ids": [],
+    "missing_depth_dimensions": [],
+    "evidence_chunk_ids": [101]
+  }
+}
+```
+
+错误码:
+
+| code | 说明 |
+|------|----|
+| `session_not_in_progress` | session 已 submitted / abandoned |
+| `order_index_not_found` | 题号不存在 |
+| `invalid_turn_type` | turn_type 非 initial / remediation |
+| `context_pack_failed` | 必需上下文缺失,例如 source chunks / reference points 不完整 |
+| `judge_call_failed` | Judge LLM 失败(已重试) |
 
 ## 4.4 `POST /api/quiz/sessions/{id}/submit`(**SSE**)
 
@@ -985,6 +1092,8 @@ data: {"ok": true}
 | embedder | 异步后台 worker | API 端点不等 embedding 完;`embedding IS NULL` 的 chunk hybrid search 自动跳过 |
 | reference 防作弊 | session in_progress 时不返 reference_answer / reference_points | active recall 强约束 |
 | Judge 调用粒度 | MVP 单次 LLM 调用拿三层分;后续可拆 | 简化 SSE 事件;若 Judge 准确度不达标再拆 |
+| M2.1 单题推进 | `POST /answers/{order_index}/turns` 提交一轮答案 / 补答并推进 Agent | 返回 `next_action=remediate/ask_next/summarize/finish`;补答后重评累计答案 |
+| M2.1 长上下文 | turn SSE 暴露 `context_pack_built` 事件 | 前端可见是否压缩旧轮次;后端保证 source chunks / reference points / unresolved gaps 不丢 |
 | 题型比例 | 后端按 chunks 内容自动决定(B);前端不传 type_mix | 推荐逻辑见 5-AGENT_DESIGN;后端在 `progress.type_mix_decided` 事件回推决策 |
 | 答题草稿保存 | 边打边存(typing 防抖 1s 后 PUT) | 开放题答题长,断电一字不丢 > 省 PUT 请求 |
 | recall 文件语义 | 存档下载,不是评分展示 | 评分 evidence 走 SSE;recall 给用户存进 Obsidian / 语雀留档 |

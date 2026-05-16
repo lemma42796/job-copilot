@@ -28,6 +28,12 @@ class AnswerDraftIn(BaseModel):
     user_answer: str
 
 
+class AnswerTurnSubmitIn(BaseModel):
+    text: str
+    turn_type: Literal["initial", "remediation"] = "initial"
+    client_turn_id: str | None = None
+
+
 class QuizSessionOut(BaseModel):
     id: int
     query: str
@@ -83,10 +89,14 @@ class QuizQuestionDetailOut(BaseModel):
     order_index: int
     question: QuestionPublic
     user_answer: str | None = None
+    answer_turns: list[dict] = Field(default_factory=list)
     answer_submitted_at: datetime | None = None
     judged: bool = False
     scores: QuizScoresOut | None = None
     evidence: dict | None = None
+    remediation_state: dict | None = None
+    next_action: str | None = None
+    remediation_prompt: dict | None = None
     reference_answer: str | None = None
     reference_points: list[dict] | None = None
 
@@ -97,6 +107,7 @@ class QuizSessionDetailOut(BaseModel):
     mode: QuizMode
     jd_ids: list[int] | None = None
     status: Literal["in_progress", "submitted", "abandoned"]
+    agent_state: dict | None = None
     started_at: datetime
     submitted_at: datetime | None = None
     abandoned_at: datetime | None = None

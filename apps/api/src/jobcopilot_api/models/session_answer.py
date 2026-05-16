@@ -14,7 +14,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, Integer, Numeric, String, Text, func
+from sqlalchemy import BigInteger, DateTime, Integer, Numeric, String, Text, func, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,8 +29,18 @@ class SessionAnswer(Base, IDMixin):
     order_index: Mapped[int] = mapped_column(Integer, nullable=False)
 
     user_answer: Mapped[str | None] = mapped_column(Text())
+    answer_turns: Mapped[list[dict[str, Any]]] = mapped_column(
+        postgresql.JSONB,
+        nullable=False,
+        server_default=text("'[]'::jsonb"),
+    )
     answer_submitted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
+    )
+    remediation_state: Mapped[dict[str, Any]] = mapped_column(
+        postgresql.JSONB,
+        nullable=False,
+        server_default=text("'{}'::jsonb"),
     )
 
     coverage_score: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))

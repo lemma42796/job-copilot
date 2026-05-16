@@ -6,6 +6,7 @@ alembic 0006 + 0015)。
 v2 业务表(M0 alembic 0016 落地,本 __init__.py re-export 保证 alembic env.py
 通过 Base.metadata 看到所有模型):
 - 笔记 SR 闭环:Note / NoteChunk / Question / QuizSession / SessionAnswer / KnowledgeGap(M1-M3)
+- M2.1 Agent harness:SessionEvent
 - JD 累积分析:Jd / JdAnalysis(M2.5)
 - 简历诊断:Resume / ResumeAnalysis(M3)
 """
@@ -26,6 +27,7 @@ from jobcopilot_api.models.quiz_session import QuizSession
 from jobcopilot_api.models.resume import Resume
 from jobcopilot_api.models.resume_analysis import ResumeAnalysis
 from jobcopilot_api.models.session_answer import SessionAnswer
+from jobcopilot_api.models.session_event import SessionEvent
 
 __all__ = [
     "Base",
@@ -43,5 +45,6 @@ __all__ = [
     "Resume",
     "ResumeAnalysis",
     "SessionAnswer",
+    "SessionEvent",
     "TimestampMixin",
 ]

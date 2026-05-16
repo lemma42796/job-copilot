@@ -1,8 +1,8 @@
 ---
 title: PRD - JobCopilot v2(给学计算机的人的全流程工具)
 owner: lemma42796
-last_updated: 2026-05-11
-status: M2(M0/M1 收口,出题入口由"节点点击"改为"聊天框 query")
+last_updated: 2026-05-16
+status: M2.1(InterviewCoachAgent 多轮纠偏设计)
 purpose: 锁产品边界、目标用户、用户故事、NSM、不在范围
 ---
 
@@ -127,7 +127,7 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 │     ↓ AnswerJudge(thinking on,三层评分 + lookup tool)          │
 │  Coverage / Fidelity / Depth + 加权总分                          │
 │     ↓ M2.1 InterviewCoachAgent 决策                                │
-│  答得好 → 下一题 / 总结;漏点 / 编造 / 深度不足 → 最多追问一轮 │
+│  答得好 → 下一题 / 总结;答不好 → 提示缺口 → 补答 → 再判断 │
 │     ↓                                                              │
 │  session 沉淀 + knowledge_gap 更新                                │
 │     ↓ SR 队列排期                                                  │
@@ -160,7 +160,7 @@ LLM 官网给简历建议倾向于"编经验"("建议补充 Redis 集群项目"�
 ## 5.2 出题与答题
 
 - **US-5(M2,主题类 query)**:作为用户,我可以在聊天框输入一个主题("考考我多线程" / "缓存一致性"),系统从全笔记库 RAG 找最相关 chunks(query rewriting → hybrid + RRF → reranker(top50) → post-rerank governance/blend → dynamic clean-context selection → parent-doc 扩展),出 3-10 道题。**0 命中(笔记里没这主题)直接报错,不兜底放宽**
-- **US-5a(M2.1,Agentic 面试教练)**:作为用户,我答完一道题后,系统不只是打分,还会基于 Coverage / Fidelity / Depth evidence 决定下一步:答得好进入下一题;漏关键点 / 编造依据 / 深度不足时最多追问一轮。追问必须基于原题的 `source_chunk_ids`,不允许脱离笔记自由发挥
+- **US-5a(M2.1,Agentic 面试教练)**:作为用户,我答完一道题后,系统不只是打分,还会基于 Coverage / Fidelity / Depth evidence 决定下一步:答得好进入下一题;漏关键点 / 编造依据 / 深度不足时提示哪里答不好,引导我补答,再对累计答案重新评分。纠偏不设单题固定 1 轮上限,但必须能在达标 / 我选择跳过 / 连续提升很小 / 偏题 / token budget 触发时退出。纠偏必须基于原题的 `source_chunk_ids`、reference points 和 Judge gaps,不允许脱离笔记自由发挥
 - **US-5b(M3,岗位类 query)**:作为用户,我可以输入岗位描述("模拟一面 Java 后端" / "应聘字节后端实习"),系统拼**三源**(笔记 RAG + 我那一份简历全文 + 我选定的 JD 子集职责/要求)出题,**重点考"简历写了 JD 也要"的交集 + "JD 强要求简历没写"的缺口**(直击"自己不会的也往简历上写,问到答不出"问题)
 - **US-5c(M3,空 query / 系统自选)**:作为用户,我可以输入"来模拟面试吧"或留空,系统按 SR 弱点排行自选一个主题,然后走主题类 RAG 流程出题
 - **US-6**:作为用户,题型分两类:**开放式**("解释 synchronized 的锁升级过程")+ **八股**("synchronized 的轻量级锁是怎么实现的?")。MVP 不做代码题 / 系统设计题。M3 岗位类多一种 "**项目深挖题**"(基于简历项目段落,问技术选型 / 难点 / 量化数据)

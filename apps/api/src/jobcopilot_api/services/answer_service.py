@@ -134,7 +134,7 @@ async def get_session_detail(
         evidence = None
         reference_answer = None
         reference_points = None
-        if include_scoring:
+        if include_scoring or answer.judged_at is not None:
             scores = QuizScoresOut(
                 coverage=_decimal_to_float(answer.coverage_score),
                 fidelity=_decimal_to_float(answer.fidelity_score),
@@ -159,10 +159,16 @@ async def get_session_detail(
                     source_chunk_ids=list(question.source_chunk_ids),
                 ),
                 user_answer=answer.user_answer,
+                answer_turns=list(answer.answer_turns or []),
                 answer_submitted_at=answer.answer_submitted_at,
                 judged=answer.judged_at is not None,
                 scores=scores,
                 evidence=evidence,
+                remediation_state=answer.remediation_state or None,
+                next_action=(answer.remediation_state or {}).get("last_decision"),
+                remediation_prompt=(answer.remediation_state or {}).get(
+                    "remediation_prompt"
+                ),
                 reference_answer=reference_answer,
                 reference_points=reference_points,
             )
@@ -183,6 +189,7 @@ async def get_session_detail(
         mode=quiz_session.mode,
         jd_ids=list(quiz_session.jd_ids) if quiz_session.jd_ids is not None else None,
         status=quiz_session.status,
+        agent_state=quiz_session.agent_state or None,
         started_at=quiz_session.started_at,
         submitted_at=quiz_session.submitted_at,
         abandoned_at=quiz_session.abandoned_at,

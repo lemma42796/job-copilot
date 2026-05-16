@@ -19,7 +19,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 # 当前快照
 
-当前阶段:**M2.1 — `InterviewCoachAgent` Agentic RAG 面试状态机 + 追问分支**。
+当前阶段:**M2.1 — `InterviewCoachAgent` Agentic RAG 面试状态机 + 多轮纠偏分支**。
 
 最新状态:
 
@@ -57,6 +57,10 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - 最新保存主题:`retrieval: add post-rerank governance blend`;M2 tag `v0.4-m2-end` 仍待用户确认。
 - M2 retrieval quiz pipeline 代码已提交:`103d882 feat: add m2 retrieval quiz pipeline`。
 - M2.1 Agentic RAG 文档已提交:`fd892fa docs: add agentic interview coach roadmap`。
+- 本轮 M2.1 文档决策已更新:删除"单题最多 1 轮追问"限制,改成 `remediation loop`(提示哪里答不好 → 补答 → 累计答案重评 → 再判断);补齐长上下文 context pack、纠偏幻觉治理、`session_events`、单题 turn SSE、interview_coach harness 评测口径。
+- 本轮 M2.1 后端最小骨架已落代码:新增 `0020_interview_coach_state.py`、`SessionEvent` ORM、`quiz_sessions.agent_state / last_agent_node`、`session_answers.answer_turns / remediation_state`、单题 turn SSE `POST /api/quiz/sessions/{id}/answers/{order_index}/turns`、`interview_service.submit_answer_turn_sse`。
+- 单题 turn 当前能力:提交一轮答案 → 合并累计答案 → `build_context_pack` → 复用 AnswerJudge → `decide_next_action` → 返回 `remediation_prompt / ask_next / summarize`;事件写 `answer_submitted / context_pack_built / judge_completed / decision_made / remediation_prompted`。
+- 重要接力限制:本轮**未跑测试、未跑 Alembic migration、未做前端接入**;`interview_service` 目前为最小闭环,暂复用 `answer_service` 内部 helper,还不是最终 LangGraph 形态。
 - M2 AnswerJudge 初版已落地:三层 evidence prompt / agent / submit SSE / Python 算分 / fabricated 锁顶。
 - 真实验收:用户已跑 `/quiz` 主题 `Langfuse Prompt 版本管理`,session #4 出题 / 保存 / Judge 评分 / `/quiz?session=4` 恢复通过。
 - GitHub Actions 已改为**手动触发**(`workflow_dispatch`),push 不再自动跑 lint / tests / build。
@@ -69,7 +73,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 | M0 | 仓库改造 + 文档重写 + v2 schema + 模块骨架 | ✅ `v0.2-m0-end` |
 | M1 | 笔记入库 + chunker + 树形导航 + Langfuse 起步 | ✅ `v0.3-m1-end` |
 | M2 | 主题 query → 全库 RAG → 出题 + Judge 三层评分 | ✅ 待 tag `v0.4-m2-end` |
-| M2.1 | `InterviewCoachAgent`:Agentic RAG 面试状态机 + 追问分支 | ⏳ 当前 |
+| M2.1 | `InterviewCoachAgent`:Agentic RAG 面试状态机 + 多轮纠偏分支 | ⏳ 当前 |
 | M2.5 | JD 累积上传 + 一键分析 + 学习路径 | ⏳ |
 | M3 | 弱点跟踪 + SR + 岗位类三源出题 + 简历诊断 | ⏳ |
 
@@ -79,7 +83,8 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **M2 AnswerJudge 初版**:`answer_judge` schema / prompt / agent、`answer_service.submit_session_sse`、三层分 + session 汇总、答题草稿 / abandon 端点已入库。
 - **M2 quiz/session UI 已落地**:`/quiz` 支持主题出题、答题、草稿保存、提交评分、结构化 evidence、样例模式、最近练习与 session 恢复。
 - **百炼 Context Cache 代码已接入但默认关闭**:保留稳定 chunks 前缀渲染与审计字段;后续多轮面试讨论再开启显式 cache。
-- **M2.1 Agentic RAG 方向锁定**:`InterviewCoachAgent` 不做泛化多 Agent,只做面试状态机:检索 → 出题 → 等答 → 评分 → 决策 → 追问 / 总结。
+- **M2.1 Agentic RAG 方向锁定**:`InterviewCoachAgent` 不做泛化多 Agent,而是 interview coaching harness:检索 → 出题 → 等答 → 评分 → 决策 → 多轮纠偏 / 总结;系统负责状态、工具、证据、分支、恢复、回放和评测。
+- **M2.1 后端最小骨架已落地**:`0020_interview_coach_state.py` + `SessionEvent` + 单题 turn SSE + `interview_service`。`GET /quiz/sessions/{id}` 已返回 `agent_state / answer_turns / remediation_state / remediation_prompt`,用于刷新后从 `wait_user_answer` 继续。
 - **hybrid_search smoke 标签已升级并复核一轮**:`evals/suites/hybrid_search/dataset.note_smoke.jsonl` 覆盖 M2/M3 边界、Context Cache、reranker/query rewrite、AnswerJudge、SSE 恢复、MVCC、Outbox、epoll、provider timeout/429、zero-hit;`direct_evidence_chunk_ids` 只放可直接回答 query 的 chunk。
 - **hybrid_search note/chunk smoke 脚本已落地**:`apps/api/scripts/eval_hybrid_search_note_smoke.py` 只读 DB / 写本地 report + trace(`evals/reports/` gitignore),输出 top notes、top chunks、heading/anchor coverage、hard-negative intrusion、zero-hit、召回指标与成本;`--score-trace` 支持只按新标签离线重算。
 - **hybrid_search A/B 诊断开关已落地**:可单独比较 provider rerank / 纯 hybrid、rerank 输入池大小、selected topK、parent-doc on/off,用于拆分"召回 / 粗排排序 / 精排 / parent-doc"责任。
@@ -96,15 +101,17 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **补泛化评测集**:当前 12 条 smoke 证明关键路径和高风险样本不回退,但不能证明任意新 query 都泛化。下一刀建议补 query 改写集、新主题 holdout、强干扰集,验证 source/type governance、reranker challenger、parent-doc off、出题引用校验不是只贴着 12 条 query 调出来的。
+1. **M2.1 最小闭环接力验证 + 前端接入**:用户先手动跑 migration / API smoke 后,把 `/quiz` 答题提交接到单题 turn SSE,显示 `remediation_prompt`,允许用户补答并再次提交;保留整场 `submit` 作为最终汇总路径。
 
 备选:
 
+- 若继续后端,先把 `interview_service` 私用 `answer_service._*` helper 整理成可复用公共 helper,再接 `summarize_session / finish_session`。
+- 若做评测,补 `evals/suites/interview_coach/` 最小 10 条流程型样本,覆盖不纠偏 / coverage 纠偏 / fabricated 纠偏 / depth 纠偏 / 多轮无提升退出 / 中途恢复 / 长上下文压缩。
+- 若只做人工验证,重点看新 endpoint SSE 事件:`started → progress(context_pack_built) → judge_done → decision_done → result → done`。
 - 若继续跑 smoke,先看 trace 里的 `governance_flags` 和 `post_rank`,不要只看 headline pass。
 - 如 cache-only 因 query miss 失败,先确认是不是 query rewrite 内容变了;不要为了跑通悄悄切回 live-on-miss。
 - 如果继续看 rerank,优先调 blend / governance 阈值 / dynamic selection,不要把 rerank input 收到 15。
 - 如果继续扩 zero-hit,保持 core entity / anchor coverage 守门:Rust、Kubernetes Operator 这类核心实体缺失时不能只靠向量近邻过门。
-- smoke 评测闭环稳定后,开 M2.1 `InterviewCoachAgent` 状态机骨架和 `decide_next_action` / `generate_followup`。
 
 # 已锁定关键决策
 
@@ -116,6 +123,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 | 0 命中 | 命中 chunks < 3 起步直接报"笔记里没这主题",不兜底让 LLM 编。 |
 | Reranker | 百炼 `qwen3-rerank`(`/compatible-api/v1/reranks`);本地 fallback 暂不做。 |
 | M2.1 Agent | `InterviewCoachAgent` 状态机;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不是多 Agent 数量。 |
+| M2.1 纠偏 | 不设单题固定 1 轮上限;答不好进入 remediation loop,靠达标 / 用户跳过 / 无明显提升 / 偏题 / token budget 退出。 |
 | 简历 | 全库单条记录,不做简历库 / 多份切换。 |
 | 岗位类 query | M3 三源融合:笔记 RAG + 那一份简历 + 用户选定 JD 子集职责/要求。 |
 | 评分 | LLM-as-Judge 给 evidence;总分权重在 Python,不让 LLM 算。 |
@@ -146,6 +154,10 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **[来自 M2.1] 正式指标名固定为 `candidate_recall@15 / selected_recall@10`**:top50 只作诊断窗口和 rerank input,不要再把 `candidate_recall@50` 当主 headline。
 - **[来自 M2.1] parent-doc 默认关闭**:出题 / 评分只能引用 post-rerank 选出的 seed chunks;parent-doc 只作为人工 A/B 背景诊断,不能进入 source/reference/evidence ids。
 - **[来自 M2.1] RAG 指标必须说明泛化边界**:12 条 smoke 是关键路径防回归,不是任意 query 泛化证明;下一步要用改写集 / holdout / 强干扰集补证据。
+- **[来自 M2.1] 面试追问是多轮纠偏循环**:提示缺口 → 补答 → 累计答案重评 → 再判断;删除"单题最多 1 轮"产品限制,但必须有明确退出条件。
+- **[来自 M2.1] 多轮对话不靠塞全量历史**:原始 transcript / events 落库回放,LLM 当前输入只拿 context pack;source chunks / reference_points / unresolved_gaps 优先级最高。
+- **[来自 M2.1] 纠偏 prompt 必须 evidence-bound**:每次 remediation 记录 `triggered_by`、缺口 id、chunk id / lookup 结果,不能引入当前题 source chunks 之外的新标准答案来源。
+- **[来自 M2.1] M2.1 是 harness engineering,不是 prompt demo**:LLM 只在明确节点做局部生成 / 判断;可靠性来自状态机、工具边界、证据约束、恢复、回放和评测。
 
 # 文档导航
 

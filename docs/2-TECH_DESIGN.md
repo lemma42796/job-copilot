@@ -1,13 +1,13 @@
 ---
 title: TECH DESIGN - JobCopilot v2(架构 / 模块分层 / 数据流 / 错误处理)
 owner: lemma42796
-last_updated: 2026-05-11
+last_updated: 2026-05-16
 purpose: 锁系统架构、技术栈、模块边界、核心数据流、错误处理分层、v1 沿用 / 砍除清单
 ---
 
 # 1. 一句话总览
 
-monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind + Monaco** 前端,**LLM 走阿里云百炼 OpenAI 兼容接口 + qwen3.6-flash 多模态**(thinking 按 agent 决定),M2.1 起用 LangGraph 编排 InterviewCoachAgent 状态机。慢请求(出题 / 评分 / JD 一键分析 / 简历诊断)走 SSE,embedder 走后台 worker。
+monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind + Monaco** 前端,**LLM 走阿里云百炼 OpenAI 兼容接口 + qwen3.6-flash 多模态**(thinking 按 agent 决定),M2.1 起用 LangGraph 编排 InterviewCoachAgent 状态机与多轮纠偏循环。慢请求(出题 / 评分 / JD 一键分析 / 简历诊断)走 SSE,embedder 走后台 worker。
 
 # 2. 系统架构
 
@@ -71,9 +71,9 @@ monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind
 | 全文搜索 | tsvector + char_ngrams SQL 函数 | 沿用 v1 alembic 0014 |
 | LLM SDK | OpenAI Python SDK 走百炼 OpenAI 兼容接口 | base_url=`https://dashscope.aliyuncs.com/compatible-mode/v1`;`from langfuse.openai import OpenAI` 自动 instrument(只覆盖 chat/completions/responses;embeddings 要手动包 generation,见 STATUS 永久约束) |
 | LLM 模型 | qwen3.6-flash(多模态:文本 + 图像 + tool use 一把抓);thinking 按 agent 决定 | 详见 5-AGENT §2.1;qwen3.6 系列整体是视觉模型 |
-| LLM cache | 两层:应用层 `llm_response_cache` + 百炼 Context Cache(待接) | response cache 缓完整请求/响应;Context Cache 缓重复公共前缀,详见 5-AGENT §2.4 |
+| LLM cache | 两层:应用层 `llm_response_cache` + 百炼 Context Cache | response cache 缓完整请求/响应;Context Cache 缓重复公共前缀、只降成本和延迟,不是会话记忆;详见 5-AGENT §2.4 |
 | Embedding | text-embedding-v4(1024 维) | 沿用 v1 |
-| Agent 编排 | M2 仍是 service 直接编排;M2.1 起上 LangGraph `InterviewCoachAgent` 状态机;M3 扩 SR / 三源岗位流 | LangGraph checkpointer 序列化坑见 LESSONS §2.1 |
+| Agent 编排 | M2 仍是 service 直接编排;M2.1 起上 LangGraph `InterviewCoachAgent` 状态机 + remediation loop;M3 扩 SR / 三源岗位流 | LangGraph checkpointer 序列化坑见 LESSONS §2.1;长上下文靠 context pack,不塞全量 transcript |
 | SSE | `sse-starlette.EventSourceResponse` | 沿用 v1;前端走 `web/lib/sse.ts`(永久约束 #21)|
 | 前端框架 | Next.js 14 App Router + React 18 | 沿用 v1 |
 | 前端样式 | Tailwind 自己写,无组件库 | macOS 风(PRD §9)|
@@ -133,7 +133,7 @@ apps/api/src/jobcopilot_api/
 │   │   ├── agent.py                # 包含 forbidden_pattern 后处理校验
 │   │   ├── prompts.py
 │   │   └── forbidden_patterns.py   # 替写文案漏洞检测正则集
-│   └── interview_coach/            # M2.1 LangGraph:状态机 + 工具 + 追问分支
+│   └── interview_coach/            # M2.1 LangGraph:状态机 + 工具 + 多轮纠偏分支
 ├── llm/                            # LLM 客户端(改造:DashScope SDK → OpenAI Python SDK)
 │   ├── client.py                   # LLMClient + cache + retry(走 base_url 兼容接口)
 │   ├── cache.py / cache_key.py / cache_store.py
@@ -645,12 +645,14 @@ evals/suites/
 | 模块分层 | routers / services / agents / llm / models / schemas | services 不直接调 LLM,走 agents/ |
 | ORM | SQLAlchemy 2.x async,**不写 relationship** | ADR-0005 D1 |
 | Embed worker | 后台 asyncio 单进程轮询;不上 redis / celery | MVP 量小;M4+ SaaS 再说 |
-| LangGraph | M2.1 起用于 `InterviewCoachAgent` 状态机;M3 扩 SR / 三源岗位流 | M2 仍由 service 直接编排,先把 RAG/Judge 闭环打稳 |
+| LangGraph | M2.1 起用于 `InterviewCoachAgent` 状态机 + 多轮纠偏循环;M3 扩 SR / 三源岗位流 | M2 仍由 service 直接编排,先把 RAG/Judge 闭环打稳 |
 | 错误分层 | routers 转协议 / services 集中分发 / agents 不吞 | 沿用 LESSONS §8.6 |
 | 错误码命名 | snake_case + 出处明确 | 同 v1 JobCopilotError |
 | SSE 实现 | sse-starlette + 前端 lib/sse.ts | 永久约束 #21 |
 | LLM cache | 全 agent 经过 llm_response_cache | 评测路径不禁(EVAL_PLAN §2.4)|
 | 百炼 Context Cache | M2 优先接 OpenAI compatible Chat 的显式 cache,不切 DashScope 原生接口 | qwen3.6-flash 支持 cache;把 session chunks 放稳定公共前缀,Quiz / Judge 复用;仍需传上下文,cache 不是记忆 |
+| M2.1 长上下文治理 | 原始 transcript 落库回放,LLM 调用只拿当前题 context pack | 必含当前题 / source chunks / reference points / cumulative answer / unresolved gaps;旧轮次摘要化 |
+| M2.1 幻觉治理 | 纠偏 prompt evidence-bound,每次 remediation 记录触发原因和证据 id | coverage 带 missing reference point;fidelity 带 fabricated claim + lookup;depth 带缺失维度 |
 | 部署 | docker compose 本地 | postgres / api / web / caddy / langfuse / langfuse-db 六服务 |
 | Tracing 选型 | Langfuse 自部署 | LLM-native + 数据不出本地;详见 §6 |
 | Tool use 范围 | 仅 AnswerJudge 用 `lookup_in_notes_global`;Quiz / Embedder / JdParser / JdAggregator / ResumeAdvisor 不用 | 直击 LESSONS §1.1 假阳性,精准不滥用 |

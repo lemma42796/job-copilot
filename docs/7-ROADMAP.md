@@ -1,7 +1,7 @@
 ---
 title: ROADMAP - JobCopilot v2
 owner: lemma42796
-last_updated: 2026-05-13
+last_updated: 2026-05-16
 purpose: 6 个里程碑 + 退出标准 + 下一刀
 ---
 
@@ -11,7 +11,7 @@ purpose: 6 个里程碑 + 退出标准 + 下一刀
 M0    仓库改造 + 文档重写                                                    ✅
 M1    笔记入库 + chunker + 树形导航 + Langfuse 起步                          ✅
 M2    聊天框主题类 query → 全库 RAG → 出题 + Judge 三层评分 + Judge tool use ✅
-M2.1  InterviewCoachAgent: Agentic RAG 面试状态机 + 工具调用 + 追问分支 ← 当前
+M2.1  InterviewCoachAgent: Agentic RAG 面试状态机 + 工具调用 + 多轮纠偏分支 ← 当前
 M2.5  JD 累积上传 + 一键分析 + 学习路径(独立有价值)
 M3    弱点跟踪 + SR(空 query 系统自选)+ 岗位类出题(三源融合)+ 简历诊断
 ```
@@ -104,22 +104,23 @@ M3    弱点跟踪 + SR(空 query 系统自选)+ 岗位类出题(三源融合)+ 
 
 ## 范围
 
-M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",但**不做泛化多 Agent 炫技**。高级感来自跨多轮任务的状态、工具、分支、记忆、评测、可恢复,不是 Agent 数量。
+M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",但**不做泛化多 Agent 炫技**。它是 **interview coaching harness engineering**:LLM 被放进面试陪练专用运行框架里,由系统负责状态、工具、证据、分支、恢复、回放和评测。这里的"追问"升级为 **remediation loop**:提示哪里答不好 → 引导补答 → 对累计答案重新评分 → 再判断继续纠偏或进入下一题。
 
-- **LangGraph 状态机**:`InterviewCoachAgent` 作为 session root orchestrator,串起 retrieval pipeline / QuizGenerator / AnswerJudge / 追问 / session 总结
+- **LangGraph 状态机**:`InterviewCoachAgent` 作为 session root orchestrator,串起 retrieval pipeline / QuizGenerator / AnswerJudge / 多轮纠偏 / session 总结
 - **State**:
   - `session_id / query / query_type`
   - `retrieved_chunk_ids / expanded_queries`
   - `questions / current_question_index`
-  - `user_answers[] / judge_results[] / followups[]`
-  - `next_action / final_summary`
+  - `user_answers[] / answer_turns[] / judge_results[] / remediation_events[]`
+  - `unresolved_gaps[] / question_summaries[] / next_action / final_summary`
 - **Nodes**:
   - `retrieve_context`:复用 M2 retrieval pipeline
   - `generate_question`:复用 QuizGenerator
   - `wait_user_answer`:人类输入暂停点,支持续写
+  - `build_context_pack`:只拼当前题必要上下文,不塞全量聊天历史
   - `judge_answer`:复用 AnswerJudge + lookup tool
   - `decide_next_action`:按 evidence 决定下一步
-  - `generate_followup`:只针对当前题追问一轮
+  - `generate_remediation_prompt`:提示哪里答不好,并生成针对当前题的补答引导
   - `summarize_session`:输出题 / 答 / 评 / reference / 弱点摘要
   - `finish_session`:落库 + SSE done
 - **Tools**:
@@ -129,11 +130,13 @@ M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",
   - `record_session_summary(session_id)`:写 session 沉淀
   - `update_knowledge_gap(...)`:M3 接入,本阶段先留接口不做 SR 排期
 - **分支策略**:
-  - `coverage_score < 60` → 追问基础概念 / 漏掉的 reference point
-  - `fabricated_ratio > 0.3` → 追问依据来源,提示用户回到笔记证据
-  - depth 缺 `tradeoff / why / boundary` 任一维度 → 深挖一轮
-  - 单题最多 1 轮追问,整场 session 不做无限自主循环
-- **可观测**:Langfuse trace 根节点按 `session_id` 聚合,能看到 `retrieve → generate → judge → decide → followup → summarize`
+  - `coverage_score < 60` → 提示漏掉的 reference point,引导用户补答
+  - `fabricated_ratio > 0.3` → 指出缺证据 / 冲突声明,追问依据来源,提示用户回到笔记证据
+  - depth 缺 `tradeoff / why / boundary` 任一维度 → 深挖缺失维度
+  - 不设单题固定 1 轮上限;靠达标、用户跳过、连续提升很小、偏题、token budget 等条件退出
+- **长上下文治理**:原始多轮对话全量落库回放;每次 LLM 只拿当前题 context pack:题目、source chunks、reference points、累计答案、上一轮 Judge、未解决 gaps、最近 1-2 轮原文、更早轮次摘要
+- **幻觉治理**:纠偏 prompt 必须 evidence-bound,每个 remediation event 记录 `triggered_by`、缺口 id、相关 chunk id / lookup 结果;不能引入当前题 source chunks 之外的新标准答案来源
+- **可观测**:Langfuse trace 根节点按 `session_id` 聚合,能看到 `retrieve → generate → context_pack → judge → decide → remediate → summarize`
 - **失败恢复**:wait_user_answer 是人类暂停点;LLM / reranker / tool 失败按 M2 降级策略走,状态机必须能在已完成节点后恢复
 
 明确不做:
@@ -145,12 +148,16 @@ M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",
 ## 退出标准(DoD)
 
 - [ ] M2 端到端 session 改由 `InterviewCoachAgent` 编排,用户体验不退化
-- [ ] 第一题答漏 reference point 后触发 1 轮追问;答得好时直接下一题或结束
+- [ ] 第一题答漏 reference point 后进入纠偏循环;用户补答后按累计答案重新评分,达标时进入下一题或结束
 - [ ] `fabricated_ratio > 0.3` 场景能追问"依据来自哪里",不直接进入下一题
+- [ ] depth 缺 `tradeoff / why / boundary` 时能提示缺失维度并引导补答
+- [ ] 多轮纠偏没有固定 1 轮上限,但能在达标 / 用户跳过 / 连续提升很小 / 偏题 / token budget 触发时退出
+- [ ] 长 session 不把全量聊天历史塞进 prompt;context pack 保留 source chunks / reference points / unresolved gaps,旧轮次压缩为 per-question summary
+- [ ] 纠偏 prompt 不幻觉:每次追问都有 `triggered_by`、缺口 id、chunk id / lookup 证据,不能引入 source chunks 外的新标准答案来源
 - [ ] 用户中途退出后重新进入,能从 `wait_user_answer` 状态恢复
 - [ ] Langfuse trace 能按 session_id 看到完整状态机节点和每个工具调用
-- [ ] `evals/suites/interview_coach/` 至少 10 条流程型样本,覆盖追问 / 不追问 / fabricated / 中途恢复四类
-- [ ] README / 简历可表述为"Agentic RAG 面试教练",并能现场演示一轮追问
+- [ ] `evals/suites/interview_coach/` 至少 10 条流程型样本,覆盖不纠偏 / coverage 纠偏 / fabricated 纠偏 / depth 纠偏 / 多轮无提升退出 / 中途恢复 / 长上下文压缩
+- [ ] README / 简历可表述为"Agentic RAG 面试教练",并能现场演示一轮多轮纠偏
 
 # M2.5:JD 累积上传 + 一键分析 + 学习路径
 
@@ -222,7 +229,7 @@ M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",
 
 - [ ] dogfood 1 个月,每周 3+ session,弱点排行收敛(同一知识点 3 次后正确率 +30pp)
 - [ ] 空 query → SR 自选跑通:聊天框输"来模拟面试吧" → 系统从弱点排行选主题 → 出题,Langfuse trace 能看到 SR 选中的 heading_path
-- [ ] M2.1 追问分支接入 SR:第一轮答漏 trade-off → 系统追问 → 用户补充 → 更新对应 knowledge_gap
+- [ ] M2.1 纠偏分支接入 SR:答漏 trade-off → 系统提示缺口并引导补答 → 用户补齐 / 跳过 → 更新对应 knowledge_gap
 - [ ] dashboard 数据准确(SR 推送的题确实是到期的)
 
 ### 岗位类 query 出题

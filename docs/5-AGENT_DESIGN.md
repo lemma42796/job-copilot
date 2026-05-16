@@ -1,7 +1,7 @@
 ---
 title: AGENT DESIGN - JobCopilot v2(QueryRewriter + QuizGenerator + AnswerJudge + InterviewCoachAgent)
 owner: lemma42796
-last_updated: 2026-05-11
+last_updated: 2026-05-16
 purpose: 锁核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / Agentic RAG 编排 / 模型路由 / 版本号策略
 ---
 
@@ -12,7 +12,7 @@ purpose: 锁核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / Agentic R
 - **QueryRewriter(M2)**:吃用户聊天框 query → 扩成同义/相邻概念集,喂给全库 hybrid search(retrieval pipeline 第一段)
 - **QuizGenerator**:吃 query + retrieved chunks(retrieval pipeline 输出)→ 出 N 道题(open_ended + definition 自动配比)+ reference_answer + reference_points
 - **AnswerJudge**:吃(题, reference, chunks, 用户答案)→ 输出三层 evidence(coverage / fidelity / depth)
-- **InterviewCoachAgent(M2.1)**:LangGraph session root orchestrator,串起检索 → 出题 → 等答 → 评分 → 追问 → 总结;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不是多 Agent 数量
+- **InterviewCoachAgent(M2.1)**:LangGraph session root orchestrator,串起检索 → 出题 → 等答 → 评分 → 纠偏循环 → 总结;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不是多 Agent 数量
 - **JdParser / JdAggregator(M2.5)** + **ResumeAdvisor(M3)**:JD / 简历相关
 
 # 2. 通用约定
@@ -34,7 +34,7 @@ purpose: 锁核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / Agentic R
 | 学习路径生成 | **off** | 模板化输出 |
 | 截图 OCR(Qwen 多模态)| **off** | 纯文本提取 |
 | ResumeAdvisor(简历诊断)| **on** | 综合 JD 通用要求 + 简历段落判断 |
-| InterviewCoachAgent(M2.1 编排决策)| **on** | 追问分支 / 下一步决策需要 reasoning;不参与出题事实生成 |
+| InterviewCoachAgent(M2.1 编排决策)| **on** | 纠偏分支 / 下一步决策需要 reasoning;不参与出题事实生成 |
 | Embedder(text-embedding-v4)| N/A | 不是聊天模型 |
 
 **默认 off 的代价收益**:thinking 输出的 reasoning_tokens 计入 output token 计费,关掉省成本和延迟。需要 reasoning 的 agent 显式开;粗粒度调度(关 thinking 跑完 dogfood,kappa 不达标再考虑开)是 OK 的。
@@ -851,14 +851,44 @@ for s in suggestions:
 
 M2.1 把 M2 的 RAG 出题闭环升级成 **Agentic RAG 面试教练**。设计目标不是堆多个 Agent,而是让一次 session 具备:
 
-- **状态**:跨多题 / 多轮追问保存上下文
+- **状态**:跨多题 / 多轮纠偏保存上下文
 - **工具**:可查笔记、查 source chunks、记录 session、后续接入 knowledge_gap
-- **分支**:根据 Coverage / Fidelity / Depth evidence 决定追问或进入下一题
+- **分支**:根据 Coverage / Fidelity / Depth evidence 决定提示哪里答不好、继续补答或进入下一题
 - **记忆**:M3 接入 SR 后把薄弱 heading_path 写入长期弱点
 - **评测**:流程型样本可复现追问 / 不追问 / fabricated / 恢复
 - **可恢复**:用户退出后能从 `wait_user_answer` 继续
 
 `apps/api/src/jobcopilot_api/agents/interview_coach/`(M2.1 启动前补)。M2.1 只编排已有 Agent,不重写 QuizGenerator / AnswerJudge prompt。
+
+## 8.1 Harness Engineering 边界
+
+M2.1 的目标不是做一个"更会聊天的 prompt",而是做 **interview coaching harness engineering**:把 LLM 放进面试陪练专用运行框架里,由系统负责状态、工具、证据、分支、恢复、回放和评测。
+
+对标 Codex / Claude Code 时,不要照搬 coding harness 的文件系统 / shell / git 能力;JobCopilot 的垂直 harness 是:
+
+```
+笔记 RAG
+→ evidence-bound 出题
+→ 用户答题暂停点
+→ AnswerJudge 结构化评分
+→ deterministic decision policy
+→ remediation loop
+→ context pack / session_events / recovery
+→ eval replay / Langfuse trace
+```
+
+Harness 边界:
+
+- **LLM 不是自由面试官**:它只在明确节点里做局部生成 / 判断,不能自己规划长任务、改写状态机或绕过证据。
+- **长期记忆不靠聊天历史**:`session_events` 保存原始事件,`InterviewCoachState` 保存结构化状态,LLM 当前输入只拿 context pack。
+- **关键分支由程序治理**:`coverage_score`、`fabricated_ratio`、depth 维度、退出条件由 deterministic policy 决定,LLM 只能给 evidence / reasoning 辅助。
+- **工具不是开放市场**:每个 tool 必须对应面试闭环里的确定动作,并有输入 / 输出 schema、错误码、trace。
+- **输出必须可审计**:题目、评分、纠偏 prompt、session summary 都要能追到 source chunks / reference points / Judge gaps。
+- **成功标准不是"聊得像"**:而是可恢复、可回放、可评测、可观测,并能在 fixture 中稳定走到人工期望分支。
+
+一句话:Prompt engineering 负责局部语言质量;M2.1 的 harness engineering 负责让这个面试教练在真实 session 里可靠做事。
+
+## 8.2 State / Nodes
 
 State:
 
@@ -872,10 +902,13 @@ class InterviewCoachState:
     retrieved_chunk_ids: list[int]
     questions: list[GeneratedQuestion]
     current_question_index: int
-    user_answers: list[str]
+    user_answers: list[str]              # 每题累计答案:初答 + 后续补答合并
+    answer_turns: list[AnswerTurn]       # 每轮原始答案 / 补答,用于回放
     judge_evidences: list[AnswerJudgeOutput]
-    interviewer_followups: list[str]
-    next_action: Literal["ask_next", "followup", "summarize", "finish"]
+    remediation_events: list[RemediationEvent]
+    unresolved_gaps: list[AnswerGap]
+    question_summaries: list[QuestionContextSummary]
+    next_action: Literal["ask_next", "remediate", "summarize", "finish"]
     final_summary: str | None
 ```
 
@@ -885,14 +918,15 @@ Nodes:
 retrieve_context
   → generate_question
   → wait_user_answer
+  → build_context_pack
   → judge_answer
   → decide_next_action
-      ├ generate_followup → wait_user_answer → judge_answer → summarize_session
+      ├ generate_remediation_prompt → wait_user_answer → build_context_pack → judge_answer → decide_next_action
       ├ generate_question(next question)
       └ summarize_session → finish_session
 ```
 
-## 8.1 工具边界
+## 8.3 工具边界
 
 | Tool | 用途 | M2.1 状态 |
 |------|------|----------|
@@ -904,18 +938,76 @@ retrieve_context
 
 工具不是给 LLM 任意调用的开放工具市场,每个 tool 都对应产品闭环里的明确动作。
 
-## 8.2 追问分支策略
+## 8.4 多轮纠偏循环策略
 
-`decide_next_action` 只做有限状态决策:
+M2.1 不再把追问限制成"单题最多 1 轮"。`InterviewCoachAgent` 的核心能力是 **remediation loop**:
+
+```
+用户答题
+→ Judge 评分
+→ decide_next_action 判断哪里没答好
+→ 明确提示问题 + 生成针对性追问 / 引导
+→ 用户补答
+→ 对累计答案重新 Judge
+→ 再判断继续纠偏、进入下一题或总结
+```
+
+`decide_next_action` 只做有限状态决策,不让 LLM 自主开放规划:
 
 - `coverage_score < 60` → 追问漏掉的 reference point
 - `fabricated_ratio > 0.3` → 追问"依据来自哪里",把用户拉回笔记证据
 - depth 缺 `tradeoff / why / boundary` 任一维度 → 深挖一轮
 - 否则进入下一题或总结
 
-约束:**单题最多 1 轮追问**。追问完直接总结当前题,不再递归判断第二轮,防止 Agent 自主循环。
+补答后的 Judge 输入必须是**累计答案**:`初答 + 历次补答`,同时保留每轮原文用于回放和可观测。这样用户补齐内容后分数可以真实变好,不会只评最后一句补答。
 
-## 8.3 不做的"伪高级 Agent"
+停止条件:
+
+- 用户显式选择"跳过 / 下一题 / 结束本场"
+- 当前题达到目标,例如 `coverage_score >= 80`、`fabricated_ratio <= 0.1` 且 depth 不再缺核心维度
+- 连续多轮提升很小,例如最近两轮 `total_score` 提升低于阈值
+- 用户明显偏题,改为总结当前题缺口并建议进入下一题
+- context pack 超过 token budget,先压缩历史轮次;若仍超限则总结当前题,不继续塞上下文
+
+因此删除"单题最多 1 轮"限制,但仍禁止无退出条件的自主循环。
+
+## 8.5 长上下文与幻觉治理
+
+多轮模拟面试不能靠"把全量聊天历史都塞进 prompt"解决。原始对话全量落库用于回放;每次 LLM 调用只构造当前节点需要的 **context pack**:
+
+```python
+@dataclass
+class InterviewContextPack:
+    question: GeneratedQuestion
+    source_chunks: list[SourceChunk]
+    reference_points: list[ReferencePoint]
+    cumulative_answer: str
+    latest_judge_evidence: AnswerJudgeOutput | None
+    unresolved_gaps: list[AnswerGap]
+    recent_turns: list[AnswerTurn]        # 最近 1-2 轮原文
+    prior_turn_summary: str | None        # 更早轮次压缩摘要
+```
+
+Token budget 优先级:
+
+1. 不能丢:当前题、source chunks、reference_points、unresolved_gaps
+2. 尽量保留:累计答案、上一轮 Judge evidence、最近 1-2 轮原文
+3. 可压缩:更早答题轮次、面试官提示、UI 事件
+4. 可丢弃:寒暄、重复确认、与当前题无关的聊天
+
+Context Cache / prompt caching 只用于降低重复长前缀成本,不是会话记忆。真正的记忆是 `InterviewCoachState + session_events + per-question summary`。
+
+追问 / 纠偏也必须 evidence-bound:
+
+- 每个 `RemediationEvent` 必须记录 `triggered_by: coverage | fidelity | depth | mixed`
+- coverage 追问必须带 `missing_reference_point_ids`
+- fidelity 追问必须带 `fabricated_claim_ids` 和 lookup 结果
+- depth 追问必须声明缺的是 `tradeoff / why / boundary` 哪些维度
+- `generate_remediation_prompt` 只能围绕当前题 source chunks、reference_points、Judge gaps 生成,不能引入新标准答案来源
+- Judge 在标 fabricated 前继续走 `lookup_claim_in_notes`
+- 保存前校验 followup / remediation prompt 里的 chunk id、reference point id 不越界
+
+## 8.6 不做的"伪高级 Agent"
 
 明确不做:
 
@@ -925,15 +1017,17 @@ retrieve_context
 
 判断标准:如果一个 Agent / tool 不能改善"找出用户不会的知识点并追问",就不进 M2.1。
 
-## 8.4 评测与可观测
+## 8.7 评测与可观测
 
-- Langfuse trace 根节点按 `session_id` 聚合,完整链路:`retrieve_context → generate_question → wait_user_answer → judge_answer → decide_next_action → generate_followup? → summarize_session`
+- Langfuse trace 根节点按 `session_id` 聚合,完整链路:`retrieve_context → generate_question → wait_user_answer → build_context_pack → judge_answer → decide_next_action → generate_remediation_prompt? → summarize_session`
 - `evals/suites/interview_coach/` 收流程型样本,至少覆盖:
   - 答得好 → 不追问
-  - 漏 reference point → 追问
+  - 漏 reference point → 提示缺口 → 补答后累计答案重评
   - fabricated ratio 高 → 依据追问
+  - depth 缺 trade-off / why / boundary → 深挖纠偏
+  - 多轮后无明显提升 → 总结当前题缺口,不无限循环
   - 用户中途退出 → 从 `wait_user_answer` 恢复
-- 指标先用流程准确率(是否走到人工期望分支),不直接用 kappa;Judge 的 label 可靠性仍由 `answer_judge` suite 守门
+- 指标先用流程准确率(是否走到人工期望分支)、纠偏成功率(补答后是否达标或正确退出)、上下文治理通过率,不直接用 kappa;Judge 的 label 可靠性仍由 `answer_judge` suite 守门
 
 # 9. v1 教训如何应用
 
@@ -963,7 +1057,8 @@ retrieve_context
 | query 形态 | M2 仅主题类;M3 加岗位类(三源融合)+ 空 query(SR 系统自选) | 见 PRD §5.2 + 7-ROADMAP M3 |
 | Agent 编排深度 | M2.1 上 `InterviewCoachAgent` 状态机;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不做泛化多 Agent 互聊 | 见 §8 |
 | 简历存储 | 单条记录(全库一行 resumes),无"简历库 / 多份切换";岗位类 query 拼"这一份 + 选定 JD 子集" | 一个人就一份简历;PRD §6 锁定 |
-| 多轮追问触发(M2.1) | `coverage_score < 60` / `fabricated_ratio > 0.3` / depth 缺维度 任一触发,单题最多 1 轮 | 追问是面试教练核心能力,但禁止自主循环 |
+| 多轮纠偏触发(M2.1) | `coverage_score < 60` / `fabricated_ratio > 0.3` / depth 缺维度 任一触发,进入 remediation loop | 不设单题固定 1 轮上限;靠达标、用户跳过、无明显提升、偏题、token budget 等条件退出 |
+| 多轮上下文治理(M2.1) | 原始对话落库回放,LLM 每次只拿 context pack | source chunks / reference_points / unresolved_gaps 优先级最高;Context Cache 不是记忆 |
 | Temperature | DashScope 默认,不暴露 | prompt 端约束逼近低温度 |
 | Prompt 版本号 | DB `prompt_versions` 表,改一次 bump | questions / session_answers 留旧 version |
 | LLM cache | `(prompt_version, system_hash, user_hash, model)` | dogfood 重跑成本 ≈ 0 |
