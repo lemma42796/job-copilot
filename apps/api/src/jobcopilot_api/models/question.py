@@ -3,8 +3,9 @@
 出题来源是 query 不是节点(M2 起聊天框 query 替代节点点击);
 originated_query / originated_mode 留作 audit / 复用判断 / 评测 query 多样性。
 
-source_chunk_ids 是 SSoT 数组,出题 prompt 里 [N] 编号顺序跟数组顺序一致;
-Judge 同一份顺序对照。reference_chunk_ids ⊆ source_chunk_ids(LLM 强约束)。
+source_chunk_ids 是 SSoT 数组,由 service 从 QuizGenerator 的 [N] 引用
+和采分点 evidence 派生;Judge 同一份顺序对照。
+reference_chunk_ids ⊆ source_chunk_ids。
 reference_points 见 §6.1 schema(用于 Coverage 算分)。
 """
 

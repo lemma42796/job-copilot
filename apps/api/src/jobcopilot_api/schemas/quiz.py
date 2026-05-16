@@ -21,7 +21,7 @@ class QuizSessionCreateIn(BaseModel):
     query: str = ""
     mode: QuizMode = "topic"
     jd_ids: list[int] | None = None
-    question_count: int = Field(ge=3, le=10)
+    question_count: int = Field(ge=1, le=5)
 
 
 class AnswerDraftIn(BaseModel):

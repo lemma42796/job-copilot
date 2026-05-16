@@ -4,7 +4,8 @@
 - POST /api/quiz/sessions(SSE)入口
 - 内联 retrieval 5 步(query_rewriter → multi-query hybrid → rerank/blend →
   selected seed chunks → enrich note_title)+ quiz_generator LLM 出题
-- service 后处理:[N] → DB id 映射 + 完整性校验
+- service 后处理:从 reference_answer / reference_points 派生
+  source_chunk_ids / reference_chunk_ids,再 [N] → DB id 映射 + 完整性校验
   (reference_chunk_ids ⊆ source_chunk_ids / weight 之和 ∈ [0.99, 1.01] /
   reference_points evidence_chunk_ids ⊆ source_chunk_ids)
 - 落库:questions × N + UPDATE quiz_sessions audit + session_answers × N
@@ -44,6 +45,7 @@ from jobcopilot_api.models.quiz_session import QuizSession
 from jobcopilot_api.models.session_answer import SessionAnswer
 from jobcopilot_api.schemas.agents.quiz_generator import (
     GeneratedQuestion,
+    GeneratedQuestionDraft,
     QuizGenChunkInput,
     QuizGenInput,
     QuizGenOutput,
@@ -396,12 +398,13 @@ def _build_question_rows(
     mode: str,
     llm_result: LLMResult,
 ) -> list[dict[str, Any]]:
-    """[N] → DB id 映射 + 完整性校验。
+    """派生本题引用集合 + [N] → DB id 映射 + 完整性校验。
 
-    LLM 输出的 source_chunk_ids / reference_chunk_ids / evidence_chunk_ids
-    都是 1-based [N] 编号(对应 USER 段渲染顺序),映射到 chunks[N-1].id。
-    任何越界 / 集合包含违反 / evidence 引用不可信 / weight 之和不在
-    [0.99, 1.01] → IntegrityCheckError。
+    LLM 输出只保留 reference_answer 里的 [N] 引用和 reference_points 的
+    evidence_chunk_ids。service 先派生 reference_chunk_ids / source_chunk_ids,
+    再把 1-based [N] 编号映射到 chunks[N-1].id。任何越界 / 集合包含违反 /
+    evidence 引用不可信 / weight 之和不在 [0.99, 1.01] →
+    IntegrityCheckError。
     """
     type_mix = gen_output.type_mix
     if type_mix.open_ended + type_mix.definition != len(gen_output.questions):
@@ -415,7 +418,11 @@ def _build_question_rows(
 
     rows: list[dict[str, Any]] = []
     for raw_q in gen_output.questions:
-        q = _repair_question_chunk_refs(raw_q, n_chunks)
+        q = _derive_question_chunk_refs(raw_q, n_chunks)
+        _validate_reference_points_shape(q)
+        q = _repair_reference_point_evidence(q, gen_chunks)
+        q = _sync_question_source_refs(q)
+
         if not q.source_chunk_ids:
             raise IntegrityCheckError(
                 f"题 '{q.prompt[:30]}...' source_chunk_ids 为空"
@@ -436,8 +443,6 @@ def _build_question_rows(
         _validate_reference_answer_citations(q)
         ref_db = [chunk_db_ids[n - 1] for n in q.reference_chunk_ids]
 
-        _validate_reference_points_shape(q)
-        q = _repair_reference_point_evidence(q, gen_chunks)
         weight_sum = sum(p.weight for p in q.reference_points)
         if not (0.99 <= weight_sum <= 1.01):
             raise IntegrityCheckError(
@@ -486,17 +491,16 @@ def _build_question_rows(
     return rows
 
 
-def _repair_question_chunk_refs(
-    q: GeneratedQuestion,
+def _derive_question_chunk_refs(
+    q: GeneratedQuestionDraft,
     n_chunks: int,
 ) -> GeneratedQuestion:
-    """Normalize local [N] refs before strict validation.
+    """Derive local [N] source/reference refs before strict validation.
 
-    QuizGenerator occasionally returns a question whose answer/reference points
-    cite a valid local chunk but forgets to include that chunk in
-    `source_chunk_ids`. The source list is only the declared support set, so it
-    is safe to expand it to the union of declared references, point evidence,
-    and `[N]` citations. Invalid/out-of-range refs still fail below.
+    QuizGenerator no longer outputs source_chunk_ids / reference_chunk_ids.
+    `reference_chunk_ids` is the ordered set of citations in reference_answer;
+    `source_chunk_ids` is the ordered union of answer citations and point
+    evidence. Invalid/out-of-range refs still fail here.
     """
     evidence_ids = [
         chunk_id
@@ -504,23 +508,41 @@ def _repair_question_chunk_refs(
         for chunk_id in point.evidence_chunk_ids
     ]
     cited_ids = [int(raw) for raw in _CITATION_RE.findall(q.reference_answer)]
-    refs = _unique_ordered_ints(
-        [*q.source_chunk_ids, *q.reference_chunk_ids, *evidence_ids, *cited_ids]
-    )
+    reference_chunk_ids = _unique_ordered_ints(cited_ids)
+    if not reference_chunk_ids:
+        raise IntegrityCheckError(
+            f"题 '{q.prompt[:30]}...' reference_answer 缺少 [N] 引用"
+        )
+
+    refs = _unique_ordered_ints([*reference_chunk_ids, *evidence_ids])
     invalid = [chunk_id for chunk_id in refs if not (1 <= chunk_id <= n_chunks)]
     if invalid:
         raise IntegrityCheckError(
             f"题 '{q.prompt[:30]}...' chunk 引用越界:{invalid}(合法 1..{n_chunks})"
         )
-    reference_chunk_ids = _unique_ordered_ints(cited_ids) or q.reference_chunk_ids
-    if refs == q.source_chunk_ids and reference_chunk_ids == q.reference_chunk_ids:
-        return q
-    return q.model_copy(
-        update={
-            "source_chunk_ids": refs,
-            "reference_chunk_ids": reference_chunk_ids,
-        }
+    return GeneratedQuestion(
+        type=q.type,
+        prompt=q.prompt,
+        source_chunk_ids=refs,
+        reference_answer=q.reference_answer,
+        reference_chunk_ids=reference_chunk_ids,
+        reference_points=q.reference_points,
     )
+
+
+def _sync_question_source_refs(q: GeneratedQuestion) -> GeneratedQuestion:
+    """Keep source_chunk_ids as the derived union after evidence repair."""
+    evidence_ids = [
+        chunk_id
+        for point in q.reference_points
+        for chunk_id in point.evidence_chunk_ids
+    ]
+    source_chunk_ids = _unique_ordered_ints(
+        [*q.reference_chunk_ids, *evidence_ids]
+    )
+    if source_chunk_ids == q.source_chunk_ids:
+        return q
+    return q.model_copy(update={"source_chunk_ids": source_chunk_ids})
 
 
 def _repair_reference_point_evidence(

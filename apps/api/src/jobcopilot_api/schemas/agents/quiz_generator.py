@@ -12,8 +12,8 @@ class QuizGenChunkInput(BaseModel):
 
     service 层(M2 第 4 步)负责 RetrievedChunk(retrieval_pipeline 输出)
     → QuizGenChunkInput 的转换:id 是 NoteChunk DB id,渲染 USER 段时用
-    [N] 替换显示,LLM 输出回来还是 [N],service 后处理把 [N] 还原成 DB id
-    落 questions.source_chunk_ids。
+    [N] 替换显示。LLM 只输出这些 [N] 局部引用,service 后处理再还原成
+    DB id 落 questions.source_chunk_ids / reference_chunk_ids / reference_points。
     """
 
     id: int
@@ -38,7 +38,27 @@ class TypeMix(BaseModel):
     rationale: str
 
 
+class GeneratedQuestionDraft(BaseModel):
+    """QuizGenerator LLM 输出的单题草稿。
+
+    LLM 只负责写题干、reference_answer 里的 [N] 引用,以及每个采分点
+    的 evidence_chunk_ids。service 层再派生 source_chunk_ids /
+    reference_chunk_ids,避免让模型维护多份引用真相。
+    """
+
+    type: Literal["open_ended", "definition"]
+    prompt: str
+    reference_answer: str
+    reference_points: list[ReferencePoint]
+
+
 class GeneratedQuestion(BaseModel):
+    """service 派生后的本地 [N] 编号题目形态。
+
+    AnswerJudge prompt 也复用这个 schema;在 DB 里这些 ids 会被映射成
+    note_chunks.id。
+    """
+
     type: Literal["open_ended", "definition"]
     prompt: str
     source_chunk_ids: list[int]
@@ -56,4 +76,4 @@ class QuizGenInput(BaseModel):
 
 class QuizGenOutput(BaseModel):
     type_mix: TypeMix
-    questions: list[GeneratedQuestion]
+    questions: list[GeneratedQuestionDraft]

@@ -1,4 +1,4 @@
-"""QuizGenerator prompts — `quiz_generator` v1.1(5-AGENT_DESIGN §3.3 / §3.4)。
+"""QuizGenerator prompts — `quiz_generator` v1.2(5-AGENT_DESIGN §3.3 / §3.4)。
 
 SYSTEM 基线来自 5-AGENT 文档;改一次 bump version(沿用 v1 LESSONS §8.2)。
 后续走 prompt_versions 表 SSoT(M2.5 之后);M2 阶段 PROMPT_VERSION 字段
@@ -11,7 +11,7 @@ from jobcopilot_api.agents.context_cache import render_chunk_cache_text
 from jobcopilot_api.schemas.agents.quiz_generator import QuizGenChunkInput
 
 PROMPT_NAME = "quiz_generator"
-PROMPT_VERSION = "v1.1"
+PROMPT_VERSION = "v1.2"
 
 SYSTEM = """你是为程序员设计技术面试题的 Agent。任务:基于用户的查询主题 + 笔记片段(chunks),出 N 道题。chunks 是 RAG retrieval pipeline 从用户全笔记库检索出的最相关片段。
 
@@ -19,8 +19,8 @@ SYSTEM = """你是为程序员设计技术面试题的 Agent。任务:基于用�
 
 1. 题目必须能用提供的 chunks 回答 — 任何超出 chunks 的内容不允许出现在题干 / reference 里
 2. 题目主题必须贴用户 query — 跑题(如用户问"多线程"你出题问"垃圾回收")算严重错误
-3. 每道题必须给 source_chunk_ids:出题用到的 chunks 编号(对应上下文 chunks 的 [N] 标号),数组里的顺序就是被引用的语义顺序
-4. reference_chunk_ids ⊆ source_chunk_ids,且 reference_answer 文本里**必须用 [N] 引用每个 reference_chunk_id**
+3. reference_answer 文本里必须用 [N] 引用依据 chunks;[N] 对应上下文 chunks 的编号,从 1 起算
+4. 不要输出 source_chunk_ids / reference_chunk_ids;系统会从 reference_answer 的 [N] 引用和 reference_points[].evidence_chunk_ids 派生
 5. 题型仅两类:
    - open_ended:开放式 — 讲过程 / 原理 / trade-off / 对比
    - definition:八股 — 定义 / 命名 / 是什么
@@ -28,7 +28,7 @@ SYSTEM = """你是为程序员设计技术面试题的 Agent。任务:基于用�
 6. 每道题配 reference_points(2-5 个):
    - text:答这题应该覆盖的"采分点"短句
    - weight:本题内 ∑weight = 1.0(浮点,2 位小数)
-   - evidence_chunk_ids:支撑这个 point 的 chunks 编号(⊆ source_chunk_ids)
+   - evidence_chunk_ids:支撑这个 point 的 chunks 编号([N] 局部编号,从 1 起算)
 
 【题型比例决策】
 
@@ -56,9 +56,7 @@ SYSTEM = """你是为程序员设计技术面试题的 Agent。任务:基于用�
     {
       "type": "open_ended" | "definition",
       "prompt": "<题干,中文>",
-      "source_chunk_ids": [<int>, ...],
       "reference_answer": "<参考答案,引用 [N] 标号>",
-      "reference_chunk_ids": [<int>, ...],
       "reference_points": [
         {"id": "p1", "text": "<采分点>", "weight": 0.4, "evidence_chunk_ids": [<int>, ...]},
         ...
@@ -68,7 +66,7 @@ SYSTEM = """你是为程序员设计技术面试题的 Agent。任务:基于用�
   ]
 }
 
-注:source_chunk_ids 数组里的 int 必须是上下文 chunks 的 [N] 标号(从 1 起算,**不是** DB id)— service 层会把 [N] 还原成 DB id 落库。"""
+注:evidence_chunk_ids 和 reference_answer 里的 [N] 都是上下文 chunks 的局部编号(从 1 起算,**不是** DB id)。service 层会派生 source_chunk_ids / reference_chunk_ids 并还原成 DB id 落库。"""
 
 
 def render_user(
@@ -80,8 +78,8 @@ def render_user(
     """5-AGENT §3.4 USER 模板。
 
     chunks 用 [N] 编号(1-based),每段含 note / folder / heading 元数据 +
-    content 正文。LLM 输出回来的 source_chunk_ids 仍是 [N],service 层
-    后处理把 [N] 还原成 NoteChunk.id 落 questions.source_chunk_ids。
+    content 正文。LLM 只输出 reference_answer / reference_points 中的 [N]
+    局部引用,service 层后处理再派生并还原成 NoteChunk.id。
     """
     chunk_blocks = []
     for idx, c in enumerate(chunks, start=1):

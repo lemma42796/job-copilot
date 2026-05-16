@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 工程踩坑录(Lessons Learned)
 owner: lemma42796
-last_updated: 2026-05-16
+last_updated: 2026-05-17
 purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因 + 解决方案,按主题分 9 类。每条字段统一为「症状 / 根因 / 修法 / 沉淀」,链接详细切片归档,作为面向外部读者(招聘 / 协作者 / 博客读者)的索引视图。
 ---
 
@@ -220,6 +220,13 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 - **根因**:next dev 的 `.next` cache 的 css 时间戳与 SSR 渲染的 `<link href=...?v=N>` 不同步,query string 命中 404,layout.css 未加载,sidebar 的 `<aside class="w-[220px]">` 失效,SVG 不受 `size-4` 约束
 - **修法**:`rm -rf apps/web/.next` 后 next dev 重启
 - **沉淀**:工具层偶发,不进永久约束。**教训**:Next.js 多进程同时写 `.next` 时偶现,优先重启 dev 而不是怀疑代码
+
+## 6.5 Codex 沙箱里 Next dev 端口绑定 EPERM
+
+- **症状**:在 Codex 沙箱内直接跑 `pnpm dev:web` 时,Next dev 失败:`listen EPERM: operation not permitted 0.0.0.0:3000`;改成 `127.0.0.1` 或换端口仍可能 EPERM。
+- **根因**:这是当前执行沙箱对本地端口监听的权限限制,不是 React / Next 编译错误。若只看“前端跑不起来”,容易误判为 UI 代码改坏。
+- **修法**:需要用允许本机端口监听的方式启动 dev server;启动成功后 Next 会显示 `Ready`。后续排查前端红屏时,先区分“端口绑定失败”和“页面编译/runtime 错误”。
+- **沉淀**:本地开发问题先看 dev server 第一条错误。`listen EPERM` 属于环境权限;页面代码错误通常会在访问对应 route 后显示 compile/runtime stack。
 
 ---
 

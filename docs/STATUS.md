@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-16
+last_updated: 2026-05-17
 purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指向其他文档。
 ---
 
@@ -54,7 +54,15 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - 本轮代码侧已缓解 smoke 脚本收尾卡住:无 Langfuse key 时不构造 Langfuse SDK / `langfuse.openai` client;评测脚本 cleanup 只关闭已存在的 embedder / llm singleton 并 shutdown Langfuse singleton。后续多次 smoke 已正常结束并写出 report / trace。
 - **M2 已由用户确认完成**:聊天框主题 query → 全库 RAG → 出题 → 答题 → Judge 三层评分 → session 恢复已跑通。
 - Context Cache 已验证 provider-side 命中,但因 5 分钟 TTL 不适合当前一次性答题流,已默认关闭显式 `cache_control`;后续多轮讨论面试题时再打开。
-- 最新保存主题:`retrieval: add post-rerank governance blend`;M2 tag `v0.4-m2-end` 仍待用户确认。
+- 本轮 QuizGenerator 引用 schema 已收口:prompt/schema 从 `v1.1` bump 到 `v1.2`;LLM 只输出 `reference_answer` 的 `[N]` 和 `reference_points[].evidence_chunk_ids`,后端派生 `reference_chunk_ids / source_chunk_ids` 并映射真实 `note_chunks.id`。
+- 本轮真实出题已验证:最新题目行 `19/20/21` 均为 `gen_prompt_version=v1.2`,reference answer 有 `[N]`,reference points 有 evidence,落库后的 source/reference chunk id 都是真实 chunk id。
+- 本轮真实评分已验证:session #12 / answer #19 返回 Coverage 100 / Fidelity 100 / Depth 33.33 / Total 93.33;depth remediation 提示缺 `tradeoff / why`,说明多轮补答分支按预期触发。
+- 本轮 `/quiz` UI 已改为聊天流:一次只显示当前题,左侧按“主题文件夹 → 题目列表”分组;用户 turn 在右、教练反馈在左;补答作为新消息追加,不再要求用户编辑“累计完整答案”。
+- 本轮 `/quiz` 题数改为下拉候选 `1 / 3 / 5`;API `question_count` 下限同步放到 1。
+- 本轮全局 sidebar 已支持 macOS 风格折叠,并移除红黄绿窗口点;根布局改为 flex,内容区随 sidebar 宽度伸缩。
+- 当前 UI 里的教练自然语言反馈仍是前端根据 scores/evidence/remediation prompt 合成,不是后端 LLM 单独返回的 `coach_message`;下一刀若继续产品质感,应把这段反馈升级成后端一等字段。
+- 本轮前端 dev server 在 Codex 沙箱内会因端口绑定报 `listen EPERM`;用授权方式启动后 Next dev 可正常到 `Ready`。未按项目约束跑 build/typecheck/lint/playwright。
+- 最新保存主题:`quiz: tighten references and redesign chat practice`;M2 tag `v0.4-m2-end` 仍待用户确认。
 - M2 retrieval quiz pipeline 代码已提交:`103d882 feat: add m2 retrieval quiz pipeline`。
 - M2.1 Agentic RAG 文档已提交:`fd892fa docs: add agentic interview coach roadmap`。
 - 本轮 M2.1 文档决策已更新:删除"单题最多 1 轮追问"限制,改成 `remediation loop`(提示哪里答不好 → 补答 → 累计答案重评 → 再判断);补齐长上下文 context pack、纠偏幻觉治理、`session_events`、单题 turn SSE、interview_coach harness 评测口径。
@@ -87,6 +95,8 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **百炼 Context Cache 代码已接入但默认关闭**:保留稳定 chunks 前缀渲染与审计字段;后续多轮面试讨论再开启显式 cache。
 - **M2.1 Agentic RAG 方向锁定**:`InterviewCoachAgent` 不做泛化多 Agent,而是 interview coaching harness:检索 → 出题 → 等答 → 评分 → 决策 → 多轮纠偏 / 总结;系统负责状态、工具、证据、分支、恢复、回放和评测。
 - **M2.1 单题 turn 最小闭环已落地**:`0020_interview_coach_state.py` + `SessionEvent` + 单题 turn SSE + `/quiz` 前端接入。`GET /quiz/sessions/{id}` 已返回 `agent_state / answer_turns / remediation_state / remediation_prompt`,用于刷新后从 `wait_user_answer` 继续。
+- **QuizGenerator v1.2 引用收口已落地**:LLM 输出从四套引用字段收敛为 reference answer citations + reference point evidence;`quiz_service` 统一派生 `reference_chunk_ids / source_chunk_ids`,降低 citation/source/reference/evidence 漂移。
+- **/quiz 聊天式练习 UI 已落地**:题数下拉 `1/3/5`;一个主题多题用左侧分组切换;主面板用 Apple Messages 风格聊天流;多轮补答作为新 turn 追加;评分卡折叠到教练反馈下。
 - **hybrid_search smoke 标签已升级并复核一轮**:`evals/suites/hybrid_search/dataset.note_smoke.jsonl` 覆盖 M2/M3 边界、Context Cache、reranker/query rewrite、AnswerJudge、SSE 恢复、MVCC、Outbox、epoll、provider timeout/429、zero-hit;`direct_evidence_chunk_ids` 只放可直接回答 query 的 chunk。
 - **hybrid_search note/chunk smoke 脚本已落地**:`apps/api/scripts/eval_hybrid_search_note_smoke.py` 只读 DB / 写本地 report + trace(`evals/reports/` gitignore),输出 top notes、top chunks、heading/anchor coverage、hard-negative intrusion、zero-hit、召回指标与成本;`--score-trace` 支持只按新标签离线重算。
 - **hybrid_search A/B 诊断开关已落地**:可单独比较 provider rerank / 纯 hybrid、rerank 输入池大小、selected topK、parent-doc on/off,用于拆分"召回 / 粗排排序 / 精排 / parent-doc"责任。
@@ -103,11 +113,12 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **QuizGenerator 引用 schema 收口**:不要再让 LLM 同时维护 `source_chunk_ids / reference_chunk_ids / reference_answer citations / reference_points evidence` 四套真相;下一刀应改 prompt/schema,让 LLM 只输出 `reference_answer` 的 `[N]` 和 `reference_points[].evidence_chunk_ids`,后端派生 `reference_chunk_ids / source_chunk_ids`。
+1. **后端化教练自然语言反馈**:给单题 turn/result 增加 `coach_message`(总体评价先夸、再讲不足、再给补答方向),前端只负责展示并把 score/evidence 作为可展开细节;不要长期依赖前端 heuristic 生成“LLM 反馈”。
 
 备选:
 
 - 若继续后端,先把 `interview_service` 私用 `answer_service._*` helper 整理成可复用公共 helper,再接 `summarize_session / finish_session`。
+- 若继续 UI,先人工验 `/quiz` 主题输入 → 1/3/5 出题 → 左侧题目切换 → 初答/补答 turn → 刷新恢复 → 评分详情展开,重点看移动端文本是否挤压。
 - 若做评测,补 `evals/suites/interview_coach/` 最小 10 条流程型样本,覆盖不纠偏 / coverage 纠偏 / fabricated 纠偏 / depth 纠偏 / 多轮无提升退出 / 中途恢复 / 长上下文压缩。
 - 若只做人工验证,重点看 `/quiz?session=<id>` 单题按钮、纠偏提示、补答后累计答案重评、刷新恢复。
 - 若继续跑 smoke,先看 trace 里的 `governance_flags` 和 `post_rank`,不要只看 headline pass。

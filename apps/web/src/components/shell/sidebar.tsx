@@ -1,9 +1,11 @@
 'use client';
 
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import type { Route } from 'next';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { ReactNode } from 'react';
+import { useEffect, useState } from 'react';
 
 import { cn } from '@/lib/utils';
 
@@ -27,19 +29,47 @@ function isActive(item: NavItem, pathname: string, siblings: readonly NavItem[])
 
 export function Sidebar() {
   const pathname = usePathname();
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    const raw = window.localStorage.getItem('jobcopilot.sidebar.collapsed');
+    if (raw === 'true') setCollapsed(true);
+  }, []);
+
+  const toggleCollapsed = () => {
+    setCollapsed((value) => {
+      const next = !value;
+      window.localStorage.setItem('jobcopilot.sidebar.collapsed', String(next));
+      return next;
+    });
+  };
 
   return (
-    <aside className="vibrancy-sidebar flex h-screen w-[220px] flex-col border-r border-border">
-      <div className="flex h-11 items-center gap-2 px-4">
-        <span className="size-3 rounded-full bg-[var(--color-traffic-close)]" aria-hidden="true" />
-        <span className="size-3 rounded-full bg-[var(--color-traffic-min)]" aria-hidden="true" />
-        <span className="size-3 rounded-full bg-[var(--color-traffic-max)]" aria-hidden="true" />
+    <aside
+      className={cn(
+        'vibrancy-sidebar flex h-screen shrink-0 flex-col border-r border-border transition-[width] duration-200 ease-apple',
+        collapsed ? 'w-16' : 'w-[220px]',
+      )}
+    >
+      <div className={cn('px-3 pt-3 pb-2', collapsed ? 'flex justify-center' : '')}>
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          className={cn(
+            'flex size-8 items-center justify-center rounded-lg text-muted transition-colors hover:bg-black/[0.05] hover:text-foreground',
+            collapsed ? '' : 'ml-auto',
+          )}
+          title={collapsed ? '展开边栏' : '收起边栏'}
+          aria-label={collapsed ? '展开边栏' : '收起边栏'}
+        >
+          {collapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+        </button>
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-3 pb-6">
+      <nav className={cn('flex-1 overflow-y-auto pb-6', collapsed ? 'px-2' : 'px-3')}>
         {NAV.map((group) => (
-          <div key={group.key} className="mt-4 first:mt-2">
-            {group.title ? (
+          <div key={group.key} className={cn('mt-4 first:mt-2', collapsed ? 'flex justify-center' : '')}>
+            {group.title && !collapsed ? (
               <div className="px-2 pb-1 text-[11px] font-semibold tracking-wider text-muted uppercase">
                 {group.title}
               </div>
@@ -51,17 +81,19 @@ export function Sidebar() {
                   <li key={item.href}>
                     <Link
                       href={item.href}
+                      title={collapsed ? item.label : undefined}
                       className={cn(
-                        'flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] transition-colors duration-150 ease-apple',
+                        'flex h-10 items-center rounded-xl text-[13px] transition-colors duration-150 ease-apple',
+                        collapsed ? 'w-10 justify-center px-0' : 'gap-2 px-2',
                         active
                           ? 'bg-[var(--color-selection)] text-[var(--color-selection-fg)]'
                           : 'text-foreground hover:bg-black/[0.04]',
                       )}
                     >
-                      <span className="flex size-4 items-center justify-center opacity-80">
+                      <span className="flex size-5 shrink-0 items-center justify-center opacity-80">
                         {item.icon}
                       </span>
-                      <span className="truncate">{item.label}</span>
+                      {!collapsed ? <span className="truncate">{item.label}</span> : null}
                     </Link>
                   </li>
                 );
