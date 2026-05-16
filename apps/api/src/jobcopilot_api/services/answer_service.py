@@ -43,7 +43,7 @@ from jobcopilot_api.schemas.agents.answer_judge import (
 from jobcopilot_api.schemas.agents.quiz_generator import (
     GeneratedQuestion,
     QuizGenChunkInput,
-    ReferencePoint,
+    ScoringPoint,
 )
 from jobcopilot_api.schemas.quiz import (
     AnswerDraftIn,
@@ -90,7 +90,7 @@ class _JudgeTask:
     user_answer: str
     question: GeneratedQuestion
     chunks: list[QuizGenChunkInput]
-    prompt_chunk_ids: list[int]
+    judge_context_chunk_ids: list[int]
 
 
 async def get_session_detail(
@@ -133,7 +133,7 @@ async def get_session_detail(
         scores = None
         evidence = None
         reference_answer = None
-        reference_points = None
+        scoring_points = None
         if include_scoring or answer.judged_at is not None:
             scores = QuizScoresOut(
                 coverage=_decimal_to_float(answer.coverage_score),
@@ -147,7 +147,7 @@ async def get_session_detail(
                 "depth_evidence": answer.depth_evidence,
             }
             reference_answer = question.reference_answer
-            reference_points = question.reference_points
+            scoring_points = question.scoring_points
 
         question_items.append(
             QuizQuestionDetailOut(
@@ -156,7 +156,7 @@ async def get_session_detail(
                     id=question.id,
                     type=question.type,
                     prompt=question.prompt,
-                    source_chunk_ids=list(question.source_chunk_ids),
+                    evidence_chunk_ids=list(question.evidence_chunk_ids),
                 ),
                 user_answer=answer.user_answer,
                 answer_turns=list(answer.answer_turns or []),
@@ -169,8 +169,9 @@ async def get_session_detail(
                 remediation_prompt=(answer.remediation_state or {}).get(
                     "remediation_prompt"
                 ),
+                coach_message=answer.coach_message,
                 reference_answer=reference_answer,
-                reference_points=reference_points,
+                scoring_points=scoring_points,
             )
         )
 
@@ -283,6 +284,7 @@ async def save_draft(
             depth_score=None,
             depth_evidence=None,
             total_score=None,
+            coach_message=None,
             judge_model=None,
             judge_prompt_version=None,
             judge_tokens_in=None,
@@ -336,11 +338,11 @@ async def submit_session_sse(
             judged = _extract_judge_output(llm_result)
             judged = _map_and_validate_output(
                 output=judged,
-                reference_points=task.question.reference_points,
-                prompt_chunk_ids=task.prompt_chunk_ids,
+                scoring_points=task.question.scoring_points,
+                judge_context_chunk_ids=task.judge_context_chunk_ids,
                 lookup_ref_map=_lookup_ref_map(llm_result),
             )
-            scores = _compute_scores(judged, task.question.reference_points)
+            scores = _compute_scores(judged, task.question.scoring_points)
             await _persist_judged_answer(
                 sessionmaker,
                 answer_id=task.answer_id,
@@ -366,6 +368,7 @@ async def submit_session_sse(
             {
                 "order_index": task.order_index,
                 "scores": _scores_for_event(scores),
+                "coach_message": judged.coach_message,
                 "evidence": {
                     "coverage_evidence": judged.coverage_evidence.model_dump(
                         mode="json"
@@ -533,72 +536,76 @@ async def _load_judge_tasks(
         if len(question_by_id) != len(set(question_ids)):
             raise JudgeIntegrityError("session_answers 引用了不存在的 question")
 
-        prompt_chunk_ids = _prompt_chunk_ids_for_judge(
+        judge_context_chunk_ids = _judge_context_chunk_ids(
             quiz_session=quiz_session,
             questions=[question_by_id[answer.question_id] for answer in answers],
         )
-        if not prompt_chunk_ids:
+        if not judge_context_chunk_ids:
             raise JudgeIntegrityError(
-                "quiz_session.retrieved_chunk_ids / questions.source_chunk_ids 不能为空"
+                "quiz_session.final_context_chunk_ids / questions.evidence_chunk_ids 不能为空"
             )
         chunks = list(
             (
                 await session.execute(
-                    sa.select(NoteChunk).where(NoteChunk.id.in_(prompt_chunk_ids))
+                    sa.select(NoteChunk).where(
+                        NoteChunk.id.in_(judge_context_chunk_ids)
+                    )
                 )
             )
             .scalars()
             .all()
         )
         chunk_by_id = {c.id: c for c in chunks}
-        if len(chunk_by_id) != len(set(prompt_chunk_ids)):
+        if len(chunk_by_id) != len(set(judge_context_chunk_ids)):
             raise JudgeIntegrityError(
-                "quiz_session.retrieved_chunk_ids / questions.source_chunk_ids "
+                "quiz_session.final_context_chunk_ids / questions.evidence_chunk_ids "
                 "引用了不存在的 chunk"
             )
 
         note_ids = list({chunk.note_id for chunk in chunks})
         note_titles = await fetch_note_titles(session, note_ids)
-        prompt_chunks = [
+        judge_context_chunks = [
             _chunk_to_input(chunk_by_id[chunk_id], note_titles)
-            for chunk_id in prompt_chunk_ids
+            for chunk_id in judge_context_chunk_ids
         ]
 
         tasks: list[_JudgeTask] = []
         for answer in answers:
             question = question_by_id[answer.question_id]
-            local_question = _question_to_local(question, prompt_chunk_ids)
+            local_question = _question_to_local(question, judge_context_chunk_ids)
             tasks.append(
                 _JudgeTask(
                     answer_id=answer.id,
                     order_index=answer.order_index,
                     user_answer=answer.user_answer or "",
                     question=local_question,
-                    chunks=prompt_chunks,
-                    prompt_chunk_ids=prompt_chunk_ids,
+                    chunks=judge_context_chunks,
+                    judge_context_chunk_ids=judge_context_chunk_ids,
                 )
             )
         return tasks
 
 
-def _prompt_chunk_ids_for_judge(
+def _judge_context_chunk_ids(
     *,
     quiz_session: QuizSession,
     questions: list[Question],
 ) -> list[int]:
     """Use the session retrieval order so Judge shares Quiz's cache prefix."""
-    prompt_chunk_ids = _unique_int_ids(quiz_session.retrieved_chunk_ids or [])
-    question_chunk_ids = _unique_int_ids(
+    judge_context_chunk_ids = _unique_int_ids(
+        quiz_session.final_context_chunk_ids or []
+    )
+    question_context_chunk_ids = _unique_int_ids(
         chunk_id
         for question in questions
-        for chunk_id in _question_chunk_ids(question)
+        for chunk_id in _question_context_chunk_ids(question)
     )
-    seen = set(prompt_chunk_ids)
-    for chunk_id in question_chunk_ids:
+    seen = set(judge_context_chunk_ids)
+    for chunk_id in question_context_chunk_ids:
         if chunk_id not in seen:
-            prompt_chunk_ids.append(chunk_id)
+            judge_context_chunk_ids.append(chunk_id)
             seen.add(chunk_id)
-    return prompt_chunk_ids
+    return judge_context_chunk_ids
 
 
 def _unique_int_ids(values: Iterable[Any]) -> list[int]:
@@ -615,41 +622,42 @@ def _unique_int_ids(values: Iterable[Any]) -> list[int]:
     return out
 
 
-def _question_chunk_ids(question: Question) -> list[int]:
+def _question_context_chunk_ids(question: Question) -> list[int]:
     ids: list[int] = []
-    ids.extend(question.source_chunk_ids)
-    ids.extend(question.reference_chunk_ids)
-    for point in question.reference_points:
-        ids.extend(point.get("evidence_chunk_ids", []))
+    ids.extend(question.evidence_chunk_ids)
+    ids.extend(question.reference_answer_chunk_ids)
+    for point in question.scoring_points:
+        ids.extend(point.get("supporting_chunk_ids", []))
     return ids
 
 
 def _question_to_local(
     question: Question,
-    prompt_chunk_ids: list[int],
+    judge_context_chunk_ids: list[int],
 ) -> GeneratedQuestion:
     """DB id 存储形态 → AnswerJudge prompt 的局部 [N] 编号形态。"""
     db_to_local = {
-        chunk_id: idx for idx, chunk_id in enumerate(prompt_chunk_ids, start=1)
+        chunk_id: idx
+        for idx, chunk_id in enumerate(judge_context_chunk_ids, start=1)
     }
 
     def to_local(chunk_id: int) -> int:
         if chunk_id not in db_to_local:
             raise JudgeIntegrityError(
-                f"question {question.id} 引用了非 prompt chunk:{chunk_id}"
+                f"question {question.id} 引用了非 judge context chunk:{chunk_id}"
             )
         return db_to_local[chunk_id]
 
     points = []
-    for raw in question.reference_points:
+    for raw in question.scoring_points:
         points.append(
-            ReferencePoint(
+            ScoringPoint(
                 id=str(raw["id"]),
                 text=str(raw["text"]),
                 weight=float(raw["weight"]),
-                evidence_chunk_ids=[
+                supporting_chunk_ids=[
                     to_local(int(chunk_id))
-                    for chunk_id in raw.get("evidence_chunk_ids", [])
+                    for chunk_id in raw.get("supporting_chunk_ids", [])
                 ],
             )
         )
@@ -657,14 +665,14 @@ def _question_to_local(
     return GeneratedQuestion(
         type=question.type,
         prompt=question.prompt,
-        source_chunk_ids=[
-            to_local(int(chunk_id)) for chunk_id in question.source_chunk_ids
+        evidence_chunk_ids=[
+            to_local(int(chunk_id)) for chunk_id in question.evidence_chunk_ids
         ],
         reference_answer=question.reference_answer,
-        reference_chunk_ids=[
-            to_local(int(chunk_id)) for chunk_id in question.reference_chunk_ids
+        reference_answer_chunk_ids=[
+            to_local(int(chunk_id)) for chunk_id in question.reference_answer_chunk_ids
         ],
-        reference_points=points,
+        scoring_points=points,
     )
 
 
@@ -690,22 +698,26 @@ def _extract_judge_output(llm_result: LLMResult) -> AnswerJudgeOutput:
 def _map_and_validate_output(
     *,
     output: AnswerJudgeOutput,
-    reference_points: list[ReferencePoint],
-    prompt_chunk_ids: list[int],
+    scoring_points: list[ScoringPoint],
+    judge_context_chunk_ids: list[int],
     lookup_ref_map: dict[int, int],
 ) -> AnswerJudgeOutput:
-    _validate_coverage(output, reference_points)
-    _validate_fidelity(output, prompt_chunk_ids, lookup_ref_map)
+    _validate_coverage(output, scoring_points)
+    _validate_fidelity(output, judge_context_chunk_ids, lookup_ref_map)
     _validate_depth(output)
 
     data = output.model_dump(mode="json")
+    coach_message = str(data.get("coach_message") or "").strip()
+    if not coach_message:
+        raise JudgeIntegrityError("coach_message 不能为空")
+    data["coach_message"] = coach_message
     for claim in data["fidelity_evidence"]["claims"]:
         if claim["label"] == "fabricated":
-            claim["chunk_ids"] = []
+            claim["supporting_chunk_ids"] = []
             continue
-        claim["chunk_ids"] = _map_claim_chunk_ids(
-            claim.get("chunk_ids", []),
-            prompt_chunk_ids=prompt_chunk_ids,
+        claim["supporting_chunk_ids"] = _map_claim_chunk_ids(
+            claim.get("supporting_chunk_ids", []),
+            judge_context_chunk_ids=judge_context_chunk_ids,
             lookup_ref_map=lookup_ref_map,
         )
     return AnswerJudgeOutput.model_validate(data)
@@ -713,9 +725,9 @@ def _map_and_validate_output(
 
 def _validate_coverage(
     output: AnswerJudgeOutput,
-    reference_points: list[ReferencePoint],
+    scoring_points: list[ScoringPoint],
 ) -> None:
-    expected = {p.id for p in reference_points}
+    expected = {p.id for p in scoring_points}
     got = [p.id for p in output.coverage_evidence.points]
     if len(got) != len(set(got)):
         raise JudgeIntegrityError("coverage_evidence.points 出现重复 point id")
@@ -728,7 +740,7 @@ def _validate_coverage(
 
 def _validate_fidelity(
     output: AnswerJudgeOutput,
-    prompt_chunk_ids: list[int],
+    judge_context_chunk_ids: list[int],
     lookup_ref_map: dict[int, int],
 ) -> None:
     claims = output.fidelity_evidence.claims
@@ -736,12 +748,14 @@ def _validate_fidelity(
         raise JudgeIntegrityError("fidelity_evidence.claims 不能为空")
 
     for claim in claims:
-        if claim.label == "fabricated" and claim.chunk_ids:
-            raise JudgeIntegrityError("fabricated claim 的 chunk_ids 必须为空")
+        if claim.label == "fabricated" and claim.supporting_chunk_ids:
+            raise JudgeIntegrityError(
+                "fabricated claim 的 supporting_chunk_ids 必须为空"
+            )
         if claim.label != "fabricated":
             _map_claim_chunk_ids(
-                claim.chunk_ids,
-                prompt_chunk_ids=prompt_chunk_ids,
+                claim.supporting_chunk_ids,
+                judge_context_chunk_ids=judge_context_chunk_ids,
                 lookup_ref_map=lookup_ref_map,
             )
 
@@ -749,22 +763,22 @@ def _validate_fidelity(
 def _map_claim_chunk_ids(
     raw_ids: list[int],
     *,
-    prompt_chunk_ids: list[int],
+    judge_context_chunk_ids: list[int],
     lookup_ref_map: dict[int, int],
 ) -> list[int]:
-    max_local_id = len(prompt_chunk_ids)
+    max_local_id = len(judge_context_chunk_ids)
     lookup_chunk_ids = set(lookup_ref_map.values())
     mapped: list[int] = []
     for raw_id in raw_ids:
         chunk_id = int(raw_id)
         if 1 <= chunk_id <= max_local_id:
-            mapped.append(prompt_chunk_ids[chunk_id - 1])
+            mapped.append(judge_context_chunk_ids[chunk_id - 1])
             continue
         if chunk_id in lookup_ref_map:
             mapped.append(lookup_ref_map[chunk_id])
             continue
         if chunk_id > max_local_id and (
-            chunk_id in prompt_chunk_ids or chunk_id in lookup_chunk_ids
+            chunk_id in judge_context_chunk_ids or chunk_id in lookup_chunk_ids
         ):
             mapped.append(chunk_id)
             continue
@@ -786,9 +800,9 @@ def _validate_depth(output: AnswerJudgeOutput) -> None:
 
 def _compute_scores(
     judged: AnswerJudgeOutput,
-    reference_points: list[ReferencePoint],
+    scoring_points: list[ScoringPoint],
 ) -> dict[str, float]:
-    coverage = coverage_score(judged.coverage_evidence, reference_points)
+    coverage = coverage_score(judged.coverage_evidence, scoring_points)
     fidelity = fidelity_score(judged.fidelity_evidence)
     depth = depth_score(judged.depth_evidence)
     total = compute_total_score(coverage, fidelity, depth)
@@ -825,6 +839,7 @@ async def _persist_judged_answer(
                 depth_score=_score_decimal(scores["depth"]),
                 depth_evidence=judged.depth_evidence.model_dump(mode="json"),
                 total_score=_score_decimal(scores["total"]),
+                coach_message=judged.coach_message,
                 judge_model=llm_result.model,
                 judge_prompt_version=JUDGE_PROMPT_VERSION,
                 judge_tokens_in=llm_result.tokens_in,

@@ -4,10 +4,10 @@
 - POST /api/quiz/sessions(SSE)入口
 - 内联 retrieval 5 步(query_rewriter → multi-query hybrid → rerank/blend →
   selected seed chunks → enrich note_title)+ quiz_generator LLM 出题
-- service 后处理:从 reference_answer / reference_points 派生
-  source_chunk_ids / reference_chunk_ids,再 [N] → DB id 映射 + 完整性校验
-  (reference_chunk_ids ⊆ source_chunk_ids / weight 之和 ∈ [0.99, 1.01] /
-  reference_points evidence_chunk_ids ⊆ source_chunk_ids)
+- service 后处理:从 reference_answer / scoring_points 派生
+  evidence_chunk_ids / reference_answer_chunk_ids,再 [N] → DB id 映射 + 完整性校验
+  (reference_answer_chunk_ids ⊆ evidence_chunk_ids / weight 之和 ∈ [0.99, 1.01] /
+  scoring_points[].supporting_chunk_ids ⊆ evidence_chunk_ids)
 - 落库:questions × N + UPDATE quiz_sessions audit + session_answers × N
 - 事件流:started / progress × M / question_ready × N / done
 
@@ -51,7 +51,7 @@ from jobcopilot_api.schemas.agents.quiz_generator import (
     QuizGenOutput,
 )
 from jobcopilot_api.schemas.quiz import QuizSessionCreateIn
-from jobcopilot_api.schemas.retrieval import RetrievedChunk
+from jobcopilot_api.schemas.retrieval import FinalContextChunk
 from jobcopilot_api.services.query_rewriter import query_weights, rewrite_query
 from jobcopilot_api.services.reranker import rerank
 from jobcopilot_api.services.retrieval_governance import (
@@ -99,7 +99,7 @@ _EVIDENCE_STOPWORDS = {
 
 class IntegrityCheckError(JobCopilotError):
     """quiz_generator 输出过 LLMClient pydantic 校验,但完整性约束失败
-    (reference_chunk_ids / weight / type_mix 等);上报 SSE 时映射到
+    (reference_answer_chunk_ids / weight / type_mix 等);上报 SSE 时映射到
     `llm_call_failed`(4-API_SPEC §4.1 错误码列表)。"""
 
     status_code = 502
@@ -199,14 +199,14 @@ async def start_session_sse(
                 top_k=RERANK_TOP_K,
             )
 
-            # 5. Keep only selected seed chunks. Parent-doc expansion is
+            # 5. Keep only selected final context chunks. Parent-doc expansion is
             # disabled until evidence/background chunks are separated.
             selected_scored = post_rerank.selected
             note_ids = list({chunk.note_id for chunk, _ in selected_scored})
             note_titles = await fetch_note_titles(s, note_ids)
 
-        retrieved_chunks = [
-            RetrievedChunk(
+        final_context_chunks = [
+            FinalContextChunk(
                 chunk=chunk,
                 folder_path=list(chunk.folder_path),
                 heading_path=list(chunk.heading_path),
@@ -219,17 +219,17 @@ async def start_session_sse(
             "progress",
             {
                 "phase": "context_selecting",
-                "chunk_count": len(retrieved_chunks),
+                "chunk_count": len(final_context_chunks),
             },
         )
 
         # 6. UPDATE quiz_sessions audit 字段
-        retrieved_chunk_ids = [rc.chunk.id for rc in retrieved_chunks]
+        final_context_chunk_ids = [rc.chunk.id for rc in final_context_chunks]
         await _update_session_audit(
             sessionmaker,
             session_id,
             expanded_queries=expanded_queries,
-            retrieved_chunk_ids=retrieved_chunk_ids,
+            final_context_chunk_ids=final_context_chunk_ids,
         )
 
         # 7. quiz_generator LLM
@@ -244,7 +244,7 @@ async def start_session_sse(
                 note_title=rc.note_title,
                 content=rc.chunk.content,
             )
-            for rc in retrieved_chunks
+            for rc in final_context_chunks
         ]
         gen_input = QuizGenInput(
             query=payload.query,
@@ -294,7 +294,7 @@ async def start_session_sse(
                         "id": q.id,
                         "type": q.type,
                         "prompt": q.prompt,
-                        "source_chunk_ids": q.source_chunk_ids,
+                        "evidence_chunk_ids": q.evidence_chunk_ids,
                     },
                 },
             )
@@ -361,7 +361,7 @@ async def _update_session_audit(
     session_id: int,
     *,
     expanded_queries: list[str],
-    retrieved_chunk_ids: list[int],
+    final_context_chunk_ids: list[int],
 ) -> None:
     async with sessionmaker() as s:
         await s.execute(
@@ -369,7 +369,7 @@ async def _update_session_audit(
             .where(QuizSession.id == session_id)
             .values(
                 expanded_queries=expanded_queries,
-                retrieved_chunk_ids=retrieved_chunk_ids,
+                final_context_chunk_ids=final_context_chunk_ids,
             )
         )
         await s.commit()
@@ -400,8 +400,8 @@ def _build_question_rows(
 ) -> list[dict[str, Any]]:
     """派生本题引用集合 + [N] → DB id 映射 + 完整性校验。
 
-    LLM 输出只保留 reference_answer 里的 [N] 引用和 reference_points 的
-    evidence_chunk_ids。service 先派生 reference_chunk_ids / source_chunk_ids,
+    LLM 输出只保留 reference_answer 里的 [N] 引用和 scoring_points 的
+    supporting_chunk_ids。service 先派生 reference_answer_chunk_ids / evidence_chunk_ids,
     再把 1-based [N] 编号映射到 chunks[N-1].id。任何越界 / 集合包含违反 /
     evidence 引用不可信 / weight 之和不在 [0.99, 1.01] →
     IntegrityCheckError。
@@ -419,52 +419,52 @@ def _build_question_rows(
     rows: list[dict[str, Any]] = []
     for raw_q in gen_output.questions:
         q = _derive_question_chunk_refs(raw_q, n_chunks)
-        _validate_reference_points_shape(q)
-        q = _repair_reference_point_evidence(q, gen_chunks)
-        q = _sync_question_source_refs(q)
+        _validate_scoring_points_shape(q)
+        q = _repair_scoring_point_support(q, gen_chunks)
+        q = _sync_question_evidence_refs(q)
 
-        if not q.source_chunk_ids:
+        if not q.evidence_chunk_ids:
             raise IntegrityCheckError(
-                f"题 '{q.prompt[:30]}...' source_chunk_ids 为空"
+                f"题 '{q.prompt[:30]}...' evidence_chunk_ids 为空"
             )
-        for n in q.source_chunk_ids:
+        for n in q.evidence_chunk_ids:
             if not (1 <= n <= n_chunks):
                 raise IntegrityCheckError(
-                    f"source_chunk_ids 含越界编号 [{n}](合法 1..{n_chunks})"
+                    f"evidence_chunk_ids 含越界编号 [{n}](合法 1..{n_chunks})"
                 )
-        source_db = [chunk_db_ids[n - 1] for n in q.source_chunk_ids]
+        evidence_db = [chunk_db_ids[n - 1] for n in q.evidence_chunk_ids]
 
-        source_set = set(q.source_chunk_ids)
-        for n in q.reference_chunk_ids:
-            if n not in source_set:
+        evidence_set = set(q.evidence_chunk_ids)
+        for n in q.reference_answer_chunk_ids:
+            if n not in evidence_set:
                 raise IntegrityCheckError(
-                    f"reference_chunk_ids [{n}] 不在 source_chunk_ids {sorted(source_set)} 里"
+                    f"reference_answer_chunk_ids [{n}] 不在 evidence_chunk_ids {sorted(evidence_set)} 里"
                 )
         _validate_reference_answer_citations(q)
-        ref_db = [chunk_db_ids[n - 1] for n in q.reference_chunk_ids]
+        ref_db = [chunk_db_ids[n - 1] for n in q.reference_answer_chunk_ids]
 
-        weight_sum = sum(p.weight for p in q.reference_points)
+        weight_sum = sum(p.weight for p in q.scoring_points)
         if not (0.99 <= weight_sum <= 1.01):
             raise IntegrityCheckError(
-                f"题 '{q.prompt[:30]}...' reference_points weight 之和 "
+                f"题 '{q.prompt[:30]}...' scoring_points weight 之和 "
                 f"{weight_sum:.3f} 超出 [0.99, 1.01]"
             )
 
-        ref_points = []
-        for p in q.reference_points:
-            for n in p.evidence_chunk_ids:
-                if n not in source_set:
+        scoring_points_data = []
+        for p in q.scoring_points:
+            for n in p.supporting_chunk_ids:
+                if n not in evidence_set:
                     raise IntegrityCheckError(
-                        f"reference_point '{p.id}' evidence_chunk_ids [{n}] "
-                        f"不在 source_chunk_ids 里"
+                        f"scoring_point '{p.id}' supporting_chunk_ids [{n}] "
+                        f"不在 evidence_chunk_ids 里"
                     )
-            ref_points.append(
+            scoring_points_data.append(
                 {
                     "id": p.id,
                     "text": p.text,
                     "weight": p.weight,
-                    "evidence_chunk_ids": [
-                        chunk_db_ids[n - 1] for n in p.evidence_chunk_ids
+                    "supporting_chunk_ids": [
+                        chunk_db_ids[n - 1] for n in p.supporting_chunk_ids
                     ],
                 }
             )
@@ -477,10 +477,10 @@ def _build_question_rows(
                 "originated_mode": mode,
                 "type": q.type,
                 "prompt": q.prompt,
-                "source_chunk_ids": source_db,
+                "evidence_chunk_ids": evidence_db,
                 "reference_answer": q.reference_answer,
-                "reference_chunk_ids": ref_db,
-                "reference_points": ref_points,
+                "reference_answer_chunk_ids": ref_db,
+                "scoring_points": scoring_points_data,
                 "gen_model": llm_result.model,
                 "gen_prompt_version": QUIZ_PROMPT_VERSION,
                 "gen_tokens_in": llm_result.tokens_in,
@@ -497,25 +497,29 @@ def _derive_question_chunk_refs(
 ) -> GeneratedQuestion:
     """Derive local [N] source/reference refs before strict validation.
 
-    QuizGenerator no longer outputs source_chunk_ids / reference_chunk_ids.
-    `reference_chunk_ids` is the ordered set of citations in reference_answer;
-    `source_chunk_ids` is the ordered union of answer citations and point
-    evidence. Invalid/out-of-range refs still fail here.
+    QuizGenerator no longer outputs evidence_chunk_ids / reference_answer_chunk_ids.
+    `reference_answer_chunk_ids` is the ordered set of citations in reference_answer;
+    `evidence_chunk_ids` is the ordered union of answer citations and scoring
+    point support. Invalid/out-of-range refs still fail here.
     """
     evidence_ids = [
         chunk_id
-        for point in q.reference_points
-        for chunk_id in point.evidence_chunk_ids
+        for point in q.scoring_points
+        for chunk_id in point.supporting_chunk_ids
     ]
     cited_ids = [int(raw) for raw in _CITATION_RE.findall(q.reference_answer)]
-    reference_chunk_ids = _unique_ordered_ints(cited_ids)
-    if not reference_chunk_ids:
+    reference_answer_chunk_ids = _unique_ordered_ints(cited_ids)
+    if not reference_answer_chunk_ids:
         raise IntegrityCheckError(
             f"题 '{q.prompt[:30]}...' reference_answer 缺少 [N] 引用"
         )
 
-    refs = _unique_ordered_ints([*reference_chunk_ids, *evidence_ids])
-    invalid = [chunk_id for chunk_id in refs if not (1 <= chunk_id <= n_chunks)]
+    evidence_refs = _unique_ordered_ints(
+        [*reference_answer_chunk_ids, *evidence_ids]
+    )
+    invalid = [
+        chunk_id for chunk_id in evidence_refs if not (1 <= chunk_id <= n_chunks)
+    ]
     if invalid:
         raise IntegrityCheckError(
             f"题 '{q.prompt[:30]}...' chunk 引用越界:{invalid}(合法 1..{n_chunks})"
@@ -523,50 +527,50 @@ def _derive_question_chunk_refs(
     return GeneratedQuestion(
         type=q.type,
         prompt=q.prompt,
-        source_chunk_ids=refs,
+        evidence_chunk_ids=evidence_refs,
         reference_answer=q.reference_answer,
-        reference_chunk_ids=reference_chunk_ids,
-        reference_points=q.reference_points,
+        reference_answer_chunk_ids=reference_answer_chunk_ids,
+        scoring_points=q.scoring_points,
     )
 
 
-def _sync_question_source_refs(q: GeneratedQuestion) -> GeneratedQuestion:
-    """Keep source_chunk_ids as the derived union after evidence repair."""
+def _sync_question_evidence_refs(q: GeneratedQuestion) -> GeneratedQuestion:
+    """Keep evidence_chunk_ids as the derived union after evidence repair."""
     evidence_ids = [
         chunk_id
-        for point in q.reference_points
-        for chunk_id in point.evidence_chunk_ids
+        for point in q.scoring_points
+        for chunk_id in point.supporting_chunk_ids
     ]
-    source_chunk_ids = _unique_ordered_ints(
-        [*q.reference_chunk_ids, *evidence_ids]
+    evidence_chunk_ids = _unique_ordered_ints(
+        [*q.reference_answer_chunk_ids, *evidence_ids]
     )
-    if source_chunk_ids == q.source_chunk_ids:
+    if evidence_chunk_ids == q.evidence_chunk_ids:
         return q
-    return q.model_copy(update={"source_chunk_ids": source_chunk_ids})
+    return q.model_copy(update={"evidence_chunk_ids": evidence_chunk_ids})
 
 
-def _repair_reference_point_evidence(
+def _repair_scoring_point_support(
     q: GeneratedQuestion,
     chunks: list[QuizGenChunkInput],
 ) -> GeneratedQuestion:
-    """Move weak point evidence to supporting chunks within this question.
+    """Move weak point support to better chunks within this question.
 
-    This keeps the evidence-bound rule intact: a reference point may only cite
-    chunks already declared as this question's source. If the model attached a
-    valid-but-wrong evidence id, we can repair it by scanning source chunks for
+    This keeps the evidence-bound rule intact: a scoring point may only cite
+    chunks already declared as this question's evidence. If the model attached a
+    valid-but-wrong support id, we can repair it by scanning evidence chunks for
     the same basic overlap used by the verifier.
     """
     chunk_by_local = {idx: chunk for idx, chunk in enumerate(chunks, start=1)}
-    source_ids = [
-        chunk_id for chunk_id in q.source_chunk_ids if chunk_id in chunk_by_local
+    evidence_ids = [
+        chunk_id for chunk_id in q.evidence_chunk_ids if chunk_id in chunk_by_local
     ]
     repaired_points = []
     changed = False
 
-    for point in q.reference_points:
+    for point in q.scoring_points:
         current_text = "\n".join(
             chunk_by_local[chunk_id].content
-            for chunk_id in point.evidence_chunk_ids
+            for chunk_id in point.supporting_chunk_ids
             if chunk_id in chunk_by_local
         )
         if _evidence_support(point.text, current_text):
@@ -575,12 +579,12 @@ def _repair_reference_point_evidence(
 
         repaired_ids = [
             chunk_id
-            for chunk_id in source_ids
+            for chunk_id in evidence_ids
             if _evidence_support(point.text, chunk_by_local[chunk_id].content)
         ][:3]
         if repaired_ids:
             repaired_points.append(
-                point.model_copy(update={"evidence_chunk_ids": repaired_ids})
+                point.model_copy(update={"supporting_chunk_ids": repaired_ids})
             )
             changed = True
         else:
@@ -588,7 +592,7 @@ def _repair_reference_point_evidence(
 
     if not changed:
         return q
-    return q.model_copy(update={"reference_points": repaired_points})
+    return q.model_copy(update={"scoring_points": repaired_points})
 
 
 def _unique_ordered_ints(values: list[int]) -> list[int]:
@@ -606,49 +610,49 @@ def _validate_reference_answer_citations(
     q: GeneratedQuestion,
 ) -> None:
     """Ensure reference_answer cites declared local chunk ids."""
-    if not q.reference_chunk_ids:
+    if not q.reference_answer_chunk_ids:
         raise IntegrityCheckError(
-            f"题 '{q.prompt[:30]}...' reference_chunk_ids 为空"
+            f"题 '{q.prompt[:30]}...' reference_answer_chunk_ids 为空"
         )
     cited = {int(raw) for raw in _CITATION_RE.findall(q.reference_answer)}
     if not cited:
         raise IntegrityCheckError(
             f"题 '{q.prompt[:30]}...' reference_answer 缺少 [N] 引用"
         )
-    reference_set = set(q.reference_chunk_ids)
-    invalid = sorted(cited - reference_set)
+    reference_answer_set = set(q.reference_answer_chunk_ids)
+    invalid = sorted(cited - reference_answer_set)
     if invalid:
         raise IntegrityCheckError(
             f"题 '{q.prompt[:30]}...' reference_answer 引用了非 reference chunks:{invalid}"
         )
-    missing = sorted(reference_set - cited)
+    missing = sorted(reference_answer_set - cited)
     if missing:
         raise IntegrityCheckError(
-            f"题 '{q.prompt[:30]}...' reference_answer 未引用 reference_chunk_ids:{missing}"
+            f"题 '{q.prompt[:30]}...' reference_answer 未引用 reference_answer_chunk_ids:{missing}"
         )
 
 
-def _validate_reference_points_shape(q: GeneratedQuestion) -> None:
-    point_count = len(q.reference_points)
+def _validate_scoring_points_shape(q: GeneratedQuestion) -> None:
+    point_count = len(q.scoring_points)
     if not (REFERENCE_POINTS_MIN <= point_count <= REFERENCE_POINTS_MAX):
         raise IntegrityCheckError(
-            f"题 '{q.prompt[:30]}...' reference_points 数量 {point_count} "
+            f"题 '{q.prompt[:30]}...' scoring_points 数量 {point_count} "
             f"不在 [{REFERENCE_POINTS_MIN}, {REFERENCE_POINTS_MAX}]"
         )
-    point_ids = [p.id for p in q.reference_points]
+    point_ids = [p.id for p in q.scoring_points]
     if len(point_ids) != len(set(point_ids)):
         raise IntegrityCheckError(
-            f"题 '{q.prompt[:30]}...' reference_points id 重复"
+            f"题 '{q.prompt[:30]}...' scoring_points id 重复"
         )
-    for p in q.reference_points:
+    for p in q.scoring_points:
         if p.weight <= 0:
             raise IntegrityCheckError(
-                f"题 '{q.prompt[:30]}...' reference_point '{p.id}' weight 非正"
+                f"题 '{q.prompt[:30]}...' scoring_point '{p.id}' weight 非正"
             )
-        if not p.evidence_chunk_ids:
+        if not p.supporting_chunk_ids:
             raise IntegrityCheckError(
-                f"题 '{q.prompt[:30]}...' reference_point '{p.id}' "
-                "evidence_chunk_ids 为空"
+                f"题 '{q.prompt[:30]}...' scoring_point '{p.id}' "
+                "supporting_chunk_ids 为空"
             )
 
 
@@ -658,24 +662,24 @@ def _validate_question_evidence_support(
 ) -> None:
     """Log weak point/evidence overlap without rejecting the whole quiz.
 
-    This check is intentionally diagnostic. Reference points often phrase a
+    This check is intentionally diagnostic. Scoring points often phrase a
     higher-level grading criterion ("compare the two paths") while the chunk
     contains the concrete facts, so strict token overlap is too brittle for
     production creation. Hard safety remains in the structural checks above:
-    every evidence id must be in this question's source set and in range.
+    every supporting chunk id must be in this question's evidence set and in range.
     """
     chunk_by_local = {idx: chunk for idx, chunk in enumerate(chunks, start=1)}
-    for p in q.reference_points:
+    for p in q.scoring_points:
         evidence_text = "\n".join(
-            chunk_by_local[n].content for n in p.evidence_chunk_ids
+            chunk_by_local[n].content for n in p.supporting_chunk_ids
         )
         support = _evidence_support(p.text, evidence_text)
         if not support:
             logger.warning(
-                "quiz_generator weak reference point support: prompt=%r point_id=%s evidence_chunk_ids=%s",
+                "quiz_generator weak scoring point support: prompt=%r point_id=%s supporting_chunk_ids=%s",
                 q.prompt[:80],
                 p.id,
-                p.evidence_chunk_ids,
+                p.supporting_chunk_ids,
             )
 
 
@@ -716,7 +720,7 @@ async def _insert_questions_and_answers(
     """批量 INSERT questions 拿 ids → INSERT session_answers × N。
 
     expire_on_commit=False 在 sessionmaker 配置里,commit 后 question 实例
-    的字段(id / type / prompt / source_chunk_ids)仍可读不会 lazy load。
+    的字段(id / type / prompt / evidence_chunk_ids)仍可读不会 lazy load。
     """
     async with sessionmaker() as s:
         questions: list[Question] = []

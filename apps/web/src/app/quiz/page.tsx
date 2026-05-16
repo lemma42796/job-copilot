@@ -57,6 +57,7 @@ type ProgressItem = {
 type QuestionResult = {
   scores: QuizScores;
   evidence?: QuizEvidence | null;
+  coachMessage?: string | null;
 };
 
 type QuestionTurnState = {
@@ -69,6 +70,7 @@ type QuestionTurnState = {
   decisionReason?: string;
   exitReason?: string | null;
   remediationPrompt?: QuizRemediationPrompt | null;
+  coachMessage?: string | null;
   unresolvedGaps?: unknown[];
   error?: string;
 };
@@ -101,7 +103,7 @@ type CoverageEvidenceView = {
 type FidelityClaim = {
   text?: string;
   label?: string;
-  chunk_ids?: number[];
+  supporting_chunk_ids?: number[];
 };
 
 type FidelityEvidenceView = {
@@ -135,7 +137,7 @@ const SAMPLE_QUIZ: SampleQuiz = {
         type: 'open_ended',
         prompt:
           '在 JobCopilot 项目中，针对 Prompt 版本管理采取了哪两种主要路径？请对比它们的优缺点，并说明项目最终采用了什么策略来平衡两者？',
-        source_chunk_ids: [6, 10],
+        evidence_chunk_ids: [6, 10],
       },
     },
     {
@@ -145,7 +147,7 @@ const SAMPLE_QUIZ: SampleQuiz = {
         type: 'open_ended',
         prompt:
           '在使用 Langfuse 进行 Prompt 版本管理时，如果直接在 UI 修改 Prompt 并更新 production 标签，会带来什么风险？笔记中提到了哪些解法或最佳实践来规避这些风险？',
-        source_chunk_ids: [6, 11],
+        evidence_chunk_ids: [6, 11],
       },
     },
     {
@@ -155,7 +157,7 @@ const SAMPLE_QUIZ: SampleQuiz = {
         type: 'definition',
         prompt:
           '根据笔记内容，Langfuse 视角下 Prompt 被定义为什么类型的数据？这与传统观点有何不同？',
-        source_chunk_ids: [6],
+        evidence_chunk_ids: [6],
       },
     },
   ],
@@ -196,17 +198,17 @@ const SAMPLE_QUIZ: SampleQuiz = {
             {
               text: 'Git 管理 Prompt 可 review、可审计、能和代码一起发布。',
               label: 'supported',
-              chunk_ids: [6],
+              supporting_chunk_ids: [6],
             },
             {
               text: 'Langfuse 可以在线版本化、快速切换和回滚。',
               label: 'supported',
-              chunk_ids: [10],
+              supporting_chunk_ids: [10],
             },
             {
               text: '配置漂移是 Langfuse 风险之一。',
               label: 'inferred',
-              chunk_ids: [10],
+              supporting_chunk_ids: [10],
             },
           ],
           reasoning: '主要声明均有笔记依据或可由笔记合理推断。',
@@ -249,17 +251,17 @@ const SAMPLE_QUIZ: SampleQuiz = {
             {
               text: '直接更新 production 标签会导致线上行为立即变化。',
               label: 'supported',
-              chunk_ids: [11],
+              supporting_chunk_ids: [11],
             },
             {
               text: '固定具体 prompt version 可以降低漂移风险。',
               label: 'supported',
-              chunk_ids: [6],
+              supporting_chunk_ids: [6],
             },
             {
               text: 'Git 保留基线有助于审计。',
               label: 'inferred',
-              chunk_ids: [6],
+              supporting_chunk_ids: [6],
             },
           ],
           reasoning: '答案中的风险和解法基本都能被笔记支撑或合理推断。',
@@ -305,12 +307,12 @@ const SAMPLE_QUIZ: SampleQuiz = {
             {
               text: 'Langfuse 将 Prompt 视为可版本化配置数据。',
               label: 'supported',
-              chunk_ids: [6],
+              supporting_chunk_ids: [6],
             },
             {
               text: '传统方式把 Prompt 放在代码静态字符串中。',
               label: 'supported',
-              chunk_ids: [6],
+              supporting_chunk_ids: [6],
             },
           ],
           reasoning: '所有声明均能在笔记中找到直接支持。',
@@ -448,7 +450,7 @@ function fidelityEvidence(evidence: QuizEvidence): FidelityEvidenceView {
           return {
             text: textOrNull(record.text) ?? undefined,
             label: textOrNull(record.label) ?? undefined,
-            chunk_ids: numberArray(record.chunk_ids),
+            supporting_chunk_ids: numberArray(record.supporting_chunk_ids),
           };
         })
         .filter((claim): claim is FidelityClaim => claim !== null)
@@ -514,57 +516,28 @@ function remediationText(prompt?: QuizRemediationPrompt | null): string | null {
 }
 
 function coachFeedbackText({
+  coachMessage,
   scores,
-  evidence,
   remediationPrompt,
   turnState,
 }: {
+  coachMessage?: string | null;
   scores?: QuizScores;
-  evidence?: QuizEvidence | null;
   remediationPrompt?: QuizRemediationPrompt | null;
   turnState?: QuestionTurnState;
 }): string {
+  if (typeof coachMessage === 'string' && coachMessage.trim()) {
+    return coachMessage.trim();
+  }
   const promptText = remediationText(remediationPrompt);
   if (!scores) {
-    return promptText ?? turnState?.decisionReason ?? '我会先看你的答案覆盖了什么，再看有没有依据和深度。';
+    return (
+      promptText ??
+      turnState?.decisionReason ??
+      '我会先看你的答案覆盖了什么，再看有没有依据和深度。'
+    );
   }
-
-  const praise: string[] = [];
-  if (scores.coverage >= 85) praise.push('关键采分点覆盖得很完整');
-  else if (scores.coverage >= 60) praise.push('主干方向是对的，已经覆盖了一部分要点');
-
-  if (scores.fidelity >= 90) praise.push('表达基本都能贴住笔记证据，没有明显幻觉');
-  else if (scores.fidelity >= 70) praise.push('大部分说法有依据');
-
-  if (scores.depth >= 80) praise.push('也讲出了原因、边界或取舍这一层');
-
-  const opening =
-    praise.length > 0
-      ? `这轮总体不错，${praise.join('，')}。`
-      : '这轮回答有可继续打磨的结构，但还没有稳定覆盖评分标准。';
-
-  const gaps: string[] = [];
-  if (scores.coverage < 85) gaps.push('Coverage 还可以再补关键采分点');
-  if (scores.fidelity < 90) gaps.push('Fidelity 需要把说法更明确地绑定到笔记证据');
-  if (scores.depth < 80) gaps.push('Depth 还缺 why、trade-off 或边界条件');
-
-  const evidenceNotes: string[] = [];
-  if (evidence) {
-    const coverage = coverageEvidence(evidence);
-    const fidelity = fidelityEvidence(evidence);
-    const depth = depthEvidence(evidence);
-    if (coverage.reasoning) evidenceNotes.push(coverage.reasoning);
-    if (fidelity.reasoning && scores.fidelity < 90) evidenceNotes.push(fidelity.reasoning);
-    if (depth.reasoning && scores.depth < 80) evidenceNotes.push(depth.reasoning);
-  }
-
-  const next =
-    promptText ??
-    turnState?.decisionReason ??
-    (gaps.length ? `接下来重点看：${gaps.join('；')}。` : '这一题已经可以进入下一步。');
-
-  const details = evidenceNotes.length ? `\n\n我的判断：${evidenceNotes.slice(0, 2).join(' ')}` : '';
-  return `${opening}${gaps.length ? ` 不足是：${gaps.join('；')}。` : ''}\n\n${next}${details}`;
+  return promptText ?? turnState?.decisionReason ?? '评分已完成，展开下面的评分细节可以查看证据。';
 }
 
 function badgeTone(label?: string): string {
@@ -755,6 +728,7 @@ export default function QuizPage() {
         restoredResults[item.order_index] = {
           scores,
           evidence: item.evidence,
+          coachMessage: item.coach_message ?? null,
         };
       }
       if (scores || prompt || action) {
@@ -766,6 +740,7 @@ export default function QuizPage() {
           decisionReason: item.remediation_state?.decision_reason,
           exitReason: item.remediation_state?.exit_reason,
           remediationPrompt: prompt,
+          coachMessage: item.coach_message ?? null,
           unresolvedGaps: item.remediation_state?.unresolved_gaps,
         };
       }
@@ -896,6 +871,7 @@ export default function QuizPage() {
         nextResults[item.order_index] = {
           scores,
           evidence: item.evidence,
+          coachMessage: item.coach_message ?? null,
         };
       }
       if (scores || prompt || action) {
@@ -907,6 +883,7 @@ export default function QuizPage() {
           decisionReason: item.remediation_state?.decision_reason,
           exitReason: item.remediation_state?.exit_reason,
           remediationPrompt: prompt,
+          coachMessage: item.coach_message ?? null,
           unresolvedGaps: item.remediation_state?.unresolved_gaps,
         };
       }
@@ -1055,6 +1032,8 @@ export default function QuizPage() {
               [orderIndex]: {
                 scores: frame.data.scores,
                 evidence: prev[orderIndex]?.evidence ?? null,
+                coachMessage:
+                  frame.data.coach_message ?? prev[orderIndex]?.coachMessage ?? null,
               },
             }));
             setTurnStates((prev) => ({
@@ -1065,6 +1044,7 @@ export default function QuizPage() {
                 phase: 'judge_done',
                 roundIndex: frame.data.round_index,
                 scores: frame.data.scores,
+                coachMessage: frame.data.coach_message ?? null,
                 unresolvedGaps: frame.data.unresolved_gaps,
               },
             }));
@@ -1113,6 +1093,8 @@ export default function QuizPage() {
               [orderIndex]: {
                 scores: frame.data.scores,
                 evidence: prev[orderIndex]?.evidence ?? null,
+                coachMessage:
+                  frame.data.coach_message ?? prev[orderIndex]?.coachMessage ?? null,
               },
             }));
             setRemediationPrompts((prev) => ({ ...prev, [orderIndex]: prompt }));
@@ -1130,6 +1112,8 @@ export default function QuizPage() {
                 scores: frame.data.scores,
                 nextAction: frame.data.next_action,
                 remediationPrompt: prompt,
+                coachMessage:
+                  frame.data.coach_message ?? prev[orderIndex]?.coachMessage ?? null,
               },
             }));
             if (frame.data.next_action === 'ask_next') {
@@ -1319,6 +1303,7 @@ export default function QuizPage() {
             [frame.data.order_index]: {
               scores: frame.data.scores,
               evidence: frame.data.evidence,
+              coachMessage: frame.data.coach_message ?? null,
             },
           }));
           setProgressItems((items) =>
@@ -1884,7 +1869,10 @@ function QuestionPanel({
   const currentAction = nextAction ?? turnState?.nextAction ?? null;
   const submitLabel = answerTurns.length > 0 || promptText ? '发送补答' : '发送回答';
   const scores = turnState?.scores ?? result?.scores;
-  const canShowFeedback = Boolean(scores || promptText || turnState?.decisionReason);
+  const coachMessage = turnState?.coachMessage ?? result?.coachMessage ?? null;
+  const canShowFeedback = Boolean(
+    coachMessage || scores || promptText || turnState?.decisionReason,
+  );
 
   return (
     <article className="overflow-hidden rounded-[28px] border border-border bg-[#f5f5f7]">
@@ -1899,9 +1887,9 @@ function QuestionPanel({
             </span>
             <span
               className="truncate text-xs text-muted"
-              title={`chunks ${item.question.source_chunk_ids.join(', ')}`}
+              title={`chunks ${item.question.evidence_chunk_ids.join(', ')}`}
             >
-              来源 {item.question.source_chunk_ids.length} 段
+              来源 {item.question.evidence_chunk_ids.length} 段
             </span>
           </div>
           {currentAction ? (
@@ -1951,6 +1939,7 @@ function QuestionPanel({
             result={result}
             scores={scores}
             remediationPrompt={remediationPrompt ?? turnState?.remediationPrompt ?? null}
+            coachMessage={coachMessage}
             turnState={turnState}
           />
         ) : answerTurns.length === 0 ? (
@@ -2023,16 +2012,18 @@ function CoachFeedbackBubble({
   result,
   scores,
   remediationPrompt,
+  coachMessage,
   turnState,
 }: {
   result?: QuestionResult;
   scores?: QuizScores;
   remediationPrompt?: QuizRemediationPrompt | null;
+  coachMessage?: string | null;
   turnState?: QuestionTurnState;
 }) {
   const feedback = coachFeedbackText({
+    coachMessage,
     scores,
-    evidence: result?.evidence,
     remediationPrompt,
     turnState,
   });
@@ -2175,8 +2166,10 @@ function FidelityPanel({ evidence }: { evidence: FidelityEvidenceView }) {
               <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium', badgeTone(claim.label))}>
                 {fidelityLabel(claim.label)}
               </span>
-              {claim.chunk_ids?.length ? (
-                <span className="truncate text-[11px] text-muted">chunks {claim.chunk_ids.join(', ')}</span>
+              {claim.supporting_chunk_ids?.length ? (
+                <span className="truncate text-[11px] text-muted">
+                  chunks {claim.supporting_chunk_ids.join(', ')}
+                </span>
               ) : null}
             </div>
             <p className="line-clamp-3 text-xs leading-5 text-foreground">{claim.text ?? '未返回 claim 文本'}</p>

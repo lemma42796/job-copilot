@@ -4,15 +4,15 @@ config(5-AGENT_DESIGN §2.1 / §2.2 / §3):
 - model: qwen3.6-flash(Tier.CHEAP)
 - thinking: off(出题靠 chunks 内容重组,不需复杂推理)
 - temperature: 0.3(降随机性,要稳定结构)
-- prompt name/version: quiz_generator v1.2(详见 prompts.py)
+- prompt name/version: quiz_generator v1.3(详见 prompts.py)
 
 agent 是薄壳:渲染 USER 段 → 调 LLMClient(BaseLLMClient 内置 retry / cache /
 schema 校验 / cost 计算)→ 返回 LLMResult。
 
 `result.parsed` 是 `QuizGenOutput` 实例(LLM 输出经 Pydantic 校验);
-service 层(M2 第 4 步)从 reference_answer / reference_points 派生引用,
+service 层(M2 第 4 步)从 reference_answer / scoring_points 派生引用,
 再做 [N] → DB id 映射 + 完整性校验
-(reference_chunk_ids ⊆ source_chunk_ids / weight 之和 ≈ 1.0 等)+ 落库
+(reference_answer_chunk_ids ⊆ evidence_chunk_ids / weight 之和 ≈ 1.0 等)+ 落库
 + 写 questions.gen_model / gen_prompt_version / gen_tokens_* / gen_cost_cny
 audit 字段(从 LLMResult 抽)。
 """

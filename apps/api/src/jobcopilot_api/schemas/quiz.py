@@ -48,7 +48,7 @@ class QuizSessionOut(BaseModel):
 class QuestionReadyOut(BaseModel):
     """SSE event=question_ready 的 data payload(4-API_SPEC §4.1)。
 
-    答题阶段前端拿不到 reference_answer / reference_points(active recall
+    答题阶段前端拿不到 reference_answer / scoring_points(active recall
     强约束,防作弊)— 见 4-API_SPEC §4.2 的"重要"备注。
     """
 
@@ -60,7 +60,7 @@ class QuestionPublic(BaseModel):
     id: int
     type: Literal["open_ended", "definition"]
     prompt: str
-    source_chunk_ids: list[int]
+    evidence_chunk_ids: list[int]
 
 
 # 关闭循环引用
@@ -97,8 +97,9 @@ class QuizQuestionDetailOut(BaseModel):
     remediation_state: dict | None = None
     next_action: str | None = None
     remediation_prompt: dict | None = None
+    coach_message: str | None = None
     reference_answer: str | None = None
-    reference_points: list[dict] | None = None
+    scoring_points: list[dict] | None = None
 
 
 class QuizSessionDetailOut(BaseModel):

@@ -56,7 +56,7 @@ class _TurnContext:
     question: Question
     local_question: GeneratedQuestion
     chunks: list[QuizGenChunkInput]
-    prompt_chunk_ids: list[int]
+    judge_context_chunk_ids: list[int]
     total_questions: int
 
 
@@ -130,12 +130,12 @@ async def submit_answer_turn_sse(
             payload={
                 "included": [
                     "question",
-                    "source_chunks",
-                    "reference_points",
+                    "judge_context_chunks",
+                    "scoring_points",
                     "cumulative_answer",
                     "unresolved_gaps",
                 ],
-                "chunk_ids": context.prompt_chunk_ids,
+                "judge_context_chunk_ids": context.judge_context_chunk_ids,
                 "compacted": False,
             },
         )
@@ -145,8 +145,8 @@ async def submit_answer_turn_sse(
                 "phase": "context_pack_built",
                 "included": [
                     "question",
-                    "source_chunks",
-                    "reference_points",
+                    "judge_context_chunks",
+                    "scoring_points",
                     "cumulative_answer",
                     "unresolved_gaps",
                 ],
@@ -166,13 +166,13 @@ async def submit_answer_turn_sse(
         judged = answer_service._extract_judge_output(llm_result)
         judged = answer_service._map_and_validate_output(
             output=judged,
-            reference_points=context.local_question.reference_points,
-            prompt_chunk_ids=context.prompt_chunk_ids,
+            scoring_points=context.local_question.scoring_points,
+            judge_context_chunk_ids=context.judge_context_chunk_ids,
             lookup_ref_map=answer_service._lookup_ref_map(llm_result),
         )
         scores = answer_service._compute_scores(
             judged,
-            context.local_question.reference_points,
+            context.local_question.scoring_points,
         )
         await answer_service._persist_judged_answer(
             sessionmaker,
@@ -189,7 +189,10 @@ async def submit_answer_turn_sse(
             event_type="judge_completed",
             agent_node="judge_answer",
             round_index=round_index,
-            payload={"scores": _scores_for_event(scores)},
+            payload={
+                "scores": _scores_for_event(scores),
+                "coach_message": judged.coach_message,
+            },
         )
     except (LLMError, answer_service.JudgeCallFailedError) as e:
         yield _ev(
@@ -213,6 +216,7 @@ async def submit_answer_turn_sse(
             "order_index": order_index,
             "round_index": round_index,
             "scores": _scores_for_event(scores),
+            "coach_message": judged.coach_message,
             "unresolved_gaps": _unresolved_gaps(judged, scores),
         },
     )
@@ -252,6 +256,7 @@ async def submit_answer_turn_sse(
             "cumulative_answer": context.answer.user_answer,
             "scores": _scores_for_event(scores),
             "remediation_prompt": decision.remediation_prompt,
+            "coach_message": judged.coach_message,
         },
     )
     yield _ev("done", {"ok": True})
@@ -288,11 +293,11 @@ async def _append_answer_turn(
         question = await session.get(Question, answer.question_id)
         if question is None:
             raise ContextPackFailedError("session_answer 引用了不存在的 question")
-        prompt_chunk_ids = answer_service._prompt_chunk_ids_for_judge(
+        judge_context_chunk_ids = answer_service._judge_context_chunk_ids(
             quiz_session=quiz_session,
             questions=[question],
         )
-        await _ensure_prompt_chunks_exist(session, prompt_chunk_ids)
+        await _ensure_judge_context_chunks_exist(session, judge_context_chunk_ids)
 
         turns = list(answer.answer_turns or [])
         round_index = len(turns)
@@ -316,6 +321,7 @@ async def _append_answer_turn(
         answer.depth_score = None
         answer.depth_evidence = None
         answer.total_score = None
+        answer.coach_message = None
         answer.judge_model = None
         answer.judge_prompt_version = None
         answer.judge_tokens_in = None
@@ -379,16 +385,18 @@ async def _build_context_pack(
                 )
             ).scalar_one()
         )
-        prompt_chunk_ids = answer_service._prompt_chunk_ids_for_judge(
+        judge_context_chunk_ids = answer_service._judge_context_chunk_ids(
             quiz_session=quiz_session,
             questions=[question],
         )
-        await _ensure_prompt_chunks_exist(session, prompt_chunk_ids)
+        await _ensure_judge_context_chunks_exist(session, judge_context_chunk_ids)
 
         chunks = list(
             (
                 await session.execute(
-                    sa.select(NoteChunk).where(NoteChunk.id.in_(prompt_chunk_ids))
+                    sa.select(NoteChunk).where(
+                        NoteChunk.id.in_(judge_context_chunk_ids)
+                    )
                 )
             )
             .scalars()
@@ -400,41 +408,49 @@ async def _build_context_pack(
             session,
             list({chunk.note_id for chunk in chunks}),
         )
-        prompt_chunks = [
+        judge_context_chunks = [
             answer_service._chunk_to_input(chunk_by_id[chunk_id], note_titles)
-            for chunk_id in prompt_chunk_ids
+            for chunk_id in judge_context_chunk_ids
         ]
-        local_question = answer_service._question_to_local(question, prompt_chunk_ids)
+        local_question = answer_service._question_to_local(
+            question, judge_context_chunk_ids
+        )
 
         return _TurnContext(
             quiz_session=quiz_session,
             answer=answer,
             question=question,
             local_question=local_question,
-            chunks=prompt_chunks,
-            prompt_chunk_ids=prompt_chunk_ids,
+            chunks=judge_context_chunks,
+            judge_context_chunk_ids=judge_context_chunk_ids,
             total_questions=total_questions,
         )
 
 
-async def _ensure_prompt_chunks_exist(
+async def _ensure_judge_context_chunks_exist(
     session: AsyncSession,
-    prompt_chunk_ids: list[int],
+    judge_context_chunk_ids: list[int],
 ) -> None:
-    if not prompt_chunk_ids:
+    if not judge_context_chunk_ids:
         raise ContextPackFailedError(
             "这个 session 没有关联可用于评分的笔记证据,请重新出题后再提交。"
         )
     existing_ids = set(
         (
             await session.execute(
-                sa.select(NoteChunk.id).where(NoteChunk.id.in_(prompt_chunk_ids))
+                sa.select(NoteChunk.id).where(
+                    NoteChunk.id.in_(judge_context_chunk_ids)
+                )
             )
         )
         .scalars()
         .all()
     )
-    missing = [chunk_id for chunk_id in prompt_chunk_ids if chunk_id not in existing_ids]
+    missing = [
+        chunk_id
+        for chunk_id in judge_context_chunk_ids
+        if chunk_id not in existing_ids
+    ]
     if missing:
         raise ContextPackFailedError(
             "这个 session 引用的笔记证据块已不存在,通常是重新导入或重建笔记库后打开了旧 session。请用同一主题重新出题后再提交本题。",
@@ -533,28 +549,28 @@ def _coverage_prompt(
     question: Question,
     coverage_gaps: list[Any],
 ) -> dict[str, Any]:
-    point_by_id = {str(point["id"]): point for point in question.reference_points}
+    point_by_id = {str(point["id"]): point for point in question.scoring_points}
     gap_ids = [point.id for point in coverage_gaps]
     gap_texts = [
         str(point_by_id.get(point_id, {}).get("text", point_id))
         for point_id in gap_ids
     ]
-    evidence_chunk_ids = _unique_ids(
+    supporting_chunk_ids = _unique_ids(
         chunk_id
         for point_id in gap_ids
-        for chunk_id in point_by_id.get(point_id, {}).get("evidence_chunk_ids", [])
+        for chunk_id in point_by_id.get(point_id, {}).get("supporting_chunk_ids", [])
     )
     return {
         "text": "你这题还漏了关键采分点: "
         + "；".join(gap_texts[:3])
         + "。请基于笔记证据补充这些点。",
         "triggered_by": "coverage",
-        "missing_reference_point_ids": gap_ids,
+        "missing_scoring_point_ids": gap_ids,
         "fabricated_claim_ids": [],
         "missing_depth_dimensions": [],
-        "evidence_chunk_ids": evidence_chunk_ids,
+        "supporting_chunk_ids": supporting_chunk_ids,
         "unresolved_gaps": [
-            {"type": "coverage", "reference_point_id": point_id}
+            {"type": "coverage", "scoring_point_id": point_id}
             for point_id in gap_ids
         ],
     }
@@ -567,10 +583,10 @@ def _fidelity_prompt(fabricated_claims: list[Any]) -> dict[str, Any]:
         + "；".join(claim_texts[:3])
         + "。请说明依据来自哪里,或改回笔记能支撑的表述。",
         "triggered_by": "fidelity",
-        "missing_reference_point_ids": [],
+        "missing_scoring_point_ids": [],
         "fabricated_claim_ids": list(range(len(fabricated_claims))),
         "missing_depth_dimensions": [],
-        "evidence_chunk_ids": [],
+        "supporting_chunk_ids": [],
         "unresolved_gaps": [
             {"type": "fidelity", "claim": text} for text in claim_texts
         ],
@@ -589,10 +605,10 @@ def _depth_prompt(missing_depth: list[str]) -> dict[str, Any]:
         + "、".join(readable)
         + "。请补充为什么这样设计、有什么取舍或边界。",
         "triggered_by": "depth",
-        "missing_reference_point_ids": [],
+        "missing_scoring_point_ids": [],
         "fabricated_claim_ids": [],
         "missing_depth_dimensions": missing_depth,
-        "evidence_chunk_ids": [],
+        "supporting_chunk_ids": [],
         "unresolved_gaps": [
             {"type": "depth", "dimension": dimension}
             for dimension in missing_depth
@@ -696,7 +712,7 @@ def _unresolved_gaps(
     gaps: list[dict[str, Any]] = []
     if scores["coverage"] < COVERAGE_REMEDIATE_THRESHOLD:
         gaps.extend(
-            {"type": "coverage", "reference_point_id": point.id}
+            {"type": "coverage", "scoring_point_id": point.id}
             for point in judged.coverage_evidence.points
             if point.label in ("partial", "miss")
         )

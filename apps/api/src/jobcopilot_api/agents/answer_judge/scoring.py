@@ -16,11 +16,11 @@ from jobcopilot_api.schemas.agents.answer_judge import (
     CoverageEvidence,
     DepthEvidence,
     FidelityEvidence,
-    ReferencePoint,
+    ScoringPoint,
 )
 
 
-def coverage_score(evidence: CoverageEvidence, points: list[ReferencePoint]) -> float:
+def coverage_score(evidence: CoverageEvidence, points: list[ScoringPoint]) -> float:
     """sum(weight * label_score) * 100,label_score = {hit:1.0, partial:0.5, miss:0.0}"""
     label_scores = {"hit": 1.0, "partial": 0.5, "miss": 0.0}
     by_id = {p.id: p for p in points}

@@ -12,12 +12,12 @@
       ↓ 0 命中守门(< MIN_CHUNKS_FOR_QUIZ → raise NoChunksForQueryError)
       ↓ reranker (qwen3-rerank,失败回退 hybrid 顺序)
       ↓ post-rerank governance + dynamic clean-context selection
-    selected 3-10 seed chunks(parent-doc 默认禁用)
+    selected 3-10 final context chunks(parent-doc 默认禁用)
       ↓ batch enrich note_title
-    PipelineResult{expanded_queries, retrieved_chunks}
+    PipelineResult{expanded_queries, final_context_chunks}
 
-quiz_service 拿 PipelineResult 后:expanded_queries / retrieved_chunk_ids
-落 quiz_sessions 审计字段;retrieved_chunks 喂 quiz_generator USER 段。
+quiz_service 拿 PipelineResult 后:expanded_queries / final_context_chunk_ids
+落 quiz_sessions 审计字段;final_context_chunks 喂 quiz_generator USER 段。
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from jobcopilot_api.errors import NoChunksForQueryError
 from jobcopilot_api.models.note import Note
 from jobcopilot_api.models.note_chunk import NoteChunk
-from jobcopilot_api.schemas.retrieval import PipelineResult, RetrievedChunk
+from jobcopilot_api.schemas.retrieval import FinalContextChunk, PipelineResult
 from jobcopilot_api.services.query_rewriter import query_weights, rewrite_query
 from jobcopilot_api.services.reranker import rerank
 from jobcopilot_api.services.retrieval_governance import (
@@ -61,7 +61,7 @@ async def run(
 ) -> PipelineResult:
     """全库 RAG retrieval。
 
-    成功 → 返回 PipelineResult(expanded_queries + retrieved_chunks);
+    成功 → 返回 PipelineResult(expanded_queries + final_context_chunks);
     rerank/governance 后动态选择干净 seed context;0 命中守门仍在
     rerank 前执行。parent-doc 扩展当前默认禁用,避免背景 chunk 稀释证据。
     """
@@ -127,9 +127,9 @@ async def run(
     note_ids = list({chunk.note_id for chunk, _ in selected_scored})
     note_titles = await fetch_note_titles(session, note_ids)
 
-    # 7. 组装 RetrievedChunk(保留 selected 顺序)
-    retrieved = [
-        RetrievedChunk(
+    # 7. 组装 FinalContextChunk(保留 selected 顺序)
+    final_context_chunks = [
+        FinalContextChunk(
             chunk=chunk,
             folder_path=list(chunk.folder_path),
             heading_path=list(chunk.heading_path),
@@ -141,7 +141,7 @@ async def run(
 
     return PipelineResult(
         expanded_queries=expanded_queries,
-        retrieved_chunks=retrieved,
+        final_context_chunks=final_context_chunks,
     )
 
 

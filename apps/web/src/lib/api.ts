@@ -510,7 +510,7 @@ export type QuizQuestionPublic = {
   id: number;
   type: QuizQuestionType;
   prompt: string;
-  source_chunk_ids: number[];
+  evidence_chunk_ids: number[];
 };
 
 export type QuizQuestionReady = {
@@ -559,10 +559,10 @@ export type QuizNextAction = 'ask_next' | 'remediate' | 'summarize' | 'finish';
 export type QuizRemediationPrompt = {
   text?: string;
   triggered_by?: string;
-  missing_reference_point_ids?: string[];
+  missing_scoring_point_ids?: string[];
   fabricated_claim_ids?: number[];
   missing_depth_dimensions?: string[];
-  evidence_chunk_ids?: number[];
+  supporting_chunk_ids?: number[];
   unresolved_gaps?: unknown[];
 };
 
@@ -595,8 +595,9 @@ export type QuizSessionQuestionDetail = {
   remediation_state?: QuizRemediationState | null;
   next_action?: QuizNextAction | string | null;
   remediation_prompt?: QuizRemediationPrompt | null;
+  coach_message?: string | null;
   reference_answer?: string | null;
-  reference_points?: unknown[] | null;
+  scoring_points?: unknown[] | null;
 };
 
 export type QuizSessionDetail = {
@@ -647,7 +648,15 @@ export type QuizSubmitSseFrame =
       { job_id: string; resource_id: number; session_id?: number; total_questions: number }
     >
   | SseFrame<'progress', QuizProgress>
-  | SseFrame<'question_done', { order_index: number; scores: QuizScores; evidence: QuizEvidence }>
+  | SseFrame<
+      'question_done',
+      {
+        order_index: number;
+        scores: QuizScores;
+        coach_message?: string | null;
+        evidence: QuizEvidence;
+      }
+    >
   | SseFrame<'result', { session_id: number; scores: QuizScores; recall_md_path?: string | null }>
   | SseFrame<'error', { code: string; detail: string; order_index?: number }>
   | SseFrame<'done', { ok: boolean }>;
@@ -683,6 +692,7 @@ export type QuizAnswerTurnSseFrame =
         order_index: number;
         round_index: number;
         scores: QuizScores;
+        coach_message?: string | null;
         unresolved_gaps?: unknown[];
       }
     >
@@ -705,6 +715,7 @@ export type QuizAnswerTurnSseFrame =
         cumulative_answer: string;
         scores: QuizScores;
         remediation_prompt: QuizRemediationPrompt | null;
+        coach_message?: string | null;
       }
     >
   | SseFrame<'error', { code: string; detail: string; order_index?: number }>

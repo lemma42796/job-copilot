@@ -5,7 +5,7 @@
 字段分组:
 - 出题入口三件:query / mode / jd_ids
 - M3 SR 审计字段(M2 一并预建):trigger / gap_folder_path / gap_heading_path
-- retrieval pipeline 审计快照:expanded_queries / retrieved_chunk_ids
+- retrieval pipeline 审计快照:expanded_queries / final_context_chunk_ids
 - 三层评分汇总:total / coverage / fidelity / depth(权重 SSoT 在
   services/answer_service,不让 Judge 算)
 - abandoned_at 作字段(非状态)— 用户中途退出 / 0 命中守门时同时写
@@ -61,7 +61,7 @@ class QuizSession(Base, IDMixin, TimestampMixin):
     expanded_queries: Mapped[list[str] | None] = mapped_column(
         postgresql.ARRAY(Text())
     )
-    retrieved_chunk_ids: Mapped[list[int] | None] = mapped_column(
+    final_context_chunk_ids: Mapped[list[int] | None] = mapped_column(
         postgresql.ARRAY(BigInteger())
     )
 

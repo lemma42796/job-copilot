@@ -4,7 +4,7 @@ config(5-AGENT_DESIGN §2.1 / §2.2):
 - model: qwen3.6-flash
 - thinking: off(M2 dogfood:thinking on 在 AnswerJudge 长 prompt 下不收尾)
 - temperature: 0.2
-- prompt name/version: answer_judge v1.2
+- prompt name/version: answer_judge v1.4
 """
 
 from __future__ import annotations

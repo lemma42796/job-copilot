@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from jobcopilot_api.schemas.agents.quiz_generator import (
     GeneratedQuestion,
     QuizGenChunkInput,
-    ReferencePoint,
+    ScoringPoint,
 )
 
 
@@ -28,7 +28,7 @@ class CoverageEvidence(BaseModel):
 class FidelityClaim(BaseModel):
     text: str
     label: Literal["supported", "inferred", "fabricated"]
-    chunk_ids: list[int]
+    supporting_chunk_ids: list[int]
 
 
 class FidelityEvidence(BaseModel):
@@ -58,6 +58,7 @@ class AnswerJudgeOutput(BaseModel):
     coverage_evidence: CoverageEvidence
     fidelity_evidence: FidelityEvidence
     depth_evidence: DepthEvidence
+    coach_message: str = Field(min_length=1, max_length=1200)
 
 
 __all__ = [
@@ -69,5 +70,5 @@ __all__ = [
     "DepthEvidence",
     "FidelityClaim",
     "FidelityEvidence",
-    "ReferencePoint",
+    "ScoringPoint",
 ]
