@@ -43,6 +43,7 @@ from jobcopilot_api.models.question import Question
 from jobcopilot_api.models.quiz_session import QuizSession
 from jobcopilot_api.models.session_answer import SessionAnswer
 from jobcopilot_api.schemas.agents.quiz_generator import (
+    GeneratedQuestion,
     QuizGenChunkInput,
     QuizGenInput,
     QuizGenOutput,
@@ -413,7 +414,8 @@ def _build_question_rows(
     n_chunks = len(gen_chunks)
 
     rows: list[dict[str, Any]] = []
-    for q in gen_output.questions:
+    for raw_q in gen_output.questions:
+        q = _repair_question_chunk_refs(raw_q, n_chunks)
         if not q.source_chunk_ids:
             raise IntegrityCheckError(
                 f"题 '{q.prompt[:30]}...' source_chunk_ids 为空"
@@ -435,6 +437,7 @@ def _build_question_rows(
         ref_db = [chunk_db_ids[n - 1] for n in q.reference_chunk_ids]
 
         _validate_reference_points_shape(q)
+        q = _repair_reference_point_evidence(q, gen_chunks)
         weight_sum = sum(p.weight for p in q.reference_points)
         if not (0.99 <= weight_sum <= 1.01):
             raise IntegrityCheckError(
@@ -481,6 +484,100 @@ def _build_question_rows(
             }
         )
     return rows
+
+
+def _repair_question_chunk_refs(
+    q: GeneratedQuestion,
+    n_chunks: int,
+) -> GeneratedQuestion:
+    """Normalize local [N] refs before strict validation.
+
+    QuizGenerator occasionally returns a question whose answer/reference points
+    cite a valid local chunk but forgets to include that chunk in
+    `source_chunk_ids`. The source list is only the declared support set, so it
+    is safe to expand it to the union of declared references, point evidence,
+    and `[N]` citations. Invalid/out-of-range refs still fail below.
+    """
+    evidence_ids = [
+        chunk_id
+        for point in q.reference_points
+        for chunk_id in point.evidence_chunk_ids
+    ]
+    cited_ids = [int(raw) for raw in _CITATION_RE.findall(q.reference_answer)]
+    refs = _unique_ordered_ints(
+        [*q.source_chunk_ids, *q.reference_chunk_ids, *evidence_ids, *cited_ids]
+    )
+    invalid = [chunk_id for chunk_id in refs if not (1 <= chunk_id <= n_chunks)]
+    if invalid:
+        raise IntegrityCheckError(
+            f"题 '{q.prompt[:30]}...' chunk 引用越界:{invalid}(合法 1..{n_chunks})"
+        )
+    reference_chunk_ids = _unique_ordered_ints(cited_ids) or q.reference_chunk_ids
+    if refs == q.source_chunk_ids and reference_chunk_ids == q.reference_chunk_ids:
+        return q
+    return q.model_copy(
+        update={
+            "source_chunk_ids": refs,
+            "reference_chunk_ids": reference_chunk_ids,
+        }
+    )
+
+
+def _repair_reference_point_evidence(
+    q: GeneratedQuestion,
+    chunks: list[QuizGenChunkInput],
+) -> GeneratedQuestion:
+    """Move weak point evidence to supporting chunks within this question.
+
+    This keeps the evidence-bound rule intact: a reference point may only cite
+    chunks already declared as this question's source. If the model attached a
+    valid-but-wrong evidence id, we can repair it by scanning source chunks for
+    the same basic overlap used by the verifier.
+    """
+    chunk_by_local = {idx: chunk for idx, chunk in enumerate(chunks, start=1)}
+    source_ids = [
+        chunk_id for chunk_id in q.source_chunk_ids if chunk_id in chunk_by_local
+    ]
+    repaired_points = []
+    changed = False
+
+    for point in q.reference_points:
+        current_text = "\n".join(
+            chunk_by_local[chunk_id].content
+            for chunk_id in point.evidence_chunk_ids
+            if chunk_id in chunk_by_local
+        )
+        if _evidence_support(point.text, current_text):
+            repaired_points.append(point)
+            continue
+
+        repaired_ids = [
+            chunk_id
+            for chunk_id in source_ids
+            if _evidence_support(point.text, chunk_by_local[chunk_id].content)
+        ][:3]
+        if repaired_ids:
+            repaired_points.append(
+                point.model_copy(update={"evidence_chunk_ids": repaired_ids})
+            )
+            changed = True
+        else:
+            repaired_points.append(point)
+
+    if not changed:
+        return q
+    return q.model_copy(update={"reference_points": repaired_points})
+
+
+def _unique_ordered_ints(values: list[int]) -> list[int]:
+    out: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        item = int(value)
+        if item not in seen:
+            out.append(item)
+            seen.add(item)
+    return out
 
 
 def _validate_reference_answer_citations(
@@ -537,6 +634,14 @@ def _validate_question_evidence_support(
     q: GeneratedQuestion,
     chunks: list[QuizGenChunkInput],
 ) -> None:
+    """Log weak point/evidence overlap without rejecting the whole quiz.
+
+    This check is intentionally diagnostic. Reference points often phrase a
+    higher-level grading criterion ("compare the two paths") while the chunk
+    contains the concrete facts, so strict token overlap is too brittle for
+    production creation. Hard safety remains in the structural checks above:
+    every evidence id must be in this question's source set and in range.
+    """
     chunk_by_local = {idx: chunk for idx, chunk in enumerate(chunks, start=1)}
     for p in q.reference_points:
         evidence_text = "\n".join(
@@ -544,9 +649,11 @@ def _validate_question_evidence_support(
         )
         support = _evidence_support(p.text, evidence_text)
         if not support:
-            raise IntegrityCheckError(
-                f"题 '{q.prompt[:30]}...' reference_point '{p.id}' "
-                "和 evidence_chunk_ids 缺少足够文本重合"
+            logger.warning(
+                "quiz_generator weak reference point support: prompt=%r point_id=%s evidence_chunk_ids=%s",
+                q.prompt[:80],
+                p.id,
+                p.evidence_chunk_ids,
             )
 
 

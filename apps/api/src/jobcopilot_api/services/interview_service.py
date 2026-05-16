@@ -285,6 +285,14 @@ async def _append_answer_turn(
             raise NotFoundError(
                 f"session {session_id} 下不存在 order_index={order_index} 的答案"
             )
+        question = await session.get(Question, answer.question_id)
+        if question is None:
+            raise ContextPackFailedError("session_answer 引用了不存在的 question")
+        prompt_chunk_ids = answer_service._prompt_chunk_ids_for_judge(
+            quiz_session=quiz_session,
+            questions=[question],
+        )
+        await _ensure_prompt_chunks_exist(session, prompt_chunk_ids)
 
         turns = list(answer.answer_turns or [])
         round_index = len(turns)
@@ -375,10 +383,7 @@ async def _build_context_pack(
             quiz_session=quiz_session,
             questions=[question],
         )
-        if not prompt_chunk_ids:
-            raise ContextPackFailedError(
-                "quiz_session.retrieved_chunk_ids / question.source_chunk_ids 不能为空"
-            )
+        await _ensure_prompt_chunks_exist(session, prompt_chunk_ids)
 
         chunks = list(
             (
@@ -390,9 +395,6 @@ async def _build_context_pack(
             .all()
         )
         chunk_by_id = {chunk.id: chunk for chunk in chunks}
-        missing = [chunk_id for chunk_id in prompt_chunk_ids if chunk_id not in chunk_by_id]
-        if missing:
-            raise ContextPackFailedError(f"context pack 缺少 chunks:{missing}")
 
         note_titles = await fetch_note_titles(
             session,
@@ -412,6 +414,36 @@ async def _build_context_pack(
             chunks=prompt_chunks,
             prompt_chunk_ids=prompt_chunk_ids,
             total_questions=total_questions,
+        )
+
+
+async def _ensure_prompt_chunks_exist(
+    session: AsyncSession,
+    prompt_chunk_ids: list[int],
+) -> None:
+    if not prompt_chunk_ids:
+        raise ContextPackFailedError(
+            "这个 session 没有关联可用于评分的笔记证据,请重新出题后再提交。"
+        )
+    existing_ids = set(
+        (
+            await session.execute(
+                sa.select(NoteChunk.id).where(NoteChunk.id.in_(prompt_chunk_ids))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    missing = [chunk_id for chunk_id in prompt_chunk_ids if chunk_id not in existing_ids]
+    if missing:
+        raise ContextPackFailedError(
+            "这个 session 引用的笔记证据块已不存在,通常是重新导入或重建笔记库后打开了旧 session。请用同一主题重新出题后再提交本题。",
+            errors=[
+                {
+                    "missing_chunk_count": len(missing),
+                    "missing_chunk_ids": missing[:20],
+                }
+            ],
         )
 
 

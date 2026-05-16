@@ -22,11 +22,15 @@ import {
   getQuizSession,
   listQuizSessions,
   saveQuizAnswer,
+  submitQuizAnswerTurn,
   submitQuizSession,
+  type QuizAnswerTurn,
   type QuizEvidence,
   type QuizNullableScores,
+  type QuizNextAction,
   type QuizProgress,
   type QuizQuestionReady,
+  type QuizRemediationPrompt,
   type QuizScores,
   type QuizSessionDetail,
   type QuizSessionListItem,
@@ -50,7 +54,21 @@ type ProgressItem = {
 
 type QuestionResult = {
   scores: QuizScores;
-  evidence: QuizEvidence;
+  evidence?: QuizEvidence | null;
+};
+
+type QuestionTurnState = {
+  status: 'running' | 'done' | 'error';
+  phase?: string;
+  roundIndex?: number;
+  scores?: QuizScores;
+  nextAction?: QuizNextAction | string;
+  triggeredBy?: string;
+  decisionReason?: string;
+  exitReason?: string | null;
+  remediationPrompt?: QuizRemediationPrompt | null;
+  unresolvedGaps?: unknown[];
+  error?: string;
 };
 
 type SampleQuiz = {
@@ -323,6 +341,22 @@ const PHASE_LABELS: Record<string, string> = {
   generating: '生成题目',
   type_mix_decided: '确定题型',
   judging: '评分中',
+  context_pack_built: '整理本题上下文',
+};
+
+const NEXT_ACTION_LABELS: Record<string, string> = {
+  ask_next: '进入下一题',
+  remediate: '继续补答',
+  summarize: '进入总结',
+  finish: '完成',
+};
+
+const TRIGGER_LABELS: Record<string, string> = {
+  coverage: '覆盖不足',
+  fidelity: '依据风险',
+  depth: '深度不足',
+  mixed: '综合纠偏',
+  none: '达标',
 };
 
 function problemMessage(err: unknown): string {
@@ -348,6 +382,11 @@ function progressLabel(progress: QuizProgress): ProgressItem {
     label,
     detail: details.join(' · ') || undefined,
   };
+}
+
+function turnPhaseLabel(phase?: string): string {
+  if (!phase) return '推进中';
+  return PHASE_LABELS[phase] ?? phase;
 }
 
 function appendProgress(items: ProgressItem[], next: ProgressItem): ProgressItem[] {
@@ -470,6 +509,21 @@ function depthLabel(key: string): string {
   return key;
 }
 
+function nextActionLabel(action?: string | null): string {
+  if (!action) return '等待';
+  return NEXT_ACTION_LABELS[action] ?? action;
+}
+
+function triggerLabel(trigger?: string | null): string {
+  if (!trigger) return '纠偏';
+  return TRIGGER_LABELS[trigger] ?? trigger;
+}
+
+function remediationText(prompt?: QuizRemediationPrompt | null): string | null {
+  const text = prompt?.text;
+  return typeof text === 'string' && text.trim() ? text : null;
+}
+
 function badgeTone(label?: string): string {
   if (label === 'hit' || label === 'supported') {
     return 'bg-[var(--color-success-bg)] text-[var(--color-success-fg)]';
@@ -549,6 +603,13 @@ export default function QuizPage() {
   const [progressItems, setProgressItems] = useState<ProgressItem[]>([]);
   const [typeMix, setTypeMix] = useState<QuizTypeMix | null>(null);
   const [questionResults, setQuestionResults] = useState<Record<number, QuestionResult>>({});
+  const [answerTurns, setAnswerTurns] = useState<Record<number, QuizAnswerTurn[]>>({});
+  const [remediationPrompts, setRemediationPrompts] = useState<
+    Record<number, QuizRemediationPrompt | null>
+  >({});
+  const [questionActions, setQuestionActions] = useState<Record<number, string | null>>({});
+  const [turnStates, setTurnStates] = useState<Record<number, QuestionTurnState>>({});
+  const [activeTurnOrder, setActiveTurnOrder] = useState<number | null>(null);
   const [finalResult, setFinalResult] = useState<{
     scores: QuizScores;
     recallMdPath?: string | null;
@@ -578,7 +639,8 @@ export default function QuizPage() {
     stage === 'answering' &&
     questions.length > 0 &&
     answeredCount === questions.length &&
-    sessionId !== null;
+    sessionId !== null &&
+    activeTurnOrder === null;
 
   const reloadRecent = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -598,6 +660,11 @@ export default function QuizPage() {
     setProgressItems([]);
     setTypeMix(null);
     setQuestionResults({});
+    setAnswerTurns({});
+    setRemediationPrompts({});
+    setQuestionActions({});
+    setTurnStates({});
+    setActiveTurnOrder(null);
     setFinalResult(null);
     setRunError(null);
     setSaveState({ kind: 'idle' });
@@ -614,13 +681,34 @@ export default function QuizPage() {
       .sort((a, b) => a.order_index - b.order_index);
     const restoredAnswers: Record<number, string> = {};
     const restoredResults: Record<number, QuestionResult> = {};
+    const restoredTurns: Record<number, QuizAnswerTurn[]> = {};
+    const restoredPrompts: Record<number, QuizRemediationPrompt | null> = {};
+    const restoredActions: Record<number, string | null> = {};
+    const restoredTurnStates: Record<number, QuestionTurnState> = {};
     for (const item of detail.questions) {
       restoredAnswers[item.order_index] = item.user_answer ?? '';
+      restoredTurns[item.order_index] = item.answer_turns ?? [];
       const scores = toScores(item.scores);
-      if (scores && item.evidence) {
+      const prompt = item.remediation_prompt ?? item.remediation_state?.remediation_prompt ?? null;
+      const action = item.next_action ?? item.remediation_state?.last_decision ?? null;
+      restoredPrompts[item.order_index] = prompt;
+      restoredActions[item.order_index] = action;
+      if (scores) {
         restoredResults[item.order_index] = {
           scores,
           evidence: item.evidence,
+        };
+      }
+      if (scores || prompt || action) {
+        restoredTurnStates[item.order_index] = {
+          status: 'done',
+          scores: scores ?? undefined,
+          nextAction: action ?? undefined,
+          triggeredBy: item.remediation_state?.triggered_by,
+          decisionReason: item.remediation_state?.decision_reason,
+          exitReason: item.remediation_state?.exit_reason,
+          remediationPrompt: prompt,
+          unresolvedGaps: item.remediation_state?.unresolved_gaps,
         };
       }
     }
@@ -653,6 +741,11 @@ export default function QuizPage() {
     ]);
     setTypeMix(restoredQuestions.length ? typeMixFromQuestions(restoredQuestions) : null);
     setQuestionResults(restoredResults);
+    setAnswerTurns(restoredTurns);
+    setRemediationPrompts(restoredPrompts);
+    setQuestionActions(restoredActions);
+    setTurnStates(restoredTurnStates);
+    setActiveTurnOrder(null);
     setFinalResult(
       finalScores
         ? {
@@ -680,6 +773,11 @@ export default function QuizPage() {
     ]);
     setTypeMix(SAMPLE_QUIZ.typeMix);
     setQuestionResults(SAMPLE_QUIZ.results);
+    setAnswerTurns({});
+    setRemediationPrompts({});
+    setQuestionActions({});
+    setTurnStates({});
+    setActiveTurnOrder(null);
     setFinalResult(SAMPLE_QUIZ.finalResult);
     setRunError(null);
     setSaveState({ kind: 'idle' });
@@ -698,6 +796,52 @@ export default function QuizPage() {
     },
     [hydrateSession],
   );
+
+  const mergeQuestionDetails = useCallback((detail: QuizSessionDetail) => {
+    const nextAnswers: Record<number, string> = {};
+    const nextTurns: Record<number, QuizAnswerTurn[]> = {};
+    const nextPrompts: Record<number, QuizRemediationPrompt | null> = {};
+    const nextActions: Record<number, string | null> = {};
+    const nextResults: Record<number, QuestionResult> = {};
+    const nextTurnStates: Record<number, QuestionTurnState> = {};
+
+    for (const item of detail.questions) {
+      nextAnswers[item.order_index] = item.user_answer ?? '';
+      nextTurns[item.order_index] = item.answer_turns ?? [];
+      const scores = toScores(item.scores);
+      const prompt = item.remediation_prompt ?? item.remediation_state?.remediation_prompt ?? null;
+      const action = item.next_action ?? item.remediation_state?.last_decision ?? null;
+
+      nextPrompts[item.order_index] = prompt;
+      nextActions[item.order_index] = action;
+      if (scores) {
+        nextResults[item.order_index] = {
+          scores,
+          evidence: item.evidence,
+        };
+      }
+      if (scores || prompt || action) {
+        nextTurnStates[item.order_index] = {
+          status: 'done',
+          scores: scores ?? undefined,
+          nextAction: action ?? undefined,
+          triggeredBy: item.remediation_state?.triggered_by,
+          decisionReason: item.remediation_state?.decision_reason,
+          exitReason: item.remediation_state?.exit_reason,
+          remediationPrompt: prompt,
+          unresolvedGaps: item.remediation_state?.unresolved_gaps,
+        };
+      }
+    }
+
+    setAnswers(nextAnswers);
+    setAnswerTurns(nextTurns);
+    setRemediationPrompts(nextPrompts);
+    setQuestionActions(nextActions);
+    setQuestionResults(nextResults);
+    setTurnStates((prev) => ({ ...prev, ...nextTurnStates }));
+    savedAnswersRef.current = nextAnswers;
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -729,6 +873,7 @@ export default function QuizPage() {
 
   useEffect(() => {
     if (stage !== 'answering' || sessionId === null || questions.length === 0) return;
+    if (activeTurnOrder !== null) return;
     const pending = questions.filter(
       (q) => (answers[q.order_index] ?? '') !== savedAnswersRef.current[q.order_index],
     );
@@ -755,7 +900,210 @@ export default function QuizPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [answers, questions, sessionId, stage]);
+  }, [activeTurnOrder, answers, questions, sessionId, stage]);
+
+  const handleSubmitTurn = useCallback(
+    async (orderIndex: number) => {
+      if (stage !== 'answering' || sessionId === null || activeTurnOrder !== null) return;
+      const text = (answers[orderIndex] ?? '').trim();
+      if (!text) {
+        setRunError(`第 ${orderIndex + 1} 题答案不能为空`);
+        return;
+      }
+
+      const priorTurns = answerTurns[orderIndex] ?? [];
+      const turnType = priorTurns.length > 0 ? 'remediation' : 'initial';
+      const clientTurnId = `web-${sessionId}-${orderIndex}-${Date.now()}`;
+
+      setRunError(null);
+      setActiveTurnOrder(orderIndex);
+      setTurnStates((prev) => ({
+        ...prev,
+        [orderIndex]: {
+          status: 'running',
+          phase: 'started',
+          nextAction: questionActions[orderIndex] ?? undefined,
+          remediationPrompt: remediationPrompts[orderIndex] ?? null,
+        },
+      }));
+      setProgressItems((items) =>
+        appendProgress(items, {
+          id: `turn-start-${orderIndex}-${Date.now()}`,
+          group: 'judge',
+          label: `第 ${orderIndex + 1} 题提交`,
+          detail: turnType === 'initial' ? '初答' : '补答',
+        }),
+      );
+
+      let ok = false;
+      try {
+        for await (const frame of submitQuizAnswerTurn(sessionId, orderIndex, {
+          text,
+          turn_type: turnType,
+          client_turn_id: clientTurnId,
+        })) {
+          if (frame.event === 'started') {
+            setTurnStates((prev) => ({
+              ...prev,
+              [orderIndex]: {
+                ...(prev[orderIndex] ?? { status: 'running' as const }),
+                status: 'running',
+                phase: 'started',
+                roundIndex: frame.data.round_index,
+              },
+            }));
+          } else if (frame.event === 'progress') {
+            setTurnStates((prev) => ({
+              ...prev,
+              [orderIndex]: {
+                ...(prev[orderIndex] ?? { status: 'running' as const }),
+                status: 'running',
+                phase: frame.data.phase,
+              },
+            }));
+            setProgressItems((items) =>
+              appendProgress(items, {
+                id: `turn-progress-${orderIndex}-${frame.data.phase}-${Date.now()}`,
+                group: 'judge',
+                label: turnPhaseLabel(frame.data.phase),
+                detail: `第 ${orderIndex + 1} 题`,
+              }),
+            );
+          } else if (frame.event === 'judge_done') {
+            setQuestionResults((prev) => ({
+              ...prev,
+              [orderIndex]: {
+                scores: frame.data.scores,
+                evidence: prev[orderIndex]?.evidence ?? null,
+              },
+            }));
+            setTurnStates((prev) => ({
+              ...prev,
+              [orderIndex]: {
+                ...(prev[orderIndex] ?? { status: 'running' as const }),
+                status: 'running',
+                phase: 'judge_done',
+                roundIndex: frame.data.round_index,
+                scores: frame.data.scores,
+                unresolvedGaps: frame.data.unresolved_gaps,
+              },
+            }));
+            setProgressItems((items) =>
+              appendProgress(items, {
+                id: `turn-judge-${orderIndex}-${Date.now()}`,
+                group: 'judge',
+                label: `第 ${orderIndex + 1} 题评分完成`,
+                detail: `总分 ${roundedScore(frame.data.scores.total)}`,
+              }),
+            );
+          } else if (frame.event === 'decision_done') {
+            setQuestionActions((prev) => ({
+              ...prev,
+              [orderIndex]: frame.data.next_action,
+            }));
+            setTurnStates((prev) => ({
+              ...prev,
+              [orderIndex]: {
+                ...(prev[orderIndex] ?? { status: 'running' as const }),
+                status: 'running',
+                phase: 'decision_done',
+                nextAction: frame.data.next_action,
+                triggeredBy: frame.data.triggered_by,
+                decisionReason: frame.data.decision_reason,
+                exitReason: frame.data.exit_reason,
+              },
+            }));
+            setProgressItems((items) =>
+              appendProgress(items, {
+                id: `turn-decision-${orderIndex}-${Date.now()}`,
+                group: 'judge',
+                label: nextActionLabel(frame.data.next_action),
+                detail: frame.data.decision_reason,
+              }),
+            );
+          } else if (frame.event === 'result') {
+            const prompt = frame.data.remediation_prompt;
+            setAnswers((prev) => ({
+              ...prev,
+              [orderIndex]: frame.data.cumulative_answer,
+            }));
+            savedAnswersRef.current[orderIndex] = frame.data.cumulative_answer;
+            setQuestionResults((prev) => ({
+              ...prev,
+              [orderIndex]: {
+                scores: frame.data.scores,
+                evidence: prev[orderIndex]?.evidence ?? null,
+              },
+            }));
+            setRemediationPrompts((prev) => ({ ...prev, [orderIndex]: prompt }));
+            setQuestionActions((prev) => ({
+              ...prev,
+              [orderIndex]: frame.data.next_action,
+            }));
+            setTurnStates((prev) => ({
+              ...prev,
+              [orderIndex]: {
+                ...(prev[orderIndex] ?? { status: 'running' as const }),
+                status: 'done',
+                phase: 'result',
+                roundIndex: frame.data.round_index,
+                scores: frame.data.scores,
+                nextAction: frame.data.next_action,
+                remediationPrompt: prompt,
+              },
+            }));
+          } else if (frame.event === 'error') {
+            const message = `${frame.data.code}: ${frame.data.detail}`;
+            setRunError(message);
+            setTurnStates((prev) => ({
+              ...prev,
+              [orderIndex]: {
+                ...(prev[orderIndex] ?? { status: 'error' as const }),
+                status: 'error',
+                error: message,
+              },
+            }));
+          } else if (frame.event === 'done') {
+            ok = frame.data.ok;
+          }
+        }
+
+        if (ok) {
+          try {
+            const detail = await getQuizSession(sessionId);
+            mergeQuestionDetails(detail);
+          } catch (err) {
+            setSaveState({ kind: 'error', message: problemMessage(err) });
+          }
+          void reloadRecent();
+        }
+      } catch (err) {
+        const message = problemMessage(err);
+        setRunError(message);
+        setTurnStates((prev) => ({
+          ...prev,
+          [orderIndex]: {
+            ...(prev[orderIndex] ?? { status: 'error' as const }),
+            status: 'error',
+            error: message,
+          },
+        }));
+      } finally {
+        setActiveTurnOrder(null);
+      }
+    },
+    [
+      activeTurnOrder,
+      answerTurns,
+      answers,
+      mergeQuestionDetails,
+      questionActions,
+      reloadRecent,
+      remediationPrompts,
+      sessionId,
+      stage,
+    ],
+  );
 
   const handleStart = useCallback(async () => {
     const trimmed = query.trim();
@@ -771,6 +1119,11 @@ export default function QuizPage() {
     setAnswers({});
     setTypeMix(null);
     setQuestionResults({});
+    setAnswerTurns({});
+    setRemediationPrompts({});
+    setQuestionActions({});
+    setTurnStates({});
+    setActiveTurnOrder(null);
     setFinalResult(null);
     setSaveState({ kind: 'idle' });
     setProgressItems([{ id: 'start', group: 'quiz', label: '准备出题' }]);
@@ -1079,7 +1432,7 @@ export default function QuizPage() {
               <ProgressSummary
                 title="评分流程"
                 items={judgeProgressItems}
-                active={stage === 'submitting'}
+                active={stage === 'submitting' || activeTurnOrder !== null}
                 done={stage === 'submitted'}
                 meta={finalResult ? `总分 ${roundedScore(finalResult.scores.total)}` : undefined}
               />
@@ -1097,7 +1450,9 @@ export default function QuizPage() {
                 : stage === 'generating'
                   ? '正在出题'
                   : stage === 'answering'
-                    ? `${answeredCount}/${questions.length} 已答`
+                    ? activeTurnOrder !== null
+                      ? `第 ${activeTurnOrder + 1} 题推进中`
+                      : `${answeredCount}/${questions.length} 已答`
                     : stage === 'submitting'
                       ? '正在评分'
                       : '评分完成'}
@@ -1165,11 +1520,27 @@ export default function QuizPage() {
                   key={item.question.id}
                   item={item}
                   answer={answers[item.order_index] ?? ''}
-                  disabled={stage === 'submitting' || stage === 'submitted'}
+                  disabled={
+                    stage === 'submitting' ||
+                    stage === 'submitted' ||
+                    (activeTurnOrder !== null && activeTurnOrder !== item.order_index)
+                  }
                   result={questionResults[item.order_index]}
+                  answerTurns={answerTurns[item.order_index] ?? []}
+                  remediationPrompt={remediationPrompts[item.order_index]}
+                  nextAction={questionActions[item.order_index]}
+                  turnState={turnStates[item.order_index]}
+                  turnBusy={activeTurnOrder === item.order_index}
+                  canSubmitTurn={
+                    stage === 'answering' &&
+                    sessionId !== null &&
+                    activeTurnOrder === null &&
+                    (answers[item.order_index] ?? '').trim().length > 0
+                  }
                   onAnswer={(value) =>
                     setAnswers((prev) => ({ ...prev, [item.order_index]: value }))
                   }
+                  onSubmitTurn={() => void handleSubmitTurn(item.order_index)}
                 />
               ))}
             </div>
@@ -1292,22 +1663,55 @@ function QuestionPanel({
   answer,
   disabled,
   result,
+  answerTurns,
+  remediationPrompt,
+  nextAction,
+  turnState,
+  turnBusy,
+  canSubmitTurn,
   onAnswer,
+  onSubmitTurn,
 }: {
   item: QuizQuestionReady;
   answer: string;
   disabled: boolean;
   result?: QuestionResult;
+  answerTurns: QuizAnswerTurn[];
+  remediationPrompt?: QuizRemediationPrompt | null;
+  nextAction?: string | null;
+  turnState?: QuestionTurnState;
+  turnBusy: boolean;
+  canSubmitTurn: boolean;
   onAnswer: (value: string) => void;
+  onSubmitTurn: () => void;
 }) {
+  const promptText = remediationText(remediationPrompt ?? turnState?.remediationPrompt);
+  const currentAction = nextAction ?? turnState?.nextAction ?? null;
+  const submitLabel = answerTurns.length > 0 || promptText ? '提交补答' : '提交本题';
+  const hasTurnResult = Boolean(turnState?.scores ?? result?.scores);
+
   return (
     <article className="rounded-lg border border-border bg-surface shadow-[var(--shadow-apple-sm)]">
       <div className="border-b border-border px-5 py-4">
         <div className="mb-2 flex items-center justify-between gap-3">
           <span className="text-xs font-medium text-muted">第 {item.order_index + 1} 题</span>
-          <span className="rounded-full bg-[var(--color-system-gray-6)] px-2.5 py-1 text-xs text-muted">
-            {item.question.type === 'definition' ? '八股' : '开放题'}
-          </span>
+          <div className="flex items-center gap-2">
+            {currentAction ? (
+              <span
+                className={cn(
+                  'rounded-full px-2.5 py-1 text-xs font-medium',
+                  currentAction === 'remediate'
+                    ? 'bg-[var(--color-warning-bg)] text-[var(--color-warning-fg)]'
+                    : 'bg-[var(--color-success-bg)] text-[var(--color-success-fg)]',
+                )}
+              >
+                {nextActionLabel(currentAction)}
+              </span>
+            ) : null}
+            <span className="rounded-full bg-[var(--color-system-gray-6)] px-2.5 py-1 text-xs text-muted">
+              {item.question.type === 'definition' ? '八股' : '开放题'}
+            </span>
+          </div>
         </div>
         <h2 className="text-base font-semibold leading-relaxed tracking-tight">
           {item.question.prompt}
@@ -1320,17 +1724,101 @@ function QuestionPanel({
         <Textarea
           value={answer}
           onChange={(event) => onAnswer(event.target.value)}
-          disabled={disabled}
+          disabled={disabled || turnBusy}
           className="min-h-[156px] resize-y rounded-lg bg-[var(--color-system-gray-6)] leading-7"
           placeholder="在这里作答"
         />
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0 text-xs text-muted">
+            {answerTurns.length > 0 ? `${answerTurns.length} 轮已提交` : '尚未提交本题'}
+            {turnState?.phase && turnState.status === 'running' ? (
+              <span> · {turnPhaseLabel(turnState.phase)}</span>
+            ) : null}
+            {turnState?.status === 'error' && turnState.error ? (
+              <span className="text-[var(--color-danger)]"> · {turnState.error}</span>
+            ) : null}
+          </div>
+          <Button
+            className="rounded-lg"
+            size="sm"
+            variant={promptText ? 'default' : 'outline'}
+            onClick={onSubmitTurn}
+            disabled={disabled || turnBusy || !canSubmitTurn}
+          >
+            {turnBusy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+            {turnBusy ? '推进中' : submitLabel}
+          </Button>
+        </div>
+        {promptText ? (
+          <RemediationBox prompt={remediationPrompt ?? turnState?.remediationPrompt ?? null} />
+        ) : null}
+        {turnState?.decisionReason && !promptText ? (
+          <div className="mt-3 rounded-lg border border-[var(--color-success-border)] bg-[var(--color-success-bg)] px-3 py-2 text-xs leading-5 text-[var(--color-success-fg)]">
+            {turnState.decisionReason}
+            {turnState.exitReason ? ` · ${turnState.exitReason}` : ''}
+          </div>
+        ) : null}
         {result ? <QuestionScore result={result} /> : null}
+        {!result && hasTurnResult && turnState?.scores ? (
+          <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+            <ScorePill label="Coverage" value={turnState.scores.coverage} />
+            <ScorePill label="Fidelity" value={turnState.scores.fidelity} />
+            <ScorePill label="Depth" value={turnState.scores.depth} />
+            <ScorePill label="Total" value={turnState.scores.total} strong />
+          </div>
+        ) : null}
       </div>
     </article>
   );
 }
 
+function RemediationBox({ prompt }: { prompt: QuizRemediationPrompt | null }) {
+  const text = remediationText(prompt);
+  if (!text) return null;
+
+  const details: string[] = [];
+  if (prompt?.missing_reference_point_ids?.length) {
+    details.push(`采分点 ${prompt.missing_reference_point_ids.join(', ')}`);
+  }
+  if (prompt?.missing_depth_dimensions?.length) {
+    details.push(`深度 ${prompt.missing_depth_dimensions.map(depthLabel).join(', ')}`);
+  }
+  if (prompt?.fabricated_claim_ids?.length) {
+    details.push(`待核实 ${prompt.fabricated_claim_ids.length} 条`);
+  }
+  if (prompt?.evidence_chunk_ids?.length) {
+    details.push(`chunks ${prompt.evidence_chunk_ids.join(', ')}`);
+  }
+
+  return (
+    <section className="mt-3 rounded-lg border border-[var(--color-warning-border)] bg-[var(--color-warning-bg)] px-3 py-3">
+      <div className="mb-1 flex items-center justify-between gap-3">
+        <h3 className="text-xs font-semibold text-[var(--color-warning-fg)]">
+          {triggerLabel(prompt.triggered_by)}
+        </h3>
+        {details.length ? (
+          <span className="truncate text-[11px] text-[var(--color-warning-fg)]">
+            {details.join(' · ')}
+          </span>
+        ) : null}
+      </div>
+      <p className="text-sm leading-6 text-[var(--color-warning-fg)]">{text}</p>
+    </section>
+  );
+}
+
 function QuestionScore({ result }: { result: QuestionResult }) {
+  if (!result.evidence) {
+    return (
+      <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
+        <ScorePill label="Coverage" value={result.scores.coverage} />
+        <ScorePill label="Fidelity" value={result.scores.fidelity} />
+        <ScorePill label="Depth" value={result.scores.depth} />
+        <ScorePill label="Total" value={result.scores.total} strong />
+      </div>
+    );
+  }
+
   const coverage = coverageEvidence(result.evidence);
   const fidelity = fidelityEvidence(result.evidence);
   const depth = depthEvidence(result.evidence);

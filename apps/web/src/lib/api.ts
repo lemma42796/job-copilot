@@ -5,7 +5,9 @@ import { type SseFrame, streamSse } from './sse';
 const API_BASE_URL =
   (typeof window === 'undefined' ? process.env.INTERNAL_API_BASE_URL : undefined) ??
   process.env.NEXT_PUBLIC_API_BASE_URL ??
-  'http://localhost:8000';
+  (typeof window !== 'undefined'
+    ? `${window.location.protocol}//${window.location.hostname}:8000`
+    : 'http://127.0.0.1:8000');
 
 const USER_ID = process.env.NEXT_PUBLIC_USER_ID ?? '1';
 
@@ -71,7 +73,10 @@ export class ApiError extends Error {
 
 async function jsonFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  headers.set('X-User-Id', USER_ID);
+  const method = init.method?.toUpperCase() ?? 'GET';
+  if (method !== 'GET') {
+    headers.set('X-User-Id', USER_ID);
+  }
   if (init.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
@@ -549,14 +554,47 @@ export type QuizEvidence = {
   depth_evidence?: unknown;
 };
 
+export type QuizNextAction = 'ask_next' | 'remediate' | 'summarize' | 'finish';
+
+export type QuizRemediationPrompt = {
+  text?: string;
+  triggered_by?: string;
+  missing_reference_point_ids?: string[];
+  fabricated_claim_ids?: number[];
+  missing_depth_dimensions?: string[];
+  evidence_chunk_ids?: number[];
+  unresolved_gaps?: unknown[];
+};
+
+export type QuizAnswerTurn = {
+  round_index?: number;
+  turn_type?: 'initial' | 'remediation' | string;
+  text?: string;
+  client_turn_id?: string | null;
+  submitted_at?: string;
+};
+
+export type QuizRemediationState = {
+  last_decision?: QuizNextAction | string;
+  triggered_by?: string;
+  decision_reason?: string;
+  exit_reason?: string | null;
+  remediation_prompt?: QuizRemediationPrompt | null;
+  unresolved_gaps?: unknown[];
+};
+
 export type QuizSessionQuestionDetail = {
   order_index: number;
   question: QuizQuestionPublic;
   user_answer: string | null;
+  answer_turns?: QuizAnswerTurn[];
   answer_submitted_at: string | null;
   judged: boolean;
   scores: QuizNullableScores | null;
   evidence: QuizEvidence | null;
+  remediation_state?: QuizRemediationState | null;
+  next_action?: QuizNextAction | string | null;
+  remediation_prompt?: QuizRemediationPrompt | null;
   reference_answer?: string | null;
   reference_points?: unknown[] | null;
 };
@@ -567,6 +605,7 @@ export type QuizSessionDetail = {
   mode: QuizMode;
   jd_ids: number[] | null;
   status: 'in_progress' | 'submitted' | 'abandoned';
+  agent_state?: Record<string, unknown> | null;
   started_at: string;
   submitted_at: string | null;
   abandoned_at: string | null;
@@ -610,6 +649,64 @@ export type QuizSubmitSseFrame =
   | SseFrame<'progress', QuizProgress>
   | SseFrame<'question_done', { order_index: number; scores: QuizScores; evidence: QuizEvidence }>
   | SseFrame<'result', { session_id: number; scores: QuizScores; recall_md_path?: string | null }>
+  | SseFrame<'error', { code: string; detail: string; order_index?: number }>
+  | SseFrame<'done', { ok: boolean }>;
+
+export type QuizAnswerTurnSubmitInput = {
+  text: string;
+  turn_type: 'initial' | 'remediation';
+  client_turn_id?: string | null;
+};
+
+export type QuizAnswerTurnSseFrame =
+  | SseFrame<
+      'started',
+      {
+        job_id: string;
+        resource_id: number;
+        session_id?: number;
+        order_index: number;
+        round_index: number;
+      }
+    >
+  | SseFrame<
+      'progress',
+      {
+        phase: string;
+        included?: string[];
+        compacted?: boolean;
+      }
+    >
+  | SseFrame<
+      'judge_done',
+      {
+        order_index: number;
+        round_index: number;
+        scores: QuizScores;
+        unresolved_gaps?: unknown[];
+      }
+    >
+  | SseFrame<
+      'decision_done',
+      {
+        next_action: QuizNextAction;
+        triggered_by: string;
+        decision_reason: string;
+        exit_reason?: string | null;
+      }
+    >
+  | SseFrame<
+      'result',
+      {
+        session_id: number;
+        order_index: number;
+        round_index: number;
+        next_action: QuizNextAction;
+        cumulative_answer: string;
+        scores: QuizScores;
+        remediation_prompt: QuizRemediationPrompt | null;
+      }
+    >
   | SseFrame<'error', { code: string; detail: string; order_index?: number }>
   | SseFrame<'done', { ok: boolean }>;
 
@@ -667,6 +764,24 @@ export function submitQuizSession(sessionId: number): AsyncGenerator<QuizSubmitS
     method: 'POST',
     headers: { 'X-User-Id': USER_ID },
   });
+}
+
+export function submitQuizAnswerTurn(
+  sessionId: number,
+  orderIndex: number,
+  input: QuizAnswerTurnSubmitInput,
+): AsyncGenerator<QuizAnswerTurnSseFrame> {
+  return streamSse<QuizAnswerTurnSseFrame>(
+    `${API_BASE_URL}/api/quiz/sessions/${sessionId}/answers/${orderIndex}/turns`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-User-Id': USER_ID,
+      },
+      body: JSON.stringify(input),
+    },
+  );
 }
 
 export async function abandonQuizSession(

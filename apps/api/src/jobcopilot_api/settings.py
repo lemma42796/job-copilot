@@ -26,7 +26,10 @@ class Settings(BaseSettings):
     api_port: int = Field(default=8000)
 
     cors_allow_origins: list[str] = Field(
-        default_factory=lambda: ["http://localhost:3000"],
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ],
     )
 
     database_url: str = Field(

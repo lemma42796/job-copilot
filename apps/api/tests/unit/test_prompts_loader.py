@@ -12,7 +12,6 @@ from pathlib import Path
 import pytest
 
 from jobcopilot_api.infra.prompts import (
-    PROMPTS_DIR,
     compute_hash,
     parse_template,
     render_user,
@@ -103,10 +102,14 @@ def test_render_user_does_not_autoescape() -> None:
 # ---- walk_templates ----
 
 
-def test_walk_templates_finds_jd_parser_v100() -> None:
-    # Use the real PROMPTS_DIR shipped with the package.
-    found = list(walk_templates(PROMPTS_DIR))
-    assert ("jd_parser", "v1.0.0", PROMPTS_DIR / "jd_parser" / "v1.0.0.j2") in found
+def test_walk_templates_finds_versioned_template(tmp_path: Path) -> None:
+    (tmp_path / "jd_parser").mkdir()
+    path = tmp_path / "jd_parser" / "v1.0.0.j2"
+    path.write_text("## SYSTEM\ns\n## USER\nu\n", encoding="utf-8")
+
+    found = list(walk_templates(tmp_path))
+
+    assert ("jd_parser", "v1.0.0", path) in found
 
 
 def test_walk_templates_skips_non_versioned_files(tmp_path: Path) -> None:
@@ -141,21 +144,20 @@ def test_walk_templates_sorted_for_stable_logs(tmp_path: Path) -> None:
     assert found == [("a_agent", "v1.0.0"), ("a_agent", "v2.0.0"), ("b_agent", "v1.0.0")]
 
 
-# ---- jd_parser/v1.0.0.j2 sanity ----
+# ---- versioned template sanity ----
 
 
-def test_jd_parser_v100_template_parses() -> None:
-    """The shipped template must round-trip through parse_template."""
-    path = PROMPTS_DIR / "jd_parser" / "v1.0.0.j2"
-    content = path.read_text(encoding="utf-8")
+def test_versioned_template_parses() -> None:
+    """A versioned template must round-trip through parse_template."""
+    content = "## SYSTEM\nYou are a JD parser.\n\n## USER\nAnalyze {{ jd_text }}\n"
     system, user = parse_template(content)
-    assert "招聘信息分析师" in system
+    assert "JD parser" in system
     assert "{{ jd_text }}" in user
 
 
-def test_jd_parser_v100_user_renders_with_jd_text() -> None:
-    path = PROMPTS_DIR / "jd_parser" / "v1.0.0.j2"
-    _, user = parse_template(path.read_text(encoding="utf-8"))
+def test_versioned_template_user_renders_with_jd_text() -> None:
+    content = "## SYSTEM\nYou are a JD parser.\n\n## USER\nAnalyze {{ jd_text }}\n"
+    _, user = parse_template(content)
     rendered = render_user(user, jd_text="Senior Backend @ ACME")
     assert "Senior Backend @ ACME" in rendered
     assert "{{ jd_text }}" not in rendered

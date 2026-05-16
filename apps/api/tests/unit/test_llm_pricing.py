@@ -8,28 +8,28 @@ from jobcopilot_api.llm.pricing import cost_for, price_table
 
 
 def test_flash_cost_uncached() -> None:
-    # 1M in @ 0.6 + 1M out @ 7.2 = 7.8 CNY
+    # 1M in @ 1.2 + 1M out @ 7.2 = 8.4 CNY
     cost = cost_for(
         model="qwen3.6-flash",
         tokens_in=1_000_000,
         cached_tokens=0,
         tokens_out=1_000_000,
     )
-    assert cost == Decimal("7.8")
+    assert cost == Decimal("8.4")
 
 
 def test_flash_cost_with_cache() -> None:
-    # 100k uncached in @ 0.6  -> 0.06
+    # 100k uncached in @ 1.2  -> 0.12
     # 900k cached in   @ 0.12 -> 0.108
     # 1M out          @ 7.2  -> 7.2
-    # total = 7.368
+    # total = 7.428
     cost = cost_for(
         model="qwen3.6-flash",
         tokens_in=1_000_000,
         cached_tokens=900_000,
         tokens_out=1_000_000,
     )
-    assert cost == Decimal("7.368")
+    assert cost == Decimal("7.428")
 
 
 def test_unknown_model_returns_zero() -> None:

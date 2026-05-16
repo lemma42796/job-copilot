@@ -58,9 +58,11 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - M2 retrieval quiz pipeline 代码已提交:`103d882 feat: add m2 retrieval quiz pipeline`。
 - M2.1 Agentic RAG 文档已提交:`fd892fa docs: add agentic interview coach roadmap`。
 - 本轮 M2.1 文档决策已更新:删除"单题最多 1 轮追问"限制,改成 `remediation loop`(提示哪里答不好 → 补答 → 累计答案重评 → 再判断);补齐长上下文 context pack、纠偏幻觉治理、`session_events`、单题 turn SSE、interview_coach harness 评测口径。
-- 本轮 M2.1 后端最小骨架已落代码:新增 `0020_interview_coach_state.py`、`SessionEvent` ORM、`quiz_sessions.agent_state / last_agent_node`、`session_answers.answer_turns / remediation_state`、单题 turn SSE `POST /api/quiz/sessions/{id}/answers/{order_index}/turns`、`interview_service.submit_answer_turn_sse`。
-- 单题 turn 当前能力:提交一轮答案 → 合并累计答案 → `build_context_pack` → 复用 AnswerJudge → `decide_next_action` → 返回 `remediation_prompt / ask_next / summarize`;事件写 `answer_submitted / context_pack_built / judge_completed / decision_made / remediation_prompted`。
-- 重要接力限制:本轮**未跑测试、未跑 Alembic migration、未做前端接入**;`interview_service` 目前为最小闭环,暂复用 `answer_service` 内部 helper,还不是最终 LangGraph 形态。
+- 本轮 M2.1 单题 turn 已接到 `/quiz`:前端可提交本题 / 补答,消费 `started → progress(context_pack_built) → judge_done → decision_done → result → done` SSE,显示单题分数、`remediation_prompt`、轮次状态,刷新 session 后恢复 `answer_turns / remediation_state / next_action`。
+- 本轮后端已补 stale context 保护:`interview_service` 在写入 turn 前先确认 session 引用的 `NoteChunk` 仍存在;旧 session 若引用重建前 chunks,返回明确的"重新出题"错误,避免先写脏 `answer_turns`。
+- 本轮 QuizGenerator 引用漂移已热修:`reference_answer` 中的 `[N]` 会被解析为 `reference_chunk_ids`;`source_chunk_ids` 归一为 answer citations、reference chunks、reference point evidence 的并集;越界仍 hard fail,采分点与 evidence 弱文本重合降为 warning。
+- 本轮按用户指令跑过 migration / API smoke:`alembic upgrade head` 已到 `0020`;schema 列存在;validation-only 单题 turn smoke 返回 `VALIDATION_ERROR 答案不能为空`。未跑完整测试回归;正向 turn smoke 会改真实 session 并触发外部 LLM,未自动执行。
+- 本轮顺手修了旧单测断言漂移:`qwen3.6-flash` 价格期望更新,`prompts_loader` 不再依赖已删除的真实 `jd_parser/v1.0.0.j2` 模板。用户要求停止后未重跑单测。
 - M2 AnswerJudge 初版已落地:三层 evidence prompt / agent / submit SSE / Python 算分 / fabricated 锁顶。
 - 真实验收:用户已跑 `/quiz` 主题 `Langfuse Prompt 版本管理`,session #4 出题 / 保存 / Judge 评分 / `/quiz?session=4` 恢复通过。
 - GitHub Actions 已改为**手动触发**(`workflow_dispatch`),push 不再自动跑 lint / tests / build。
@@ -84,14 +86,14 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **M2 quiz/session UI 已落地**:`/quiz` 支持主题出题、答题、草稿保存、提交评分、结构化 evidence、样例模式、最近练习与 session 恢复。
 - **百炼 Context Cache 代码已接入但默认关闭**:保留稳定 chunks 前缀渲染与审计字段;后续多轮面试讨论再开启显式 cache。
 - **M2.1 Agentic RAG 方向锁定**:`InterviewCoachAgent` 不做泛化多 Agent,而是 interview coaching harness:检索 → 出题 → 等答 → 评分 → 决策 → 多轮纠偏 / 总结;系统负责状态、工具、证据、分支、恢复、回放和评测。
-- **M2.1 后端最小骨架已落地**:`0020_interview_coach_state.py` + `SessionEvent` + 单题 turn SSE + `interview_service`。`GET /quiz/sessions/{id}` 已返回 `agent_state / answer_turns / remediation_state / remediation_prompt`,用于刷新后从 `wait_user_answer` 继续。
+- **M2.1 单题 turn 最小闭环已落地**:`0020_interview_coach_state.py` + `SessionEvent` + 单题 turn SSE + `/quiz` 前端接入。`GET /quiz/sessions/{id}` 已返回 `agent_state / answer_turns / remediation_state / remediation_prompt`,用于刷新后从 `wait_user_answer` 继续。
 - **hybrid_search smoke 标签已升级并复核一轮**:`evals/suites/hybrid_search/dataset.note_smoke.jsonl` 覆盖 M2/M3 边界、Context Cache、reranker/query rewrite、AnswerJudge、SSE 恢复、MVCC、Outbox、epoll、provider timeout/429、zero-hit;`direct_evidence_chunk_ids` 只放可直接回答 query 的 chunk。
 - **hybrid_search note/chunk smoke 脚本已落地**:`apps/api/scripts/eval_hybrid_search_note_smoke.py` 只读 DB / 写本地 report + trace(`evals/reports/` gitignore),输出 top notes、top chunks、heading/anchor coverage、hard-negative intrusion、zero-hit、召回指标与成本;`--score-trace` 支持只按新标签离线重算。
 - **hybrid_search A/B 诊断开关已落地**:可单独比较 provider rerank / 纯 hybrid、rerank 输入池大小、selected topK、parent-doc on/off,用于拆分"召回 / 粗排排序 / 精排 / parent-doc"责任。
 - **hybrid_search 粗排诊断已落地**:`search_service` 暴露 diagnostics-only 路径;smoke report 可解释 direct evidence 为什么在 top20/top50 后、哪条 expanded query 贡献 hard-negative、q0 加权会让哪些 labeled chunks 上下移动。
 - **Query Understanding v2 + weighted RRF 已落地**:query_rewriter 输出 intent / core entities / must-keep terms / weighted queries;跨 query RRF 已支持 query weights,用户原话固定两票。
 - **M2.1 retrieval governance 已落地**:`retrieval_governance.py` 统一承载 source/type multiplier、窄 protected anchor route、zero-hit support gate、contrast query governance、post-rerank governance/blend、dynamic clean-context selection;`retrieval_pipeline` / `quiz_service` / smoke eval 已接入同一套逻辑。
-- **parent-doc 默认禁用 + 出题引用校验已落地**:QuizGenerator 只拿 post-rerank 选出的干净 seed chunks;题目保存前校验 `reference_answer` 引用、`reference_chunk_ids / evidence_chunk_ids` 越界、采分点与声明证据的基础重合,避免 LLM 把背景材料包装成评分依据。
+- **parent-doc 默认禁用 + 出题引用归一化已落地**:QuizGenerator 只拿 post-rerank 选出的干净 seed chunks;题目保存前以后端归一化 `source_chunk_ids / reference_chunk_ids / evidence_chunk_ids`,越界 hard fail,弱文本重合仅 warning,避免 LLM 四个引用字段各说各话。
 - **query embedding cache 已落地**:`search_service` 通过 `embed_query_cached` 复用 `llm_response_cache`;smoke/eval 默认 cache-only,重复跑同一套粗排 / 精排时,相同 expanded query 不再重复请求 embedding provider,miss 直接暴露。
 - **eval 脚本资源收尾已补强**:`infra.langfuse` 避免无 key/noop 场景构造 Langfuse SDK client;DashScope client 有 Langfuse key 才走 `langfuse.openai`;smoke cleanup 不再为关闭而懒加载 embedder / llm singleton。
 - **百炼价格 / rerank 限制已记录**:`qwen3.6-flash` 控制台价格、Responses 工具价、`qwen3-rerank` 500 docs / token 上限 / `gte-rerank-v2` 下线提醒已写入代码注释与常量;rerank 请求本地截断到 500 docs;当前 reranker document format 为 `content + weak_source_context`。
@@ -101,13 +103,13 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **M2.1 最小闭环接力验证 + 前端接入**:用户先手动跑 migration / API smoke 后,把 `/quiz` 答题提交接到单题 turn SSE,显示 `remediation_prompt`,允许用户补答并再次提交;保留整场 `submit` 作为最终汇总路径。
+1. **QuizGenerator 引用 schema 收口**:不要再让 LLM 同时维护 `source_chunk_ids / reference_chunk_ids / reference_answer citations / reference_points evidence` 四套真相;下一刀应改 prompt/schema,让 LLM 只输出 `reference_answer` 的 `[N]` 和 `reference_points[].evidence_chunk_ids`,后端派生 `reference_chunk_ids / source_chunk_ids`。
 
 备选:
 
 - 若继续后端,先把 `interview_service` 私用 `answer_service._*` helper 整理成可复用公共 helper,再接 `summarize_session / finish_session`。
 - 若做评测,补 `evals/suites/interview_coach/` 最小 10 条流程型样本,覆盖不纠偏 / coverage 纠偏 / fabricated 纠偏 / depth 纠偏 / 多轮无提升退出 / 中途恢复 / 长上下文压缩。
-- 若只做人工验证,重点看新 endpoint SSE 事件:`started → progress(context_pack_built) → judge_done → decision_done → result → done`。
+- 若只做人工验证,重点看 `/quiz?session=<id>` 单题按钮、纠偏提示、补答后累计答案重评、刷新恢复。
 - 若继续跑 smoke,先看 trace 里的 `governance_flags` 和 `post_rank`,不要只看 headline pass。
 - 如 cache-only 因 query miss 失败,先确认是不是 query rewrite 内容变了;不要为了跑通悄悄切回 live-on-miss。
 - 如果继续看 rerank,优先调 blend / governance 阈值 / dynamic selection,不要把 rerank input 收到 15。
@@ -158,6 +160,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **[来自 M2.1] 多轮对话不靠塞全量历史**:原始 transcript / events 落库回放,LLM 当前输入只拿 context pack;source chunks / reference_points / unresolved_gaps 优先级最高。
 - **[来自 M2.1] 纠偏 prompt 必须 evidence-bound**:每次 remediation 记录 `triggered_by`、缺口 id、chunk id / lookup 结果,不能引入当前题 source chunks 之外的新标准答案来源。
 - **[来自 M2.1] M2.1 是 harness engineering,不是 prompt demo**:LLM 只在明确节点做局部生成 / 判断;可靠性来自状态机、工具边界、证据约束、恢复、回放和评测。
+- **[来自 M2.1] QuizGenerator 引用编号是 prompt-local**:`[N]` / `source_chunk_ids` / `reference_chunk_ids` / `evidence_chunk_ids` 都先是本次精排上下文的 `1..K`,入库前才映射到真实 `note_chunks.id`;后端应派生重复字段,不要信 LLM 维护多份一致性。
 
 # 文档导航
 

@@ -245,8 +245,8 @@ async def test_cost_uses_pricing_table_for_known_model() -> None:
         system="sys",
         user="usr",
     )
-    # Flash: 1M in @ 0.6 + 1M out @ 7.2 = 7.8 CNY
-    assert result.cost_cny == Decimal("7.8")
+    # Flash: 1M in @ 1.2 + 1M out @ 7.2 = 8.4 CNY
+    assert result.cost_cny == Decimal("8.4")
 
 
 async def test_cost_zero_for_unknown_model() -> None:
