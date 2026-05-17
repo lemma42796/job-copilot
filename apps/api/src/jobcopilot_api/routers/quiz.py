@@ -112,7 +112,7 @@ async def save_answer(
 
 @router.post(
     "/sessions/{session_id}/answers/{order_index}/turns",
-    summary="提交单题一轮答案并推进 InterviewCoachAgent(SSE)",
+    summary="提交单题答案/补答或追问教练(SSE)",
 )
 async def submit_answer_turn(
     session_id: int,

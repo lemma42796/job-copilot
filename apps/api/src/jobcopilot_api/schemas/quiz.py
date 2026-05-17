@@ -30,7 +30,7 @@ class AnswerDraftIn(BaseModel):
 
 class AnswerTurnSubmitIn(BaseModel):
     text: str
-    turn_type: Literal["initial", "remediation"] = "initial"
+    turn_type: Literal["initial", "remediation", "coach_question"] = "initial"
     client_turn_id: str | None = None
 
 
@@ -90,6 +90,8 @@ class QuizQuestionDetailOut(BaseModel):
     question: QuestionPublic
     user_answer: str | None = None
     answer_turns: list[dict] = Field(default_factory=list)
+    judge_turns: list[dict] = Field(default_factory=list)
+    coach_turns: list[dict] = Field(default_factory=list)
     answer_submitted_at: datetime | None = None
     judged: bool = False
     scores: QuizScoresOut | None = None

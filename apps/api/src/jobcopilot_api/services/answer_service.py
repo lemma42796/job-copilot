@@ -8,9 +8,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -19,31 +18,24 @@ from typing import Any
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from jobcopilot_api.agents.answer_judge import agent as answer_judge_agent
-from jobcopilot_api.agents.answer_judge.prompts import (
-    PROMPT_VERSION as JUDGE_PROMPT_VERSION,
-)
 from jobcopilot_api.agents.answer_judge.scoring import (
-    coverage_score,
-    depth_score,
-    fidelity_score,
     total_score as compute_total_score,
 )
 from jobcopilot_api.errors import JobCopilotError, NotFoundError
-from jobcopilot_api.llm.client import LLMResult
 from jobcopilot_api.llm.errors import LLMError
-from jobcopilot_api.models.note_chunk import NoteChunk
 from jobcopilot_api.models.question import Question
 from jobcopilot_api.models.quiz_session import QuizSession
 from jobcopilot_api.models.session_answer import SessionAnswer
-from jobcopilot_api.schemas.agents.answer_judge import (
-    AnswerJudgeInput,
-    AnswerJudgeOutput,
-)
+from jobcopilot_api.models.session_event import SessionEvent
+from jobcopilot_api.schemas.agents.answer_judge import AnswerJudgeInput
 from jobcopilot_api.schemas.agents.quiz_generator import (
     GeneratedQuestion,
     QuizGenChunkInput,
-    ScoringPoint,
+)
+from jobcopilot_api.services import answer_judge_service
+from jobcopilot_api.services.answer_judge_service import (
+    JudgeCallFailedError,
+    JudgeIntegrityError,
 )
 from jobcopilot_api.schemas.quiz import (
     AnswerDraftIn,
@@ -54,11 +46,6 @@ from jobcopilot_api.schemas.quiz import (
     QuizSessionListOut,
     QuestionPublic,
 )
-from jobcopilot_api.services.retrieval_pipeline import fetch_note_titles
-
-REQUIRED_DEPTH_DIMENSIONS = {"tradeoff", "why", "boundary"}
-# SSE-level escape hatch for one answer, including any lookup tool rounds.
-JUDGE_CALL_HARD_TIMEOUT_S = 95.0
 
 
 class SessionNotInProgressError(JobCopilotError):
@@ -71,16 +58,6 @@ class UnansweredQuestionsError(JobCopilotError):
     status_code = 409
     code = "unanswered_questions"
     title = "还有题目未作答"
-
-
-class JudgeCallFailedError(JobCopilotError):
-    status_code = 502
-    code = "judge_call_failed"
-    title = "Judge 调用失败"
-
-
-class JudgeIntegrityError(JudgeCallFailedError):
-    title = "Judge 输出不符合完整性约束"
 
 
 @dataclass(frozen=True)
@@ -126,6 +103,77 @@ async def get_session_detail(
     if len(question_by_id) != len(set(question_ids)):
         raise JudgeIntegrityError("session_answers 引用了不存在的 question")
 
+    answer_ids = [answer.id for answer in answers]
+    judge_turns_by_answer_id: dict[int, list[dict[str, Any]]] = {
+        answer_id: [] for answer_id in answer_ids
+    }
+    coach_turns_by_answer_id: dict[int, list[dict[str, Any]]] = {
+        answer_id: [] for answer_id in answer_ids
+    }
+    if answer_ids:
+        turn_events = list(
+            (
+                await session.execute(
+                    sa.select(SessionEvent)
+                    .where(SessionEvent.answer_id.in_(answer_ids))
+                    .where(
+                        SessionEvent.event_type.in_(
+                            [
+                                "judge_completed",
+                                "decision_made",
+                                "remediation_prompted",
+                                "coach_answered",
+                            ]
+                        )
+                    )
+                    .order_by(SessionEvent.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        judge_by_answer_and_round: dict[tuple[int, int], dict[str, Any]] = {}
+        for event in turn_events:
+            if event.answer_id is None:
+                continue
+            payload = dict(event.payload or {})
+            if event.event_type == "coach_answered":
+                payload.setdefault("round_index", event.round_index)
+                payload.setdefault("turn_type", "coach_question")
+                payload.setdefault("answered_at", event.created_at.isoformat())
+                coach_turns_by_answer_id.setdefault(event.answer_id, []).append(payload)
+                continue
+
+            key = (event.answer_id, event.round_index)
+            turn = judge_by_answer_and_round.setdefault(
+                key,
+                {
+                    "round_index": event.round_index,
+                    "turn_type": "judge_feedback",
+                },
+            )
+            if event.event_type == "judge_completed":
+                turn["judged_at"] = event.created_at.isoformat()
+                turn["scores"] = payload.get("scores")
+                turn["coach_message"] = payload.get("coach_message")
+            elif event.event_type == "decision_made":
+                turn["next_action"] = payload.get("last_decision")
+                turn["triggered_by"] = payload.get("triggered_by")
+                turn["decision_reason"] = payload.get("decision_reason")
+                turn["exit_reason"] = payload.get("exit_reason")
+                turn["remediation_prompt"] = payload.get("remediation_prompt")
+                turn["unresolved_gaps"] = payload.get("unresolved_gaps")
+            elif event.event_type == "remediation_prompted":
+                turn["remediation_prompt"] = payload
+
+        for (answer_id, _round_index), turn in sorted(
+            judge_by_answer_and_round.items(),
+            key=lambda item: (item[0][0], item[0][1]),
+        ):
+            if not turn.get("coach_message") and not turn.get("scores"):
+                continue
+            judge_turns_by_answer_id.setdefault(answer_id, []).append(turn)
+
     include_scoring = quiz_session.status == "submitted"
     question_items: list[QuizQuestionDetailOut] = []
     for answer in answers:
@@ -160,6 +208,11 @@ async def get_session_detail(
                 ),
                 user_answer=answer.user_answer,
                 answer_turns=list(answer.answer_turns or []),
+                judge_turns=_with_answer_turn_types(
+                    judge_turns_by_answer_id.get(answer.id, []),
+                    list(answer.answer_turns or []),
+                ),
+                coach_turns=coach_turns_by_answer_id.get(answer.id, []),
                 answer_submitted_at=answer.answer_submitted_at,
                 judged=answer.judged_at is not None,
                 scores=scores,
@@ -331,24 +384,12 @@ async def submit_session_sse(
             user_answer=task.user_answer,
         )
         try:
-            llm_result = await _run_judge_with_hard_timeout(
-                judge_input,
-                sessionmaker=sessionmaker,
-            )
-            judged = _extract_judge_output(llm_result)
-            judged = _map_and_validate_output(
-                output=judged,
-                scoring_points=task.question.scoring_points,
-                judge_context_chunk_ids=task.judge_context_chunk_ids,
-                lookup_ref_map=_lookup_ref_map(llm_result),
-            )
-            scores = _compute_scores(judged, task.question.scoring_points)
-            await _persist_judged_answer(
+            judged_answer = await answer_judge_service.judge_and_persist_answer(
                 sessionmaker,
                 answer_id=task.answer_id,
-                judged=judged,
-                scores=scores,
-                llm_result=llm_result,
+                judge_input=judge_input,
+                scoring_points=task.question.scoring_points,
+                judge_context_chunk_ids=task.judge_context_chunk_ids,
             )
         except (LLMError, JudgeCallFailedError) as e:
             detail = str(e) or "Judge 调用失败"
@@ -362,6 +403,8 @@ async def submit_session_sse(
             )
             yield _ev("done", {"ok": False})
             return
+        judged = judged_answer.judged
+        scores = judged_answer.scores
 
         yield _ev(
             "question_done",
@@ -428,62 +471,6 @@ def _error_payload(exc: JobCopilotError) -> dict[str, Any]:
     return payload
 
 
-async def _run_judge_with_hard_timeout(
-    judge_input: AnswerJudgeInput,
-    *,
-    sessionmaker: async_sessionmaker[AsyncSession],
-) -> LLMResult:
-    """Run one Judge call with a service-level wall-clock cap.
-
-    The LLM layer already passes provider timeouts, but SSE must still have a
-    final escape hatch when the SDK/upstream hangs without raising.
-    """
-    task = asyncio.create_task(
-        answer_judge_agent.run(judge_input, sessionmaker=sessionmaker)
-    )
-    try:
-        done, _pending = await asyncio.wait(
-            {task},
-            timeout=JUDGE_CALL_HARD_TIMEOUT_S,
-        )
-    except asyncio.CancelledError:
-        _cancel_and_drain(task)
-        raise
-
-    if not done:
-        _cancel_and_drain(task)
-        raise JudgeCallFailedError(
-            f"Judge 调用超过 {JUDGE_CALL_HARD_TIMEOUT_S:.0f}s 未返回,已中止"
-        )
-
-    return task.result()
-
-
-def _cancel_and_drain(task: asyncio.Task[LLMResult]) -> None:
-    task.cancel()
-    task.add_done_callback(_drain_task_exception)
-
-
-def _drain_task_exception(task: asyncio.Task[LLMResult]) -> None:
-    try:
-        task.exception()
-    except (asyncio.CancelledError, Exception):
-        return None
-
-
-def _lookup_ref_map(llm_result: LLMResult) -> dict[int, int]:
-    raw = llm_result.metadata.get("lookup_ref_map", {})
-    if not isinstance(raw, dict):
-        return {}
-    out: dict[int, int] = {}
-    for ref_id, chunk_id in raw.items():
-        try:
-            out[int(ref_id)] = int(chunk_id)
-        except (TypeError, ValueError):
-            continue
-    return out
-
-
 async def _load_judge_tasks(
     sessionmaker: async_sessionmaker[AsyncSession],
     session_id: int,
@@ -536,320 +523,55 @@ async def _load_judge_tasks(
         if len(question_by_id) != len(set(question_ids)):
             raise JudgeIntegrityError("session_answers 引用了不存在的 question")
 
-        judge_context_chunk_ids = _judge_context_chunk_ids(
+        task_questions = [question_by_id[answer.question_id] for answer in answers]
+        judge_context = await answer_judge_service.build_judge_context(
+            session,
             quiz_session=quiz_session,
-            questions=[question_by_id[answer.question_id] for answer in answers],
+            questions=task_questions,
         )
-        if not judge_context_chunk_ids:
-            raise JudgeIntegrityError(
-                "quiz_session.final_context_chunk_ids / questions.evidence_chunk_ids 不能为空"
-            )
-        chunks = list(
-            (
-                await session.execute(
-                    sa.select(NoteChunk).where(
-                        NoteChunk.id.in_(judge_context_chunk_ids)
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        chunk_by_id = {c.id: c for c in chunks}
-        if len(chunk_by_id) != len(set(judge_context_chunk_ids)):
-            raise JudgeIntegrityError(
-                "quiz_session.final_context_chunk_ids / questions.evidence_chunk_ids "
-                "引用了不存在的 chunk"
-            )
-
-        note_ids = list({chunk.note_id for chunk in chunks})
-        note_titles = await fetch_note_titles(session, note_ids)
-        judge_context_chunks = [
-            _chunk_to_input(chunk_by_id[chunk_id], note_titles)
-            for chunk_id in judge_context_chunk_ids
-        ]
 
         tasks: list[_JudgeTask] = []
         for answer in answers:
             question = question_by_id[answer.question_id]
-            local_question = _question_to_local(question, judge_context_chunk_ids)
+            local_question = answer_judge_service.question_to_local(
+                question,
+                judge_context.chunk_ids,
+            )
             tasks.append(
                 _JudgeTask(
                     answer_id=answer.id,
                     order_index=answer.order_index,
                     user_answer=answer.user_answer or "",
                     question=local_question,
-                    chunks=judge_context_chunks,
-                    judge_context_chunk_ids=judge_context_chunk_ids,
+                    chunks=judge_context.chunks,
+                    judge_context_chunk_ids=judge_context.chunk_ids,
                 )
             )
         return tasks
-
-
-def _judge_context_chunk_ids(
-    *,
-    quiz_session: QuizSession,
-    questions: list[Question],
-) -> list[int]:
-    """Use the session retrieval order so Judge shares Quiz's cache prefix."""
-    judge_context_chunk_ids = _unique_int_ids(
-        quiz_session.final_context_chunk_ids or []
-    )
-    question_context_chunk_ids = _unique_int_ids(
-        chunk_id
-        for question in questions
-        for chunk_id in _question_context_chunk_ids(question)
-    )
-    seen = set(judge_context_chunk_ids)
-    for chunk_id in question_context_chunk_ids:
-        if chunk_id not in seen:
-            judge_context_chunk_ids.append(chunk_id)
-            seen.add(chunk_id)
-    return judge_context_chunk_ids
-
-
-def _unique_int_ids(values: Iterable[Any]) -> list[int]:
-    out: list[int] = []
-    seen: set[int] = set()
-    for value in values:
-        try:
-            chunk_id = int(value)
-        except (TypeError, ValueError) as e:
-            raise JudgeIntegrityError(f"chunk id 非法:{value!r}") from e
-        if chunk_id not in seen:
-            out.append(chunk_id)
-            seen.add(chunk_id)
-    return out
-
-
-def _question_context_chunk_ids(question: Question) -> list[int]:
-    ids: list[int] = []
-    ids.extend(question.evidence_chunk_ids)
-    ids.extend(question.reference_answer_chunk_ids)
-    for point in question.scoring_points:
-        ids.extend(point.get("supporting_chunk_ids", []))
-    return ids
-
-
-def _question_to_local(
-    question: Question,
-    judge_context_chunk_ids: list[int],
-) -> GeneratedQuestion:
-    """DB id 存储形态 → AnswerJudge prompt 的局部 [N] 编号形态。"""
-    db_to_local = {
-        chunk_id: idx
-        for idx, chunk_id in enumerate(judge_context_chunk_ids, start=1)
-    }
-
-    def to_local(chunk_id: int) -> int:
-        if chunk_id not in db_to_local:
-            raise JudgeIntegrityError(
-                f"question {question.id} 引用了非 judge context chunk:{chunk_id}"
-            )
-        return db_to_local[chunk_id]
-
-    points = []
-    for raw in question.scoring_points:
-        points.append(
-            ScoringPoint(
-                id=str(raw["id"]),
-                text=str(raw["text"]),
-                weight=float(raw["weight"]),
-                supporting_chunk_ids=[
-                    to_local(int(chunk_id))
-                    for chunk_id in raw.get("supporting_chunk_ids", [])
-                ],
-            )
-        )
-
-    return GeneratedQuestion(
-        type=question.type,
-        prompt=question.prompt,
-        evidence_chunk_ids=[
-            to_local(int(chunk_id)) for chunk_id in question.evidence_chunk_ids
-        ],
-        reference_answer=question.reference_answer,
-        reference_answer_chunk_ids=[
-            to_local(int(chunk_id)) for chunk_id in question.reference_answer_chunk_ids
-        ],
-        scoring_points=points,
-    )
-
-
-def _chunk_to_input(
-    chunk: NoteChunk,
-    note_titles: dict[int, str],
-) -> QuizGenChunkInput:
-    return QuizGenChunkInput(
-        id=chunk.id,
-        folder_path=list(chunk.folder_path),
-        heading_path=list(chunk.heading_path),
-        note_title=note_titles.get(chunk.note_id, ""),
-        content=chunk.content,
-    )
-
-
-def _extract_judge_output(llm_result: LLMResult) -> AnswerJudgeOutput:
-    if not isinstance(llm_result.parsed, AnswerJudgeOutput):
-        raise JudgeIntegrityError("answer_judge 没返回有效的 AnswerJudgeOutput")
-    return llm_result.parsed
-
-
-def _map_and_validate_output(
-    *,
-    output: AnswerJudgeOutput,
-    scoring_points: list[ScoringPoint],
-    judge_context_chunk_ids: list[int],
-    lookup_ref_map: dict[int, int],
-) -> AnswerJudgeOutput:
-    _validate_coverage(output, scoring_points)
-    _validate_fidelity(output, judge_context_chunk_ids, lookup_ref_map)
-    _validate_depth(output)
-
-    data = output.model_dump(mode="json")
-    coach_message = str(data.get("coach_message") or "").strip()
-    if not coach_message:
-        raise JudgeIntegrityError("coach_message 不能为空")
-    data["coach_message"] = coach_message
-    for claim in data["fidelity_evidence"]["claims"]:
-        if claim["label"] == "fabricated":
-            claim["supporting_chunk_ids"] = []
-            continue
-        claim["supporting_chunk_ids"] = _map_claim_chunk_ids(
-            claim.get("supporting_chunk_ids", []),
-            judge_context_chunk_ids=judge_context_chunk_ids,
-            lookup_ref_map=lookup_ref_map,
-        )
-    return AnswerJudgeOutput.model_validate(data)
-
-
-def _validate_coverage(
-    output: AnswerJudgeOutput,
-    scoring_points: list[ScoringPoint],
-) -> None:
-    expected = {p.id for p in scoring_points}
-    got = [p.id for p in output.coverage_evidence.points]
-    if len(got) != len(set(got)):
-        raise JudgeIntegrityError("coverage_evidence.points 出现重复 point id")
-    if set(got) != expected:
-        raise JudgeIntegrityError(
-            f"coverage_evidence point ids 不匹配,"
-            f"expected={sorted(expected)},got={sorted(got)}"
-        )
-
-
-def _validate_fidelity(
-    output: AnswerJudgeOutput,
-    judge_context_chunk_ids: list[int],
-    lookup_ref_map: dict[int, int],
-) -> None:
-    claims = output.fidelity_evidence.claims
-    if not claims:
-        raise JudgeIntegrityError("fidelity_evidence.claims 不能为空")
-
-    for claim in claims:
-        if claim.label == "fabricated" and claim.supporting_chunk_ids:
-            raise JudgeIntegrityError(
-                "fabricated claim 的 supporting_chunk_ids 必须为空"
-            )
-        if claim.label != "fabricated":
-            _map_claim_chunk_ids(
-                claim.supporting_chunk_ids,
-                judge_context_chunk_ids=judge_context_chunk_ids,
-                lookup_ref_map=lookup_ref_map,
-            )
-
-
-def _map_claim_chunk_ids(
-    raw_ids: list[int],
-    *,
-    judge_context_chunk_ids: list[int],
-    lookup_ref_map: dict[int, int],
-) -> list[int]:
-    max_local_id = len(judge_context_chunk_ids)
-    lookup_chunk_ids = set(lookup_ref_map.values())
-    mapped: list[int] = []
-    for raw_id in raw_ids:
-        chunk_id = int(raw_id)
-        if 1 <= chunk_id <= max_local_id:
-            mapped.append(judge_context_chunk_ids[chunk_id - 1])
-            continue
-        if chunk_id in lookup_ref_map:
-            mapped.append(lookup_ref_map[chunk_id])
-            continue
-        if chunk_id > max_local_id and (
-            chunk_id in judge_context_chunk_ids or chunk_id in lookup_chunk_ids
-        ):
-            mapped.append(chunk_id)
-            continue
-        raise JudgeIntegrityError(
-            f"fidelity claim chunk_id [{chunk_id}] 越界,"
-            f"合法范围 1..{max_local_id} 或 lookup ref_id"
-        )
-    return mapped
-
-
-def _validate_depth(output: AnswerJudgeOutput) -> None:
-    got = set(output.depth_evidence.dimensions)
-    if got != REQUIRED_DEPTH_DIMENSIONS:
-        raise JudgeIntegrityError(
-            f"depth_evidence.dimensions keys 不匹配,"
-            f"expected={sorted(REQUIRED_DEPTH_DIMENSIONS)},got={sorted(got)}"
-        )
-
-
-def _compute_scores(
-    judged: AnswerJudgeOutput,
-    scoring_points: list[ScoringPoint],
-) -> dict[str, float]:
-    coverage = coverage_score(judged.coverage_evidence, scoring_points)
-    fidelity = fidelity_score(judged.fidelity_evidence)
-    depth = depth_score(judged.depth_evidence)
-    total = compute_total_score(coverage, fidelity, depth)
-    return {
-        "coverage": coverage,
-        "fidelity": fidelity,
-        "depth": depth,
-        "total": total,
-    }
 
 
 def _scores_for_event(scores: dict[str, float]) -> dict[str, float]:
     return {key: round(value, 2) for key, value in scores.items()}
 
 
-async def _persist_judged_answer(
-    sessionmaker: async_sessionmaker[AsyncSession],
-    *,
-    answer_id: int,
-    judged: AnswerJudgeOutput,
-    scores: dict[str, float],
-    llm_result: LLMResult,
-) -> None:
-    now = datetime.now(UTC)
-    async with sessionmaker() as session:
-        await session.execute(
-            sa.update(SessionAnswer)
-            .where(SessionAnswer.id == answer_id)
-            .values(
-                coverage_score=_score_decimal(scores["coverage"]),
-                coverage_evidence=judged.coverage_evidence.model_dump(mode="json"),
-                fidelity_score=_score_decimal(scores["fidelity"]),
-                fidelity_evidence=judged.fidelity_evidence.model_dump(mode="json"),
-                depth_score=_score_decimal(scores["depth"]),
-                depth_evidence=judged.depth_evidence.model_dump(mode="json"),
-                total_score=_score_decimal(scores["total"]),
-                coach_message=judged.coach_message,
-                judge_model=llm_result.model,
-                judge_prompt_version=JUDGE_PROMPT_VERSION,
-                judge_tokens_in=llm_result.tokens_in,
-                judge_tokens_out=llm_result.tokens_out,
-                judge_cost_cny=llm_result.cost_cny,
-                judged_at=now,
-                updated_at=now,
-            )
-        )
-        await session.commit()
+def _with_answer_turn_types(
+    judge_turns: list[dict[str, Any]],
+    answer_turns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    answer_type_by_round = {
+        int(turn.get("round_index", index)): turn.get("turn_type")
+        for index, turn in enumerate(answer_turns)
+    }
+    out: list[dict[str, Any]] = []
+    for turn in judge_turns:
+        item = dict(turn)
+        try:
+            round_index = int(item.get("round_index", 0))
+        except (TypeError, ValueError):
+            round_index = 0
+        item["answer_turn_type"] = answer_type_by_round.get(round_index)
+        out.append(item)
+    return out
 
 
 async def _finalize_session(
@@ -882,10 +604,10 @@ async def _finalize_session(
             .where(QuizSession.id == session_id)
             .values(
                 status="submitted",
-                coverage_score=_score_decimal(coverage),
-                fidelity_score=_score_decimal(fidelity),
-                depth_score=_score_decimal(depth),
-                total_score=_score_decimal(total),
+                coverage_score=answer_judge_service.score_decimal(coverage),
+                fidelity_score=answer_judge_service.score_decimal(fidelity),
+                depth_score=answer_judge_service.score_decimal(depth),
+                total_score=answer_judge_service.score_decimal(total),
                 submitted_at=now,
             )
         )
@@ -913,7 +635,3 @@ def _avg_score(values: list[Decimal | None]) -> float:
 
 def _decimal_to_float(value: Decimal | None) -> float | None:
     return float(value) if value is not None else None
-
-
-def _score_decimal(value: float) -> Decimal:
-    return Decimal(str(value)).quantize(Decimal("0.01"))

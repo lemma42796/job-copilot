@@ -16,6 +16,7 @@ from typing import Any, Literal
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from jobcopilot_api.agents.coach_chat import agent as coach_chat_agent
 from jobcopilot_api.errors import JobCopilotError, NotFoundError, ValidationError
 from jobcopilot_api.llm.errors import LLMError
 from jobcopilot_api.models.note_chunk import NoteChunk
@@ -24,10 +25,10 @@ from jobcopilot_api.models.quiz_session import QuizSession
 from jobcopilot_api.models.session_answer import SessionAnswer
 from jobcopilot_api.models.session_event import SessionEvent
 from jobcopilot_api.schemas.agents.answer_judge import AnswerJudgeInput, AnswerJudgeOutput
+from jobcopilot_api.schemas.agents.coach_chat import CoachChatInput, CoachChatOutput
 from jobcopilot_api.schemas.agents.quiz_generator import GeneratedQuestion, QuizGenChunkInput
 from jobcopilot_api.schemas.quiz import AnswerTurnSubmitIn
-from jobcopilot_api.services import answer_service
-from jobcopilot_api.services.retrieval_pipeline import fetch_note_titles
+from jobcopilot_api.services import answer_judge_service, answer_service
 
 DecisionAction = Literal["ask_next", "remediate", "summarize", "finish"]
 Trigger = Literal["coverage", "fidelity", "depth", "mixed", "none"]
@@ -47,6 +48,12 @@ class ContextPackFailedError(JobCopilotError):
     status_code = 409
     code = "context_pack_failed"
     title = "构造面试上下文失败"
+
+
+class CoachCallFailedError(JobCopilotError):
+    status_code = 502
+    code = "coach_call_failed"
+    title = "教练解释调用失败"
 
 
 @dataclass(frozen=True)
@@ -77,15 +84,26 @@ async def submit_answer_turn_sse(
     payload: AnswerTurnSubmitIn,
 ) -> AsyncIterator[dict[str, Any]]:
     """SSE for POST /quiz/sessions/{id}/answers/{order_index}/turns."""
-    if payload.turn_type not in ("initial", "remediation"):
+    if payload.turn_type not in ("initial", "remediation", "coach_question"):
         exc = InvalidTurnTypeError(f"turn_type={payload.turn_type!r} 非法")
         yield _ev("error", _error_payload(exc))
         yield _ev("done", {"ok": False})
         return
     if not payload.text.strip():
-        exc = ValidationError("答案不能为空")
+        exc = ValidationError(
+            "追问不能为空" if payload.turn_type == "coach_question" else "答案不能为空"
+        )
         yield _ev("error", _error_payload(exc))
         yield _ev("done", {"ok": False})
+        return
+    if payload.turn_type == "coach_question":
+        async for event in _submit_coach_question_sse(
+            sessionmaker,
+            session_id=session_id,
+            order_index=order_index,
+            payload=payload,
+        ):
+            yield event
         return
 
     try:
@@ -159,28 +177,15 @@ async def submit_answer_turn_sse(
             chunks=context.chunks,
             user_answer=context.answer.user_answer or "",
         )
-        llm_result = await answer_service._run_judge_with_hard_timeout(
-            judge_input,
-            sessionmaker=sessionmaker,
-        )
-        judged = answer_service._extract_judge_output(llm_result)
-        judged = answer_service._map_and_validate_output(
-            output=judged,
-            scoring_points=context.local_question.scoring_points,
-            judge_context_chunk_ids=context.judge_context_chunk_ids,
-            lookup_ref_map=answer_service._lookup_ref_map(llm_result),
-        )
-        scores = answer_service._compute_scores(
-            judged,
-            context.local_question.scoring_points,
-        )
-        await answer_service._persist_judged_answer(
+        judged_answer = await answer_judge_service.judge_and_persist_answer(
             sessionmaker,
             answer_id=answer_id,
-            judged=judged,
-            scores=scores,
-            llm_result=llm_result,
+            judge_input=judge_input,
+            scoring_points=context.local_question.scoring_points,
+            judge_context_chunk_ids=context.judge_context_chunk_ids,
         )
+        judged = judged_answer.judged
+        scores = judged_answer.scores
         await _record_event(
             sessionmaker,
             session_id=session_id,
@@ -194,7 +199,7 @@ async def submit_answer_turn_sse(
                 "coach_message": judged.coach_message,
             },
         )
-    except (LLMError, answer_service.JudgeCallFailedError) as e:
+    except (LLMError, answer_judge_service.JudgeCallFailedError) as e:
         yield _ev(
             "error",
             {
@@ -262,6 +267,211 @@ async def submit_answer_turn_sse(
     yield _ev("done", {"ok": True})
 
 
+async def _submit_coach_question_sse(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    session_id: int,
+    order_index: int,
+    payload: AnswerTurnSubmitIn,
+) -> AsyncIterator[dict[str, Any]]:
+    try:
+        turn_info = await _record_coach_question(
+            sessionmaker,
+            session_id=session_id,
+            order_index=order_index,
+            payload=payload,
+        )
+    except JobCopilotError as e:
+        yield _ev("error", _error_payload(e))
+        yield _ev("done", {"ok": False})
+        return
+
+    answer_id = int(turn_info["answer_id"])
+    question_id = int(turn_info["question_id"])
+    round_index = int(turn_info["round_index"])
+    yield _ev(
+        "started",
+        {
+            "job_id": f"coach-question-{session_id}-{order_index}-{round_index}",
+            "resource_id": session_id,
+            "session_id": session_id,
+            "order_index": order_index,
+            "round_index": round_index,
+            "turn_type": "coach_question",
+        },
+    )
+
+    try:
+        context = await _build_context_pack(
+            sessionmaker,
+            session_id=session_id,
+            order_index=order_index,
+        )
+        yield _ev(
+            "progress",
+            {
+                "phase": "coach_context_built",
+                "included": [
+                    "question",
+                    "judge_context_chunks",
+                    "cumulative_answer",
+                    "previous_coach_message",
+                    "remediation_prompt",
+                ],
+                "compacted": False,
+            },
+        )
+
+        state = context.answer.remediation_state or {}
+        coach_input = CoachChatInput(
+            question=context.local_question,
+            chunks=context.chunks,
+            cumulative_answer=context.answer.user_answer or "",
+            coach_question=payload.text,
+            prior_coach_message=context.answer.coach_message,
+            remediation_prompt=state.get("remediation_prompt"),
+            unresolved_gaps=[
+                item
+                for item in state.get("unresolved_gaps") or []
+                if isinstance(item, dict)
+            ],
+            scores=_answer_scores(context.answer),
+        )
+        llm_result = await coach_chat_agent.run(coach_input)
+        coach_output = _extract_coach_chat_output(llm_result)
+
+        await _record_event(
+            sessionmaker,
+            session_id=session_id,
+            answer_id=answer_id,
+            question_id=question_id,
+            event_type="coach_answered",
+            agent_node="coach_question",
+            round_index=round_index,
+            payload={
+                "turn_type": "coach_question",
+                "text": payload.text,
+                "client_turn_id": payload.client_turn_id,
+                "coach_message": coach_output.coach_message,
+                "submitted_at": turn_info["submitted_at"],
+                "answered_at": datetime.now(UTC).isoformat(),
+                "model": llm_result.model,
+                "tokens_in": llm_result.tokens_in,
+                "tokens_out": llm_result.tokens_out,
+                "cost_cny": str(llm_result.cost_cny),
+            },
+        )
+    except LLMError as e:
+        yield _ev(
+            "error",
+            {
+                "code": "coach_call_failed",
+                "detail": str(e) or "教练解释调用失败",
+                "order_index": order_index,
+            },
+        )
+        yield _ev("done", {"ok": False})
+        return
+    except JobCopilotError as e:
+        yield _ev("error", _error_payload(e))
+        yield _ev("done", {"ok": False})
+        return
+
+    yield _ev(
+        "coach_done",
+        {
+            "order_index": order_index,
+            "round_index": round_index,
+            "turn_type": "coach_question",
+            "text": payload.text,
+            "client_turn_id": payload.client_turn_id,
+            "submitted_at": turn_info["submitted_at"],
+            "coach_message": coach_output.coach_message,
+        },
+    )
+    yield _ev("done", {"ok": True})
+
+
+async def _record_coach_question(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    session_id: int,
+    order_index: int,
+    payload: AnswerTurnSubmitIn,
+) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    async with sessionmaker() as session:
+        quiz_session = await session.get(QuizSession, session_id)
+        if quiz_session is None:
+            raise NotFoundError(f"quiz_session {session_id} 不存在")
+        if quiz_session.status != "in_progress":
+            raise answer_service.SessionNotInProgressError(
+                f"session {session_id} 当前状态为 {quiz_session.status},不能继续答题"
+            )
+
+        answer = (
+            await session.execute(
+                sa.select(SessionAnswer)
+                .where(SessionAnswer.session_id == session_id)
+                .where(SessionAnswer.order_index == order_index)
+            )
+        ).scalar_one_or_none()
+        if answer is None:
+            raise NotFoundError(
+                f"session {session_id} 下不存在 order_index={order_index} 的答案"
+            )
+        if answer.judged_at is None or not (
+            answer.coach_message
+            or (answer.remediation_state or {}).get("remediation_prompt")
+        ):
+            raise ValidationError("请先提交本题答案并等教练反馈后再追问")
+
+        question = await session.get(Question, answer.question_id)
+        if question is None:
+            raise ContextPackFailedError("session_answer 引用了不存在的 question")
+        judge_context_chunk_ids = answer_judge_service.judge_context_chunk_ids(
+            quiz_session=quiz_session,
+            questions=[question],
+        )
+        await _ensure_judge_context_chunks_exist(session, judge_context_chunk_ids)
+
+        round_index = int(
+            (
+                await session.execute(
+                    sa.select(sa.func.count(SessionEvent.id))
+                    .where(SessionEvent.session_id == session_id)
+                    .where(SessionEvent.answer_id == answer.id)
+                    .where(SessionEvent.event_type == "coach_answered")
+                )
+            ).scalar_one()
+        )
+        turn = {
+            "round_index": round_index,
+            "turn_type": "coach_question",
+            "text": payload.text,
+            "client_turn_id": payload.client_turn_id,
+            "submitted_at": now.isoformat(),
+        }
+        session.add(
+            SessionEvent(
+                session_id=session_id,
+                answer_id=answer.id,
+                question_id=answer.question_id,
+                event_type="coach_question_asked",
+                agent_node="coach_question",
+                round_index=round_index,
+                payload=turn,
+            )
+        )
+        await session.commit()
+        return {
+            "answer_id": answer.id,
+            "question_id": answer.question_id,
+            "round_index": round_index,
+            "submitted_at": now.isoformat(),
+        }
+
+
 async def _append_answer_turn(
     sessionmaker: async_sessionmaker[AsyncSession],
     *,
@@ -293,7 +503,7 @@ async def _append_answer_turn(
         question = await session.get(Question, answer.question_id)
         if question is None:
             raise ContextPackFailedError("session_answer 引用了不存在的 question")
-        judge_context_chunk_ids = answer_service._judge_context_chunk_ids(
+        judge_context_chunk_ids = answer_judge_service.judge_context_chunk_ids(
             quiz_session=quiz_session,
             questions=[question],
         )
@@ -385,35 +595,19 @@ async def _build_context_pack(
                 )
             ).scalar_one()
         )
-        judge_context_chunk_ids = answer_service._judge_context_chunk_ids(
+        judge_context_chunk_ids = answer_judge_service.judge_context_chunk_ids(
             quiz_session=quiz_session,
             questions=[question],
         )
         await _ensure_judge_context_chunks_exist(session, judge_context_chunk_ids)
 
-        chunks = list(
-            (
-                await session.execute(
-                    sa.select(NoteChunk).where(
-                        NoteChunk.id.in_(judge_context_chunk_ids)
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        chunk_by_id = {chunk.id: chunk for chunk in chunks}
-
-        note_titles = await fetch_note_titles(
+        judge_context = await answer_judge_service.load_judge_context(
             session,
-            list({chunk.note_id for chunk in chunks}),
+            judge_context_chunk_ids,
         )
-        judge_context_chunks = [
-            answer_service._chunk_to_input(chunk_by_id[chunk_id], note_titles)
-            for chunk_id in judge_context_chunk_ids
-        ]
-        local_question = answer_service._question_to_local(
-            question, judge_context_chunk_ids
+        local_question = answer_judge_service.question_to_local(
+            question,
+            judge_context.chunk_ids,
         )
 
         return _TurnContext(
@@ -421,8 +615,8 @@ async def _build_context_pack(
             answer=answer,
             question=question,
             local_question=local_question,
-            chunks=judge_context_chunks,
-            judge_context_chunk_ids=judge_context_chunk_ids,
+            chunks=judge_context.chunks,
+            judge_context_chunk_ids=judge_context.chunk_ids,
             total_questions=total_questions,
         )
 
@@ -731,6 +925,28 @@ def _unresolved_gaps(
 
 def _scores_for_event(scores: dict[str, float]) -> dict[str, float]:
     return {key: round(value, 2) for key, value in scores.items()}
+
+
+def _answer_scores(answer: SessionAnswer) -> dict[str, float | None]:
+    return {
+        "coverage": _maybe_float(answer.coverage_score),
+        "fidelity": _maybe_float(answer.fidelity_score),
+        "depth": _maybe_float(answer.depth_score),
+        "total": _maybe_float(answer.total_score),
+    }
+
+
+def _maybe_float(value: Any) -> float | None:
+    return float(value) if value is not None else None
+
+
+def _extract_coach_chat_output(llm_result: Any) -> CoachChatOutput:
+    if not isinstance(llm_result.parsed, CoachChatOutput):
+        raise CoachCallFailedError("coach_chat 没返回有效的 CoachChatOutput")
+    message = llm_result.parsed.coach_message.strip()
+    if not message:
+        raise CoachCallFailedError("coach_message 不能为空")
+    return CoachChatOutput(coach_message=message)
 
 
 def _unique_ids(values: Any) -> list[int]:

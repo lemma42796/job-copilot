@@ -23,6 +23,12 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 最新状态:
 
+- 本轮 M2.1 单题面试流继续推进:补答与追问教练已拆语义。`initial/remediation` 会追加到累计 `user_answer` 并重新跑 AnswerJudge;`coach_question` 走独立 `coach_chat` 解释链路,不改答案、不重评、不推进题目状态。
+- 本轮新增 `CoachChat` 非评分 agent:`coach_question` 输入上一轮 `coach_message/remediation_prompt/unresolved_gaps/累计答案/final_context_chunks`,只返回解释型 `coach_message`;追问与回复落 `session_events` 并通过 `coach_turns` 回放。
+- 本轮新增公共 `answer_judge_service`:统一承载 Judge context 构造、DB chunk id ↔ prompt-local `[N]` 映射、AnswerJudge hard timeout、输出校验、Python 算分、评分落库。`answer_service` 与 `interview_service` 不再互相借用 `answer_service._*` 私有 helper。
+- 本轮多轮聊天消息语义已调整:每一轮 LLM 评分反馈都从 `session_events` 组装为 `judge_turns`,前端按“用户初答 → 初答评分 → 用户补答 → 补答评分 → 追问 → 教练解释”渲染,不再只展示最新一条 `coach_message`。
+- 本轮本地 dogfood:按用户指令启动 Docker Postgres + 本机 API + Next Web,补跑 `alembic upgrade head` 从 `0020` 到 `0023`;`/quiz` 主题 `Langfuse Prompt 版本管理` session #13 初答 89.67,补答后 Coverage/Fidelity/Depth/Total 全部 100,验证补答重评链路有效。
+- 本轮未跑自动化测试 / typecheck / build / Playwright;只做了人工流程观察与数据库结果查看。当前服务在收尾前会停止 API/Web dev server,Postgres 保留。
 - 本地 dogfood 笔记库仍为 `test-notes/llm-notes` **119 篇 / 532,999 字符**;Docker Postgres 对齐 active notes 119 / chunks 2,090 / embedded 2,090 / pending 0。
 - `evals/suites/hybrid_search/` smoke 资产已进入 chunk-level 口径:15 篇 fixture + 12 条全库 chunk/anchor 标签;`direct_evidence_chunk_ids` 只放可直接回答 query 的 chunk。
 - `eval_hybrid_search_note_smoke.py` 已支持 live report + `.trace.jsonl` + `--score-trace` 离线重算;只改标签 / 打分口径时复用 trace,不重复调用 query rewrite / rerank。
@@ -63,7 +69,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - 本轮教练自然语言反馈已后端化:`AnswerJudgeOutput.coach_message` 随评分一起返回并落 `session_answers.coach_message`;`question_done / judge_done / result / GET session detail` 返回该字段,前端只展示,不再按 score/evidence heuristic 拼主反馈。
 - 本轮字段命名已收口:`retrieved_chunk(s)` 改为 `final_context_chunk(s)`,`source_chunk_ids` 改为 `evidence_chunk_ids`,`reference_chunk_ids` 改为 `reference_answer_chunk_ids`,`reference_points` 改为 `scoring_points`,`evidence_chunk_ids`(采分点内)改为 `supporting_chunk_ids`;新增迁移 `0022/0023` 做表字段与 JSONB 存量字段迁移。
 - 本轮重要上下文:出题与评分使用同一批 `final_context_chunks`;`evidence_chunk_ids` 只是某题从这批 chunks 中真正引用到的 DB id 子集,不是另一批检索结果。当前统计口径里,历史 QuizGenerator 输入 7 个 session 平均 6 chunks / chunk content 合计 2,753.86 字;Judge 多轮评分仍带同一批 chunks,但每次补答只带"累计用户答案",不带上一轮 `coach_message`。
-- 本轮产品决策待实现:补答和追问教练要拆语义。补答会追加 `user_answer` 并重新评分;追问教练应带上上一轮 `coach_message/remediation_prompt` 做解释,不改答案、不重评、不推进题目状态。最稳方案是前端/请求显式传 `turn_type=answer|coach_question`;若做单输入框,后端只能用受限 intent classifier 兜底。
+- 本轮产品决策已实现:补答和追问教练不混写同一状态。补答追加 `user_answer` 并重评;追问教练走 `coach_question` + `coach_chat`,只解释上一轮反馈 / 纠偏提示,不改答案、不重评、不推进题目状态。
 - 本轮前端 dev server 在 Codex 沙箱内会因端口绑定报 `listen EPERM`;用授权方式启动后 Next dev 可正常到 `Ready`。未按项目约束跑 build/typecheck/lint/playwright。
 - 最新保存主题:`quiz: backendize coach feedback and rename chunk fields`;M2 tag `v0.4-m2-end` 仍待用户确认。
 - M2 retrieval quiz pipeline 代码已提交:`103d882 feat: add m2 retrieval quiz pipeline`。
@@ -97,7 +103,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **M2 quiz/session UI 已落地**:`/quiz` 支持主题出题、答题、草稿保存、提交评分、结构化 evidence、样例模式、最近练习与 session 恢复。
 - **百炼 Context Cache 代码已接入但默认关闭**:保留稳定 chunks 前缀渲染与审计字段;后续多轮面试讨论再开启显式 cache。
 - **M2.1 Agentic RAG 方向锁定**:`InterviewCoachAgent` 不做泛化多 Agent,而是 interview coaching harness:检索 → 出题 → 等答 → 评分 → 决策 → 多轮纠偏 / 总结;系统负责状态、工具、证据、分支、恢复、回放和评测。
-- **M2.1 单题 turn 最小闭环已落地**:`0020_interview_coach_state.py` + `SessionEvent` + 单题 turn SSE + `/quiz` 前端接入。`GET /quiz/sessions/{id}` 已返回 `agent_state / answer_turns / remediation_state / remediation_prompt`,用于刷新后从 `wait_user_answer` 继续。
+- **M2.1 单题 turn 最小闭环已落地**:`0020_interview_coach_state.py` + `SessionEvent` + 单题 turn SSE + `/quiz` 前端接入。`GET /quiz/sessions/{id}` 已返回 `agent_state / answer_turns / judge_turns / coach_turns / remediation_state / remediation_prompt`,用于刷新后从 `wait_user_answer` 继续并回放每轮 LLM 消息。
 - **QuizGenerator v1.3 引用收口已落地**:LLM 输出从多套引用字段收敛为 reference answer citations + `scoring_points[].supporting_chunk_ids`;`quiz_service` 统一派生 `reference_answer_chunk_ids / evidence_chunk_ids`,降低 citation/source/reference/evidence 漂移。
 - **AnswerJudge v1.4 反馈字段已落地**:评分 LLM 一次返回三层 evidence + `coach_message`;Python 仍负责总分计算、引用映射与完整性校验,前端只展示后端反馈。
 - **/quiz 聊天式练习 UI 已落地**:题数下拉 `1/3/5`;一个主题多题用左侧分组切换;主面板用 Apple Messages 风格聊天流;多轮补答作为新 turn 追加;评分卡折叠到教练反馈下。
@@ -117,11 +123,12 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **拆分补答 vs 追问教练**:给单题 turn 增加明确意图字段或独立 coach chat endpoint。`answer` 追加累计答案并重新 Judge;`coach_question` 带上一轮 `coach_message/remediation_prompt` 做解释,不污染 `user_answer`。
+1. **`summarize_session / finish_session`**:整场面试结束时生成总结消息,汇总每题表现、反复出现的 coverage/fidelity/depth 缺口、下一步复习建议,并为后续长上下文压缩准备 `context pack`。
 
 备选:
 
-- 若继续后端,先把 `interview_service` 私用 `answer_service._*` helper 整理成可复用公共 helper,再接 `summarize_session / finish_session`。
+- 若继续长上下文治理,先定义 session-level summary/event compaction:原始 transcript/events 全量落库回放,LLM 当前输入只拿当前题、source chunks、reference/scoring points、unresolved gaps、最近少量 turns 与 session summary。
+- 若继续验收,刷新 `/quiz?session=13` 应看到初答评分 89.67 与补答评分 100 两条 LLM 反馈都保留,不是只剩最新一条。
 - 若继续字段命名,优先评估是否把内部 `judge_context_chunk_ids` 再改回更直白的 `final_context_chunk_ids_for_judge`,避免误解为评分另取一批 chunks。
 - 若继续 UI,先人工验 `/quiz` 主题输入 → 1/3/5 出题 → 左侧题目切换 → 初答/补答 turn → 刷新恢复 → 评分详情展开,重点看移动端文本是否挤压。
 - 若做评测,补 `evals/suites/interview_coach/` 最小 10 条流程型样本,覆盖不纠偏 / coverage 纠偏 / fabricated 纠偏 / depth 纠偏 / 多轮无提升退出 / 中途恢复 / 长上下文压缩。
@@ -179,6 +186,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **[来自 M2.1] QuizGenerator 引用编号是 prompt-local**:`[N]` / `evidence_chunk_ids` / `reference_answer_chunk_ids` / `supporting_chunk_ids` 都先是本次 `final_context_chunks` 的 `1..K`,入库前才映射到真实 `note_chunks.id`;后端派生重复字段,不要信 LLM 维护多份一致性。
 - **[来自 M2.1] 出题和评分必须使用同一批 final context chunks**:评分阶段可以追加题目证据子集缺失的 chunk id 作兼容保护,但产品语义上不要把它描述成另一批 retrieved chunks。
 - **[来自 M2.1] 补答和追问教练不能混写同一状态**:只有明确补答才写入 `user_answer` 并重评;追问解释应走 coach chat,不改变分数 / 轮次推进。
+- **[来自 M2.1] 每轮 LLM 回答都必须是消息**:多轮模拟面试不能只保留最新 `coach_message`;Judge 评分反馈与 coach 追问解释都要按 turn/event 回放,后续长上下文靠 summary/context pack 压缩,不是覆盖历史。
 
 # 文档导航
 

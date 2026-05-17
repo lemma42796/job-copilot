@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Folder,
   Loader2,
+  MessageCircleQuestion,
   Play,
   RotateCcw,
   Send,
@@ -27,7 +28,9 @@ import {
   submitQuizAnswerTurn,
   submitQuizSession,
   type QuizAnswerTurn,
+  type QuizCoachTurn,
   type QuizEvidence,
+  type QuizJudgeTurn,
   type QuizNullableScores,
   type QuizNextAction,
   type QuizProgress,
@@ -41,6 +44,7 @@ import {
 import { cn } from '@/lib/utils';
 
 type Stage = 'idle' | 'generating' | 'answering' | 'submitting' | 'submitted';
+type TurnIntent = 'answer' | 'coach_question';
 type SaveState =
   | { kind: 'idle' }
   | { kind: 'saving' }
@@ -346,6 +350,9 @@ const PHASE_LABELS: Record<string, string> = {
   type_mix_decided: '确定题型',
   judging: '评分中',
   context_pack_built: '整理本题上下文',
+  coach_question_started: '追问教练',
+  coach_context_built: '整理追问上下文',
+  coach_done: '教练已回复',
 };
 
 const NEXT_ACTION_LABELS: Record<string, string> = {
@@ -625,6 +632,8 @@ export default function QuizPage() {
   const [typeMix, setTypeMix] = useState<QuizTypeMix | null>(null);
   const [questionResults, setQuestionResults] = useState<Record<number, QuestionResult>>({});
   const [answerTurns, setAnswerTurns] = useState<Record<number, QuizAnswerTurn[]>>({});
+  const [judgeTurns, setJudgeTurns] = useState<Record<number, QuizJudgeTurn[]>>({});
+  const [coachTurns, setCoachTurns] = useState<Record<number, QuizCoachTurn[]>>({});
   const [remediationPrompts, setRemediationPrompts] = useState<
     Record<number, QuizRemediationPrompt | null>
   >({});
@@ -691,6 +700,8 @@ export default function QuizPage() {
     setTypeMix(null);
     setQuestionResults({});
     setAnswerTurns({});
+    setJudgeTurns({});
+    setCoachTurns({});
     setRemediationPrompts({});
     setQuestionActions({});
     setTurnStates({});
@@ -712,12 +723,16 @@ export default function QuizPage() {
     const restoredAnswers: Record<number, string> = {};
     const restoredResults: Record<number, QuestionResult> = {};
     const restoredTurns: Record<number, QuizAnswerTurn[]> = {};
+    const restoredJudgeTurns: Record<number, QuizJudgeTurn[]> = {};
+    const restoredCoachTurns: Record<number, QuizCoachTurn[]> = {};
     const restoredPrompts: Record<number, QuizRemediationPrompt | null> = {};
     const restoredActions: Record<number, string | null> = {};
     const restoredTurnStates: Record<number, QuestionTurnState> = {};
     for (const item of detail.questions) {
       const turns = item.answer_turns ?? [];
       restoredTurns[item.order_index] = turns;
+      restoredJudgeTurns[item.order_index] = item.judge_turns ?? [];
+      restoredCoachTurns[item.order_index] = item.coach_turns ?? [];
       restoredAnswers[item.order_index] = turns.length > 0 ? '' : item.user_answer ?? '';
       const scores = toScores(item.scores);
       const prompt = item.remediation_prompt ?? item.remediation_state?.remediation_prompt ?? null;
@@ -781,6 +796,8 @@ export default function QuizPage() {
     setTypeMix(restoredQuestions.length ? typeMixFromQuestions(restoredQuestions) : null);
     setQuestionResults(restoredResults);
     setAnswerTurns(restoredTurns);
+    setJudgeTurns(restoredJudgeTurns);
+    setCoachTurns(restoredCoachTurns);
     setRemediationPrompts(restoredPrompts);
     setQuestionActions(restoredActions);
     setTurnStates(restoredTurnStates);
@@ -826,6 +843,8 @@ export default function QuizPage() {
     setTypeMix(SAMPLE_QUIZ.typeMix);
     setQuestionResults(SAMPLE_QUIZ.results);
     setAnswerTurns(sampleTurns);
+    setJudgeTurns({});
+    setCoachTurns({});
     setRemediationPrompts({});
     setQuestionActions({});
     setTurnStates({});
@@ -852,6 +871,8 @@ export default function QuizPage() {
   const mergeQuestionDetails = useCallback((detail: QuizSessionDetail) => {
     const nextAnswers: Record<number, string> = {};
     const nextTurns: Record<number, QuizAnswerTurn[]> = {};
+    const nextJudgeTurns: Record<number, QuizJudgeTurn[]> = {};
+    const nextCoachTurns: Record<number, QuizCoachTurn[]> = {};
     const nextPrompts: Record<number, QuizRemediationPrompt | null> = {};
     const nextActions: Record<number, string | null> = {};
     const nextResults: Record<number, QuestionResult> = {};
@@ -860,6 +881,8 @@ export default function QuizPage() {
     for (const item of detail.questions) {
       const turns = item.answer_turns ?? [];
       nextTurns[item.order_index] = turns;
+      nextJudgeTurns[item.order_index] = item.judge_turns ?? [];
+      nextCoachTurns[item.order_index] = item.coach_turns ?? [];
       nextAnswers[item.order_index] = turns.length > 0 ? '' : item.user_answer ?? '';
       const scores = toScores(item.scores);
       const prompt = item.remediation_prompt ?? item.remediation_state?.remediation_prompt ?? null;
@@ -891,6 +914,8 @@ export default function QuizPage() {
 
     setAnswers(nextAnswers);
     setAnswerTurns(nextTurns);
+    setJudgeTurns(nextJudgeTurns);
+    setCoachTurns(nextCoachTurns);
     setRemediationPrompts(nextPrompts);
     setQuestionActions(nextActions);
     setQuestionResults(nextResults);
@@ -960,16 +985,35 @@ export default function QuizPage() {
   }, [activeTurnOrder, answerTurns, answers, questions, sessionId, stage]);
 
   const handleSubmitTurn = useCallback(
-    async (orderIndex: number) => {
+    async (orderIndex: number, intent: TurnIntent = 'answer') => {
       if (stage !== 'answering' || sessionId === null || activeTurnOrder !== null) return;
       const text = (answers[orderIndex] ?? '').trim();
       if (!text) {
-        setRunError(`第 ${orderIndex + 1} 题答案不能为空`);
+        setRunError(
+          intent === 'coach_question'
+            ? `第 ${orderIndex + 1} 题追问不能为空`
+            : `第 ${orderIndex + 1} 题答案不能为空`,
+        );
         return;
       }
 
       const priorTurns = answerTurns[orderIndex] ?? [];
-      const turnType = priorTurns.length > 0 ? 'remediation' : 'initial';
+      const hasPriorCoachContext = Boolean(
+        questionResults[orderIndex]?.coachMessage ||
+          remediationPrompts[orderIndex] ||
+          turnStates[orderIndex]?.coachMessage ||
+          turnStates[orderIndex]?.remediationPrompt,
+      );
+      if (intent === 'coach_question' && !hasPriorCoachContext) {
+        setRunError(`第 ${orderIndex + 1} 题先等教练反馈，再追问教练`);
+        return;
+      }
+      const turnType =
+        intent === 'coach_question'
+          ? 'coach_question'
+          : priorTurns.length > 0
+            ? 'remediation'
+            : 'initial';
       const clientTurnId = `web-${sessionId}-${orderIndex}-${Date.now()}`;
 
       setRunError(null);
@@ -987,8 +1031,16 @@ export default function QuizPage() {
         appendProgress(items, {
           id: `turn-start-${orderIndex}-${Date.now()}`,
           group: 'judge',
-          label: `第 ${orderIndex + 1} 题提交`,
-          detail: turnType === 'initial' ? '初答' : '补答',
+          label:
+            intent === 'coach_question'
+              ? `第 ${orderIndex + 1} 题追问教练`
+              : `第 ${orderIndex + 1} 题提交`,
+          detail:
+            turnType === 'coach_question'
+              ? '追问'
+              : turnType === 'initial'
+                ? '初答'
+                : '补答',
         }),
       );
 
@@ -1005,7 +1057,8 @@ export default function QuizPage() {
               [orderIndex]: {
                 ...(prev[orderIndex] ?? { status: 'running' as const }),
                 status: 'running',
-                phase: 'started',
+                phase:
+                  turnType === 'coach_question' ? 'coach_question_started' : 'started',
                 roundIndex: frame.data.round_index,
               },
             }));
@@ -1054,6 +1107,41 @@ export default function QuizPage() {
                 group: 'judge',
                 label: `第 ${orderIndex + 1} 题评分完成`,
                 detail: `总分 ${roundedScore(frame.data.scores.total)}`,
+              }),
+            );
+          } else if (frame.event === 'coach_done') {
+            const turn: QuizCoachTurn = {
+              round_index: frame.data.round_index,
+              turn_type: 'coach_question',
+              text: frame.data.text,
+              client_turn_id: frame.data.client_turn_id ?? clientTurnId,
+              submitted_at: frame.data.submitted_at,
+              coach_message: frame.data.coach_message,
+            };
+            setAnswers((prev) => ({
+              ...prev,
+              [orderIndex]: '',
+            }));
+            savedAnswersRef.current[orderIndex] = '';
+            setCoachTurns((prev) => ({
+              ...prev,
+              [orderIndex]: [...(prev[orderIndex] ?? []), turn],
+            }));
+            setTurnStates((prev) => ({
+              ...prev,
+              [orderIndex]: {
+                ...(prev[orderIndex] ?? { status: 'running' as const }),
+                status: 'done',
+                phase: 'coach_done',
+                roundIndex: frame.data.round_index,
+              },
+            }));
+            setProgressItems((items) =>
+              appendProgress(items, {
+                id: `turn-coach-${orderIndex}-${Date.now()}`,
+                group: 'judge',
+                label: `第 ${orderIndex + 1} 题教练已回复`,
+                detail: '不重评',
               }),
             );
           } else if (frame.event === 'decision_done') {
@@ -1166,6 +1254,7 @@ export default function QuizPage() {
       answers,
       mergeQuestionDetails,
       questionActions,
+      questionResults,
       questions,
       reloadRecent,
       remediationPrompts,
@@ -1190,6 +1279,8 @@ export default function QuizPage() {
     setTypeMix(null);
     setQuestionResults({});
     setAnswerTurns({});
+    setJudgeTurns({});
+    setCoachTurns({});
     setRemediationPrompts({});
     setQuestionActions({});
     setTurnStates({});
@@ -1613,6 +1704,8 @@ export default function QuizPage() {
                   }
                   result={questionResults[activeQuestion.order_index]}
                   answerTurns={answerTurns[activeQuestion.order_index] ?? []}
+                  judgeTurns={judgeTurns[activeQuestion.order_index] ?? []}
+                  coachTurns={coachTurns[activeQuestion.order_index] ?? []}
                   remediationPrompt={remediationPrompts[activeQuestion.order_index]}
                   nextAction={questionActions[activeQuestion.order_index]}
                   turnState={turnStates[activeQuestion.order_index]}
@@ -1623,10 +1716,25 @@ export default function QuizPage() {
                     activeTurnOrder === null &&
                     (answers[activeQuestion.order_index] ?? '').trim().length > 0
                   }
+                  canAskCoach={
+                    stage === 'answering' &&
+                    sessionId !== null &&
+                    activeTurnOrder === null &&
+                    (answers[activeQuestion.order_index] ?? '').trim().length > 0 &&
+                    Boolean(
+                      questionResults[activeQuestion.order_index]?.coachMessage ||
+                        remediationPrompts[activeQuestion.order_index] ||
+                        turnStates[activeQuestion.order_index]?.coachMessage ||
+                        turnStates[activeQuestion.order_index]?.remediationPrompt,
+                    )
+                  }
                   onAnswer={(value) =>
                     setAnswers((prev) => ({ ...prev, [activeQuestion.order_index]: value }))
                   }
-                  onSubmitTurn={() => void handleSubmitTurn(activeQuestion.order_index)}
+                  onSubmitTurn={() => void handleSubmitTurn(activeQuestion.order_index, 'answer')}
+                  onAskCoach={() =>
+                    void handleSubmitTurn(activeQuestion.order_index, 'coach_question')
+                  }
                 />
               ) : null}
             </div>
@@ -1844,33 +1952,48 @@ function QuestionPanel({
   disabled,
   result,
   answerTurns,
+  judgeTurns,
+  coachTurns,
   remediationPrompt,
   nextAction,
   turnState,
   turnBusy,
   canSubmitTurn,
+  canAskCoach,
   onAnswer,
   onSubmitTurn,
+  onAskCoach,
 }: {
   item: QuizQuestionReady;
   answer: string;
   disabled: boolean;
   result?: QuestionResult;
   answerTurns: QuizAnswerTurn[];
+  judgeTurns: QuizJudgeTurn[];
+  coachTurns: QuizCoachTurn[];
   remediationPrompt?: QuizRemediationPrompt | null;
   nextAction?: string | null;
   turnState?: QuestionTurnState;
   turnBusy: boolean;
   canSubmitTurn: boolean;
+  canAskCoach: boolean;
   onAnswer: (value: string) => void;
   onSubmitTurn: () => void;
+  onAskCoach: () => void;
 }) {
   const promptText = remediationText(remediationPrompt ?? turnState?.remediationPrompt);
   const currentAction = nextAction ?? turnState?.nextAction ?? null;
   const submitLabel = answerTurns.length > 0 || promptText ? '发送补答' : '发送回答';
   const scores = turnState?.scores ?? result?.scores;
   const coachMessage = turnState?.coachMessage ?? result?.coachMessage ?? null;
-  const canShowFeedback = Boolean(
+  const judgeByRound = new Map<number, QuizJudgeTurn>();
+  let latestJudgeRound = -1;
+  for (const judgeTurn of judgeTurns) {
+    const roundIndex = typeof judgeTurn.round_index === 'number' ? judgeTurn.round_index : 0;
+    judgeByRound.set(roundIndex, judgeTurn);
+    latestJudgeRound = Math.max(latestJudgeRound, roundIndex);
+  }
+  const canShowFeedbackFallback = judgeTurns.length === 0 && Boolean(
     coachMessage || scores || promptText || turnState?.decisionReason,
   );
 
@@ -1916,14 +2039,42 @@ function QuestionPanel({
           </div>
         </ChatBubble>
 
-        {answerTurns.map((turn, index) => (
-          <ChatBubble key={`${turn.client_turn_id ?? index}-${turn.submitted_at ?? ''}`} role="user">
-            <div className="mb-1 text-[11px] font-medium opacity-75">
-              {turn.turn_type === 'remediation' ? `第 ${index + 1} 轮补答` : '初答'}
+        {answerTurns.map((turn, index) => {
+          const roundIndex = typeof turn.round_index === 'number' ? turn.round_index : index;
+          const judgeTurn = judgeByRound.get(roundIndex);
+          return (
+            <div
+              key={`${turn.client_turn_id ?? index}-${turn.submitted_at ?? ''}`}
+              className="space-y-3"
+            >
+              <ChatBubble role="user">
+                <div className="mb-1 text-[11px] font-medium opacity-75">
+                  {turn.turn_type === 'remediation' ? `第 ${index + 1} 轮补答` : '初答'}
+                </div>
+                <p className="whitespace-pre-wrap text-sm leading-7">
+                  {turn.text || '（空答案）'}
+                </p>
+              </ChatBubble>
+              {judgeTurn ? (
+                <CoachFeedbackBubble
+                  label={turn.turn_type === 'remediation' ? `第 ${index + 1} 轮评分` : '初答评分'}
+                  result={roundIndex === latestJudgeRound ? result : undefined}
+                  scores={judgeTurn.scores}
+                  remediationPrompt={judgeTurn.remediation_prompt ?? null}
+                  coachMessage={judgeTurn.coach_message ?? null}
+                  turnState={{
+                    status: 'done',
+                    nextAction: judgeTurn.next_action ?? undefined,
+                    triggeredBy: judgeTurn.triggered_by ?? undefined,
+                    decisionReason: judgeTurn.decision_reason ?? undefined,
+                    exitReason: judgeTurn.exit_reason ?? undefined,
+                    unresolvedGaps: judgeTurn.unresolved_gaps,
+                  }}
+                />
+              ) : null}
             </div>
-            <p className="whitespace-pre-wrap text-sm leading-7">{turn.text || '（空答案）'}</p>
-          </ChatBubble>
-        ))}
+          );
+        })}
 
         {turnBusy || turnState?.status === 'running' ? (
           <ChatBubble role="coach" muted>
@@ -1934,7 +2085,7 @@ function QuestionPanel({
           </ChatBubble>
         ) : null}
 
-        {canShowFeedback ? (
+        {canShowFeedbackFallback ? (
           <CoachFeedbackBubble
             result={result}
             scores={scores}
@@ -1950,6 +2101,28 @@ function QuestionPanel({
           </ChatBubble>
         ) : null}
 
+        {coachTurns.map((turn, index) => (
+          <div
+            key={`coach-${turn.client_turn_id ?? index}-${
+              turn.answered_at ?? turn.submitted_at ?? ''
+            }`}
+            className="space-y-2"
+          >
+            <ChatBubble role="user">
+              <div className="mb-1 text-[11px] font-medium opacity-75">追问教练</div>
+              <p className="whitespace-pre-wrap text-sm leading-7">{turn.text || '（空追问）'}</p>
+            </ChatBubble>
+            <ChatBubble role="coach">
+              <div className="mb-1 text-[11px] font-semibold tracking-wide text-muted uppercase">
+                Coach
+              </div>
+              <p className="whitespace-pre-wrap text-sm leading-7">
+                {turn.coach_message || '教练还没有回复'}
+              </p>
+            </ChatBubble>
+          </div>
+        ))}
+
         <div className="flex items-end gap-2 rounded-[26px] border border-[var(--color-system-gray-4)] bg-white px-3 py-2 shadow-[var(--shadow-apple-sm)]">
           <Textarea
             value={answer}
@@ -1958,6 +2131,17 @@ function QuestionPanel({
             className="min-h-11 flex-1 resize-none border-0 bg-transparent px-1 py-2 leading-6 shadow-none focus-visible:ring-0"
             placeholder={answerTurns.length > 0 ? '只写这一轮补充，不需要重复前文' : '在这里作答'}
           />
+          <Button
+            variant="ghost"
+            className="mb-1 size-8 shrink-0 rounded-full p-0"
+            size="icon"
+            onClick={onAskCoach}
+            disabled={disabled || turnBusy || !canAskCoach}
+            title="问教练"
+            aria-label="问教练"
+          >
+            <MessageCircleQuestion className="size-4" />
+          </Button>
           <Button
             className="mb-1 size-8 shrink-0 rounded-full p-0"
             size="icon"
@@ -1971,6 +2155,7 @@ function QuestionPanel({
         </div>
         <div className="px-2 text-xs text-muted">
           {answerTurns.length > 0 ? `${answerTurns.length} 轮已提交` : '尚未提交本题'}
+          {coachTurns.length > 0 ? ` · ${coachTurns.length} 次追问` : null}
           {turnState?.status === 'error' && turnState.error ? (
             <span className="text-[var(--color-danger)]"> · {turnState.error}</span>
           ) : null}
@@ -2009,12 +2194,14 @@ function ChatBubble({
 }
 
 function CoachFeedbackBubble({
+  label = 'Feedback',
   result,
   scores,
   remediationPrompt,
   coachMessage,
   turnState,
 }: {
+  label?: string;
   result?: QuestionResult;
   scores?: QuizScores;
   remediationPrompt?: QuizRemediationPrompt | null;
@@ -2033,7 +2220,7 @@ function CoachFeedbackBubble({
       <div className="space-y-3">
         <div>
           <div className="mb-1 text-[11px] font-semibold tracking-wide text-muted uppercase">
-            Feedback
+            {label}
           </div>
           <p className="whitespace-pre-wrap text-sm leading-7 text-foreground">{feedback}</p>
         </div>

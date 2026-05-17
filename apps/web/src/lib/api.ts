@@ -574,6 +574,31 @@ export type QuizAnswerTurn = {
   submitted_at?: string;
 };
 
+export type QuizCoachTurn = {
+  round_index?: number;
+  turn_type?: 'coach_question' | string;
+  text?: string;
+  client_turn_id?: string | null;
+  submitted_at?: string;
+  answered_at?: string;
+  coach_message?: string | null;
+};
+
+export type QuizJudgeTurn = {
+  round_index?: number;
+  turn_type?: 'judge_feedback' | string;
+  answer_turn_type?: 'initial' | 'remediation' | string | null;
+  judged_at?: string;
+  scores?: QuizScores;
+  coach_message?: string | null;
+  next_action?: QuizNextAction | string | null;
+  triggered_by?: string | null;
+  decision_reason?: string | null;
+  exit_reason?: string | null;
+  remediation_prompt?: QuizRemediationPrompt | null;
+  unresolved_gaps?: unknown[];
+};
+
 export type QuizRemediationState = {
   last_decision?: QuizNextAction | string;
   triggered_by?: string;
@@ -588,6 +613,8 @@ export type QuizSessionQuestionDetail = {
   question: QuizQuestionPublic;
   user_answer: string | null;
   answer_turns?: QuizAnswerTurn[];
+  judge_turns?: QuizJudgeTurn[];
+  coach_turns?: QuizCoachTurn[];
   answer_submitted_at: string | null;
   judged: boolean;
   scores: QuizNullableScores | null;
@@ -663,7 +690,7 @@ export type QuizSubmitSseFrame =
 
 export type QuizAnswerTurnSubmitInput = {
   text: string;
-  turn_type: 'initial' | 'remediation';
+  turn_type: 'initial' | 'remediation' | 'coach_question';
   client_turn_id?: string | null;
 };
 
@@ -676,6 +703,7 @@ export type QuizAnswerTurnSseFrame =
         session_id?: number;
         order_index: number;
         round_index: number;
+        turn_type?: 'initial' | 'remediation' | 'coach_question';
       }
     >
   | SseFrame<
@@ -694,6 +722,18 @@ export type QuizAnswerTurnSseFrame =
         scores: QuizScores;
         coach_message?: string | null;
         unresolved_gaps?: unknown[];
+      }
+    >
+  | SseFrame<
+      'coach_done',
+      {
+        order_index: number;
+        round_index: number;
+        turn_type: 'coach_question';
+        text: string;
+        client_turn_id?: string | null;
+        submitted_at?: string;
+        coach_message: string;
       }
     >
   | SseFrame<
