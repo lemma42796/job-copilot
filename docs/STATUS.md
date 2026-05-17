@@ -26,6 +26,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - 本轮已接 `record_session_summary`:新增 `recall_service`, `finish_session` 会把 `agent_state.final_summary.markdown` 原子写入本地笔记根目录 `_recall/{session_id}.md`,DB 仍保存逻辑路径 `notes/_recall/{session_id}.md`;`GET /api/quiz/sessions/{id}/recall` 优先读落地文件,旧 session 文件缺失时回退 `agent_state.final_summary.markdown`。
 - 本轮新增 `JOBCOPILOT_NOTES_FS_ROOT`:用于配置逻辑 `notes/` 对应的本地 filesystem root;留空时 dev 环境优先用 `test-notes/llm-notes`,否则用项目下 `notes/`。已把 fallback `notes/` 加入 `.gitignore`,避免本地沉淀误入仓库。
 - 本轮同步正式文档:`docs/4-API_SPEC.md` / `docs/5-AGENT_DESIGN.md` / `docs/6-EVAL_PLAN.md` 已记录 `turn_type=auto` 实际分流、`judge_score_history` 无提升退出、`context_compacted / prior_turn_summary / token_budget`、flow smoke 10/10 口径,并把 `record_session_summary` 标为已接。
+- 本轮 `record_session_summary` 改动已提交并推送到 `origin/main`:`7d46bc4 feat: persist interview session recall markdown`。
 - 本轮未跑自动化测试 / typecheck / build / Playwright,也按用户指示跳过 `record_session_summary` 人工验收;文件写入闭环仍待用户后续手动确认。
 - 本轮新增 `apps/api/scripts/eval_interview_coach.py` 离线 runner:读取 `evals/suites/interview_coach/dataset.flow_smoke.jsonl`,stub Judge evidence,复用 `interview_service._decide_next_action`,输出 branch accuracy / remediation target / cumulative rejudge / loop exit / context pack / hallucination guard / recovery 指标;不连 DB、不调 LLM、不评 Judge label 质量。
 - 本轮按用户指令跑过 `uv run python apps/api/scripts/eval_interview_coach.py`:最新报告 `evals/reports/interview-coach-flow-smoke-20260517-132154.md`,10/10 通过,`branch_accuracy / remediation_target_accuracy / cumulative_rejudge / loop_exit / context_pack_pass / hallucination_guard / recovery_pass` 全部 1.000。
@@ -141,7 +142,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **准备提交**:整理当前 working tree diff,由用户确认后再 `git add` / `git commit`。本轮涉及 `.env.example`、`.gitignore`、API services、settings 与 M2.1 正式文档。
+1. **确认 M2.1 是否完成**:如果用户明确说"M2.1 完成了",按里程碑完成流程更新 `docs/STATUS.md`,再询问是否 commit / push 与是否打 tag。
 
 备选:
 
