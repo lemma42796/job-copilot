@@ -19,10 +19,11 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 # 当前快照
 
-当前阶段:**M2.1 — `InterviewCoachAgent` Agentic RAG 面试状态机 + 多轮纠偏分支**。
+当前阶段:**M2.5 — JD 累积上传 + 一键分析 + 学习路径**。
 
 最新状态:
 
+- **M2.1 已由用户确认收口**:收口 tag 为 `v0.5-m2.1-end`;下一阶段切到 M2.5。
 - 本轮已接 `record_session_summary`:新增 `recall_service`, `finish_session` 会把 `agent_state.final_summary.markdown` 原子写入本地笔记根目录 `_recall/{session_id}.md`,DB 仍保存逻辑路径 `notes/_recall/{session_id}.md`;`GET /api/quiz/sessions/{id}/recall` 优先读落地文件,旧 session 文件缺失时回退 `agent_state.final_summary.markdown`。
 - 本轮新增 `JOBCOPILOT_NOTES_FS_ROOT`:用于配置逻辑 `notes/` 对应的本地 filesystem root;留空时 dev 环境优先用 `test-notes/llm-notes`,否则用项目下 `notes/`。已把 fallback `notes/` 加入 `.gitignore`,避免本地沉淀误入仓库。
 - 本轮同步正式文档:`docs/4-API_SPEC.md` / `docs/5-AGENT_DESIGN.md` / `docs/6-EVAL_PLAN.md` 已记录 `turn_type=auto` 实际分流、`judge_score_history` 无提升退出、`context_compacted / prior_turn_summary / token_budget`、flow smoke 10/10 口径,并把 `record_session_summary` 标为已接。
@@ -108,8 +109,8 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 | M0 | 仓库改造 + 文档重写 + v2 schema + 模块骨架 | ✅ `v0.2-m0-end` |
 | M1 | 笔记入库 + chunker + 树形导航 + Langfuse 起步 | ✅ `v0.3-m1-end` |
 | M2 | 主题 query → 全库 RAG → 出题 + Judge 三层评分 | ✅ 待 tag `v0.4-m2-end` |
-| M2.1 | `InterviewCoachAgent`:Agentic RAG 面试状态机 + 多轮纠偏分支 | ⏳ 当前 |
-| M2.5 | JD 累积上传 + 一键分析 + 学习路径 | ⏳ |
+| M2.1 | `InterviewCoachAgent`:Agentic RAG 面试状态机 + 多轮纠偏分支 | ✅ `v0.5-m2.1-end` |
+| M2.5 | JD 累积上传 + 一键分析 + 学习路径 | ⏳ 当前 |
 | M3 | 弱点跟踪 + SR + 岗位类三源出题 + 简历诊断 | ⏳ |
 
 # 当前已落地
@@ -142,20 +143,15 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **确认 M2.1 是否完成**:如果用户明确说"M2.1 完成了",按里程碑完成流程更新 `docs/STATUS.md`,再询问是否 commit / push 与是否打 tag。
+1. **M2.5 第一刀:JD 单条上传 + 解析入库**。先接文本粘贴 JD → `jd_parser` 立即解析 → 落 `jds` 表,再接"我的 JD 库"最小列表。
 
 备选:
 
+- 若继续 M2.5 产品闭环,下一步接截图 JD OCR(Qwen 多模态)和自动 title 抽取 / 用户可改。
+- 若继续 M2.5 聚合能力,先实现用户选范围(全部 / 最近 N 条 / 某 title)的一键分析入口,再接 hierarchical reduce。
 - 若继续验收,手动完成一场 `/quiz` 后点"生成总结",确认 `test-notes/llm-notes/_recall/<session_id>.md` 生成,且 `GET /api/quiz/sessions/<id>/recall` 返回同一份 markdown。
 - 若继续验收,刷新 `/quiz?session=13` 应看到初答评分 89.67 与补答评分 100 两条 LLM 反馈都保留;刷新 `/quiz?session=14` 应看到已评分总分 95 与整场总结。
 - 若继续手动验自动分流,在 `/quiz` 一题评分后输入“为什么 HashMap 的数组大小必须是 2 的幂次?”应按追问处理;输入“我补充一下...”或大段技术陈述应按补答重评。
-- 若继续字段命名,优先评估是否把内部 `judge_context_chunk_ids` 再改回更直白的 `final_context_chunk_ids_for_judge`,避免误解为评分另取一批 chunks。
-- 若继续 UI,先人工验 `/quiz` 主题输入 → 1/3/5 出题 → 左侧题目切换 → 初答/补答 turn → 刷新恢复 → 评分详情展开,重点看移动端文本是否挤压。
-- 若只做人工验证,重点看 `/quiz?session=<id>` 单题按钮、纠偏提示、补答后累计答案重评、刷新恢复。
-- 若继续跑 smoke,先看 trace 里的 `governance_flags` 和 `post_rank`,不要只看 headline pass。
-- 如 cache-only 因 query miss 失败,先确认是不是 query rewrite 内容变了;不要为了跑通悄悄切回 live-on-miss。
-- 如果继续看 rerank,优先调 blend / governance 阈值 / dynamic selection,不要把 rerank input 收到 15。
-- 如果继续扩 zero-hit,保持 core entity / anchor coverage 守门:Rust、Kubernetes Operator 这类核心实体缺失时不能只靠向量近邻过门。
 
 # 已锁定关键决策
 
@@ -207,6 +203,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **[来自 M2.1] 补答和追问教练不能混写同一状态**:只有明确补答才写入 `user_answer` 并重评;追问解释应走 coach chat,不改变分数 / 轮次推进。
 - **[来自 M2.1] 单输入框只是 UX,状态边界仍在后端**:`turn_type=auto` 可自动分流,但模糊输入默认追问;不能把 coach 解释或用户追问混进正式答案评分。
 - **[来自 M2.1] 每轮 LLM 回答都必须是消息**:多轮模拟面试不能只保留最新 `coach_message`;Judge 评分反馈与 coach 追问解释都要按 turn/event 回放,后续长上下文靠 summary/context pack 压缩,不是覆盖历史。
+- **[来自 M2.1] session recall 文件路径必须后端固定生成**:只写 `notes/_recall/{session_id}.md`;filesystem root 可配置,但不接受请求传任意路径。
 
 # 文档导航
 
