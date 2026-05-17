@@ -116,6 +116,7 @@ class QuizSessionDetailOut(BaseModel):
     abandoned_at: datetime | None = None
     scores: QuizScoresOut | None = None
     recall_md_path: str | None = None
+    summary: dict | None = None
     questions: list[QuizQuestionDetailOut]
 
 

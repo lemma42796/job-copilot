@@ -22,6 +22,7 @@ import {
   ApiError,
   abandonQuizSession,
   createQuizSession,
+  finishQuizSession,
   getQuizSession,
   listQuizSessions,
   saveQuizAnswer,
@@ -39,6 +40,7 @@ import {
   type QuizScores,
   type QuizSessionDetail,
   type QuizSessionListItem,
+  type QuizSessionSummary,
   type QuizTypeMix,
 } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -89,6 +91,7 @@ type SampleQuiz = {
   finalResult: {
     scores: QuizScores;
     recallMdPath?: string | null;
+    summary?: QuizSessionSummary | null;
   };
 };
 
@@ -336,6 +339,19 @@ const SAMPLE_QUIZ: SampleQuiz = {
   finalResult: {
     scores: { coverage: 60, fidelity: 95, depth: 56, total: 74 },
     recallMdPath: 'notes/_recall/sample.md',
+    summary: {
+      headline: '这场已经能答出主线，下一步要集中补齐反复出现的漏点和深度维度。',
+      strengths: ['答案基本能回到笔记证据，凭空发挥较少。'],
+      recurring_gaps: [
+        { key: 'coverage', label: '采分点遗漏或只答到部分', count: 4 },
+        { key: 'depth:boundary', label: 'Depth 缺少边界', count: 2 },
+      ],
+      remediation_wins: ['第 1 题补答后总分提升 12 分'],
+      review_suggestions: [
+        '复盘每题采分点，把漏答项整理成 3-5 条短句再口述一遍。',
+        '每个概念补一层 why / trade-off / boundary，避免只给定义。',
+      ],
+    },
   },
 };
 
@@ -353,6 +369,7 @@ const PHASE_LABELS: Record<string, string> = {
   coach_question_started: '追问教练',
   coach_context_built: '整理追问上下文',
   coach_done: '教练已回复',
+  summarizing: '生成整场总结',
 };
 
 const NEXT_ACTION_LABELS: Record<string, string> = {
@@ -643,6 +660,7 @@ export default function QuizPage() {
   const [finalResult, setFinalResult] = useState<{
     scores: QuizScores;
     recallMdPath?: string | null;
+    summary?: QuizSessionSummary | null;
   } | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>({ kind: 'idle' });
@@ -675,6 +693,24 @@ export default function QuizPage() {
     answeredCount === questions.length &&
     sessionId !== null &&
     activeTurnOrder === null;
+  const allQuestionsJudged = useMemo(
+    () =>
+      questions.length > 0 &&
+      questions.every((q) => {
+        const orderIndex = q.order_index;
+        return Boolean(
+          questionResults[orderIndex]?.scores ||
+            turnStates[orderIndex]?.scores ||
+            (judgeTurns[orderIndex] ?? []).some((turn) => turn.scores),
+        );
+      }),
+    [judgeTurns, questionResults, questions, turnStates],
+  );
+  const canFinish =
+    stage === 'answering' &&
+    sessionId !== null &&
+    activeTurnOrder === null &&
+    allQuestionsJudged;
   const activeQuestion = useMemo(() => {
     if (questions.length === 0) return null;
     return questions.find((item) => item.order_index === activeQuestionOrder) ?? questions[0];
@@ -807,6 +843,7 @@ export default function QuizPage() {
         ? {
             scores: finalScores,
             recallMdPath: detail.recall_md_path,
+            summary: detail.summary ?? null,
           }
         : null,
     );
@@ -1409,6 +1446,7 @@ export default function QuizPage() {
           setFinalResult({
             scores: frame.data.scores,
             recallMdPath: frame.data.recall_md_path,
+            summary: null,
           });
         } else if (frame.event === 'error') {
           setRunError(`${frame.data.code}: ${frame.data.detail}`);
@@ -1424,6 +1462,63 @@ export default function QuizPage() {
       void reloadRecent();
     }
   }, [answerTurns, answers, canSubmit, questions, reloadRecent, saveAllAnswers, sessionId]);
+
+  const handleFinishSession = useCallback(async () => {
+    if (!canFinish || sessionId === null) return;
+
+    setStage('submitting');
+    setRunError(null);
+    setProgressItems((items) =>
+      appendProgress(items, { id: 'finish-start', group: 'judge', label: '生成整场总结' }),
+    );
+
+    let ok = false;
+    try {
+      for await (const frame of finishQuizSession(sessionId)) {
+        if (frame.event === 'started') {
+          setProgressItems((items) =>
+            appendProgress(items, {
+              id: 'finish-started',
+              group: 'judge',
+              label: '总结已开始',
+              detail: `${frame.data.total_questions} 题`,
+            }),
+          );
+        } else if (frame.event === 'progress') {
+          setProgressItems((items) =>
+            appendProgress(items, {
+              id: `finish-progress-${frame.data.phase}-${Date.now()}`,
+              group: 'judge',
+              label: turnPhaseLabel(frame.data.phase),
+              detail: frame.data.compacted ? '已压缩为 session summary' : undefined,
+            }),
+          );
+        } else if (frame.event === 'result') {
+          setFinalResult({
+            scores: frame.data.scores,
+            recallMdPath: frame.data.recall_md_path,
+            summary: frame.data.summary ?? null,
+          });
+        } else if (frame.event === 'error') {
+          setRunError(`${frame.data.code}: ${frame.data.detail}`);
+        } else if (frame.event === 'done') {
+          ok = frame.data.ok;
+        }
+      }
+
+      if (ok) {
+        const detail = await getQuizSession(sessionId);
+        hydrateSession(detail);
+        void reloadRecent();
+      } else {
+        setStage('answering');
+      }
+    } catch (err) {
+      setStage('answering');
+      setRunError(problemMessage(err));
+      void reloadRecent();
+    }
+  }, [canFinish, hydrateSession, reloadRecent, sessionId]);
 
   const handleAbandon = useCallback(async () => {
     if (sessionId === null) {
@@ -1631,7 +1726,9 @@ export default function QuizPage() {
                       ? `第 ${activeTurnOrder + 1} 题推进中`
                       : `${answeredCount}/${questions.length} 已答`
                     : stage === 'submitting'
-                      ? '正在评分'
+                      ? allQuestionsJudged
+                        ? '正在总结'
+                        : '正在评分'
                       : '评分完成'}
             </div>
             <div className="mt-0.5 truncate text-lg font-semibold tracking-tight">
@@ -1667,13 +1764,25 @@ export default function QuizPage() {
                 再来一轮
               </Button>
             ) : (
-              <Button className="rounded-lg" onClick={handleSubmit} disabled={!canSubmit}>
+              <Button
+                className="rounded-lg"
+                onClick={canFinish ? handleFinishSession : handleSubmit}
+                disabled={stage === 'submitting' || (!canFinish && !canSubmit)}
+              >
                 {stage === 'submitting' ? (
                   <Loader2 className="size-4 animate-spin" />
+                ) : canFinish ? (
+                  <CheckCircle2 className="size-4" />
                 ) : (
                   <Send className="size-4" />
                 )}
-                {stage === 'submitting' ? '评分中' : '提交评分'}
+                {stage === 'submitting'
+                  ? allQuestionsJudged
+                    ? '总结中'
+                    : '评分中'
+                  : canFinish
+                    ? '生成总结'
+                    : '提交评分'}
               </Button>
             )}
           </div>
@@ -1789,6 +1898,8 @@ function QuestionGroup({
             ? '推进中'
             : action === 'remediate'
               ? '待补答'
+              : action === 'summarize'
+                ? '可总结'
               : result
                 ? '已评分'
                 : turns.length > 0
@@ -1926,8 +2037,18 @@ function TypeMixBar({ typeMix }: { typeMix: QuizTypeMix }) {
 function FinalScore({
   result,
 }: {
-  result: { scores: QuizScores; recallMdPath?: string | null };
+  result: {
+    scores: QuizScores;
+    recallMdPath?: string | null;
+    summary?: QuizSessionSummary | null;
+  };
 }) {
+  const summary = result.summary;
+  const strengths = summary?.strengths ?? [];
+  const gaps = summary?.recurring_gaps ?? [];
+  const wins = summary?.remediation_wins ?? [];
+  const suggestions = summary?.review_suggestions ?? [];
+
   return (
     <div className="rounded-lg border border-[var(--color-success-border)] bg-[var(--color-success-bg)] px-4 py-3">
       <div className="flex items-center justify-between gap-4">
@@ -1941,6 +2062,38 @@ function FinalScore({
         <div className="text-3xl font-semibold tracking-tight text-[var(--color-success-fg)]">
           {roundedScore(result.scores.total)}
         </div>
+      </div>
+      {summary ? (
+        <div className="mt-4 space-y-3 border-t border-[var(--color-success-border)] pt-3 text-[var(--color-success-fg)]">
+          {summary.headline ? <p className="text-sm leading-6">{summary.headline}</p> : null}
+          {strengths.length ? (
+            <SummaryLine title="做得好" items={strengths} />
+          ) : null}
+          {gaps.length ? (
+            <SummaryLine
+              title="反复缺口"
+              items={gaps.map((gap) => `${gap.label ?? gap.key ?? '缺口'} ${gap.count ?? 0} 处`)}
+            />
+          ) : null}
+          {wins.length ? <SummaryLine title="补答修正" items={wins} /> : null}
+          {suggestions.length ? <SummaryLine title="复习建议" items={suggestions} /> : null}
+          {result.recallMdPath ? (
+            <div className="text-[11px] opacity-80">沉淀: {result.recallMdPath}</div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SummaryLine({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="grid gap-1 text-xs leading-5 sm:grid-cols-[72px_1fr]">
+      <div className="font-semibold">{title}</div>
+      <div className="space-y-0.5">
+        {items.map((item, index) => (
+          <div key={`${title}-${index}`}>{item}</div>
+        ))}
       </div>
     </div>
   );

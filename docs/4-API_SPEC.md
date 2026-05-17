@@ -1,7 +1,7 @@
 ---
 title: API SPEC - JobCopilot v2(REST + SSE 端点契约)
 owner: lemma42796
-last_updated: 2026-05-16
+last_updated: 2026-05-17
 purpose: 锁前后端接口契约;每个端点的 path / method / 请求 / 响应 / SSE 事件序列
 ---
 
@@ -421,6 +421,7 @@ session 详情(载入历史 / 续答用)。
   "started_at": "2026-05-08T03:00:00Z",
   "submitted_at": null,
   "scores": null,
+  "summary": null,
   "questions": [
     {
       "order_index": 0,
@@ -451,7 +452,7 @@ session 详情(载入历史 / 续答用)。
 
 `mode='job'` 时 `jd_ids` 数组非空(M3 岗位类);`mode='auto'` 时 `query` 为后端 SR 调度自选的 heading_path 末段(M3 系统自选)。
 
-`status='submitted'` 时 `scores` 字段填充三层 + 总分,且每题带 `evidence`(coverage_evidence / fidelity_evidence / depth_evidence)。
+`status='submitted'` 时 `scores` 字段填充三层 + 总分,且每题带 `evidence`(coverage_evidence / fidelity_evidence / depth_evidence)。M2.1 的 `finish_session` 完成后还会返回 `summary`,内容来自 `agent_state.final_summary`。
 
 M2.1 起,in_progress session 可返回当前题最新 `remediation_prompt` 和 `answer_turns`,用于用户刷新页面后从 `wait_user_answer` 继续补答。
 
@@ -626,6 +627,65 @@ data: {"ok": true}
 
 后端流程(详见 §4.6):异步 background — 一次 LLM 调用拿三层分(MVP),N 题串行(因 LLM 推理排队;并行后再说)。
 
+### 4.4.1 `POST /api/quiz/sessions/{id}/finish`(**SSE,M2.1**)
+
+结束 M2.1 面试会话并生成整场总结。这个端点**不重新 Judge**;它要求每题已经通过 `POST /answers/{order_index}/turns` 得到最新评分,再基于各题最新分数、`answer_turns`、Judge gaps 与 `remediation_state` 生成 deterministic session summary。
+
+前置条件:
+
+- session 仍为 `in_progress`
+- session 下每题都有非空累计答案
+- 每题都有 `judged_at` 与 coverage / fidelity / depth / total 最新分数
+
+SSE 事件:
+
+```
+event: started
+data: {"job_id": "finish-session-789", "resource_id": 789, "session_id": 789, "total_questions": 3}
+
+event: progress
+data: {
+  "phase": "summarizing",
+  "included": ["questions", "answer_turns", "judge_scores", "judge_gaps", "remediation_state"],
+  "compacted": true
+}
+
+event: result
+data: {
+  "session_id": 789,
+  "scores": {"coverage": 90.0, "fidelity": 100.0, "depth": 100.0, "total": 95.0},
+  "summary": {
+    "version": "session_summary_v1",
+    "headline": "...",
+    "strengths": ["..."],
+    "recurring_gaps": [],
+    "remediation_wins": ["..."],
+    "review_suggestions": ["..."],
+    "question_summaries": [...],
+    "context_pack": {...},
+    "markdown": "# 面试练习总结 #789\n..."
+  },
+  "recall_md_path": "notes/_recall/789.md"
+}
+
+event: done
+data: {"ok": true}
+```
+
+落库副作用:
+
+- `quiz_sessions.status = submitted`,写入 session-level scores、`submitted_at`、`recall_md_path`
+- `quiz_sessions.agent_state` 写入 `last_agent_node=finish_session`、`next_action=finish`、`question_summaries`、`summary_context_pack`、`final_summary`
+- `session_events` 追加 `session_summarized` 与 `session_finished`
+
+错误码:
+
+| code | 说明 |
+|------|----|
+| `session_not_in_progress` | session 已 submitted / abandoned |
+| `session_not_ready_to_finish` | 仍有题未答或未完成最新 Judge |
+| `context_pack_failed` | session / question / chunk 上下文不完整 |
+
 ## 4.5 `POST /api/quiz/sessions/{id}/abandon`
 
 中途放弃。
@@ -674,6 +734,17 @@ data: {"ok": true}
 
 异常:任一题 Judge 失败 → 已 done 的题留库,失败题 `error` + `done(ok=false)`,session.status 留 `in_progress`(用户可重试 submit)。
 
+**M2.1 整场总结(`POST /api/quiz/sessions/{id}/finish`)完整事件流**:
+
+```
+1. started        确认每题已答且已评分
+2. progress       phase=summarizing,附 summary context pack 字段
+3. result         汇总分 + summary + recall_md_path
+4. done           ok=true
+```
+
+异常:有题未评分 → `error{session_not_ready_to_finish}` + `done(ok=false)`,session.status 留 `in_progress`。这个路径不重新调用 AnswerJudge,避免用户点"生成总结"时分数漂移。
+
 ## 4.7 `GET /api/quiz/sessions`
 
 历史 session 列表。
@@ -705,7 +776,7 @@ data: {"ok": true}
 
 下载 session 沉淀 markdown(US-11)— **存档语义**,不是评分展示。
 
-响应:`Content-Type: text/markdown; charset=utf-8`,body 是 markdown 文本(同 `notes/_recall/{id}.md`)。
+响应:`Content-Type: text/markdown; charset=utf-8`,body 是 markdown 文本。M2.1 当前实现从 `agent_state.final_summary.markdown` 读取;`recall_md_path=notes/_recall/{id}.md` 先作为逻辑存档路径写入 session,实际文件写入留后续接 `record_session_summary`。
 
 注:答题完成页的评分 + evidence 直接用 §4.4 SSE 推过来的数据渲染,**不依赖此端点**。recall 文件的用途是用户存一份留档(放进自己的 Obsidian / 语雀库,日后翻看)。
 

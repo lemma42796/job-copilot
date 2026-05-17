@@ -1,7 +1,7 @@
 ---
 title: AGENT DESIGN - JobCopilot v2(QueryRewriter + QuizGenerator + AnswerJudge + InterviewCoachAgent)
 owner: lemma42796
-last_updated: 2026-05-16
+last_updated: 2026-05-17
 purpose: 锁核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / Agentic RAG 编排 / 模型路由 / 版本号策略
 ---
 
@@ -858,7 +858,7 @@ M2.1 把 M2 的 RAG 出题闭环升级成 **Agentic RAG 面试教练**。设计�
 - **评测**:流程型样本可复现追问 / 不追问 / fabricated / 恢复
 - **可恢复**:用户退出后能从 `wait_user_answer` 继续
 
-`apps/api/src/jobcopilot_api/agents/interview_coach/`(M2.1 启动前补)。M2.1 只编排已有 Agent,不重写 QuizGenerator / AnswerJudge prompt。
+当前 M2.1 第一版编排落在 `apps/api/src/jobcopilot_api/services/interview_service.py`,复用 QuizGenerator / AnswerJudge,不重写两者 prompt。后续如果引入 LangGraph 或独立 `agents/interview_coach/` 包,也必须保持这里的状态机语义和事件契约不变。
 
 ## 8.1 Harness Engineering 边界
 
@@ -926,6 +926,12 @@ retrieve_context
       └ summarize_session → finish_session
 ```
 
+当前已落地节点:
+
+- `wait_user_answer → build_context_pack → judge_answer → decide_next_action`:由 `POST /api/quiz/sessions/{id}/answers/{order_index}/turns` 推进;补答会追加到 `answer_turns`,并用累计答案重新跑 AnswerJudge。
+- `coach_question → coach_chat`:用户追问教练反馈时走独立解释链路,不改 `user_answer`,不重评,不推进题目状态。
+- `summarize_session → finish_session`:由 `POST /api/quiz/sessions/{id}/finish` 推进;只汇总已经完成的每题最新 Judge 结果,不重新评分。结果写入 `agent_state.final_summary / question_summaries / summary_context_pack`,并追加 `session_summarized / session_finished` 事件。
+
 ## 8.3 工具边界
 
 | Tool | 用途 | M2.1 状态 |
@@ -933,7 +939,7 @@ retrieve_context
 | `search_notes(query)` | 主题检索,底层复用 retrieval pipeline | 必做 |
 | `lookup_claim_in_notes(claim)` | Judge 标 fabricated 前验证 | 必做(复用 §4.7) |
 | `get_source_chunks(question_id)` | 展开题目引用,供追问 / UI 对照 | 必做 |
-| `record_session_summary(session_id)` | 写 `notes/_recall/{session_id}.md` | 必做 |
+| `record_session_summary(session_id)` | 写 `notes/_recall/{session_id}.md` | 待接;当前先把 markdown 放在 `agent_state.final_summary.markdown`,并写逻辑 `recall_md_path` |
 | `update_knowledge_gap(...)` | 写弱点与 SR 队列 | M3 接入,M2.1 只留接口 |
 
 工具不是给 LLM 任意调用的开放工具市场,每个 tool 都对应产品闭环里的明确动作。
@@ -1020,7 +1026,7 @@ Context Cache / prompt caching 只用于降低重复长前缀成本,不是会话
 ## 8.7 评测与可观测
 
 - Langfuse trace 根节点按 `session_id` 聚合,完整链路:`retrieve_context → generate_question → wait_user_answer → build_context_pack → judge_answer → decide_next_action → generate_remediation_prompt? → summarize_session`
-- `evals/suites/interview_coach/` 收流程型样本,至少覆盖:
+- `evals/suites/interview_coach/` 收流程型样本;当前已有 `dataset.flow_smoke.jsonl` 10 条最小 fixture,runner 待接。至少覆盖:
   - 答得好 → 不追问
   - 漏 reference point → 提示缺口 → 补答后累计答案重评
   - fabricated ratio 高 → 依据追问

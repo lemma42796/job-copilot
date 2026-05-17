@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, Query
+from fastapi.responses import PlainTextResponse
 from sse_starlette.sse import EventSourceResponse
 
 from jobcopilot_api.errors import (
@@ -131,6 +132,17 @@ async def submit_answer_turn(
 
 
 @router.post(
+    "/sessions/{session_id}/finish",
+    summary="结束 M2.1 面试会话并生成总结(SSE)",
+)
+async def finish_session(session_id: int) -> EventSourceResponse:
+    sessionmaker = get_sessionmaker()
+    return EventSourceResponse(
+        interview_service.finish_session_sse(sessionmaker, session_id)
+    )
+
+
+@router.post(
     "/sessions/{session_id}/submit",
     summary="提交答题会话并触发 Judge 评分(SSE)",
 )
@@ -139,6 +151,17 @@ async def submit_session(session_id: int) -> EventSourceResponse:
     return EventSourceResponse(
         answer_service.submit_session_sse(sessionmaker, session_id)
     )
+
+
+@router.get(
+    "/sessions/{session_id}/recall",
+    summary="下载 session 沉淀 markdown",
+)
+async def get_session_recall(session_id: int) -> PlainTextResponse:
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as session:
+        markdown = await answer_service.get_session_recall_markdown(session, session_id)
+    return PlainTextResponse(markdown, media_type="text/markdown")
 
 
 @router.post(

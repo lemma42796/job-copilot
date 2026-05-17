@@ -599,6 +599,45 @@ export type QuizJudgeTurn = {
   unresolved_gaps?: unknown[];
 };
 
+export type QuizSessionSummaryGap = {
+  type?: string;
+  key?: string;
+  label?: string;
+  count?: number;
+  examples?: string[];
+};
+
+export type QuizSessionQuestionSummary = {
+  order_index?: number;
+  question_id?: number;
+  prompt?: string;
+  scores?: QuizScores;
+  round_count?: number;
+  improved_by_remediation?: boolean;
+  score_delta?: number;
+  coverage_gaps?: unknown[];
+  fabricated_claims?: string[];
+  missing_depth_dimensions?: string[];
+  coach_message?: string | null;
+  status?: string;
+};
+
+export type QuizSessionSummary = {
+  session_id?: number;
+  query?: string;
+  mode?: QuizMode | string;
+  finished_at?: string;
+  headline?: string;
+  scores?: QuizScores;
+  strengths?: string[];
+  recurring_gaps?: QuizSessionSummaryGap[];
+  remediation_wins?: string[];
+  review_suggestions?: string[];
+  question_summaries?: QuizSessionQuestionSummary[];
+  context_pack?: Record<string, unknown>;
+  markdown?: string;
+};
+
 export type QuizRemediationState = {
   last_decision?: QuizNextAction | string;
   triggered_by?: string;
@@ -639,6 +678,7 @@ export type QuizSessionDetail = {
   abandoned_at: string | null;
   scores: QuizNullableScores | null;
   recall_md_path: string | null;
+  summary?: QuizSessionSummary | null;
   questions: QuizSessionQuestionDetail[];
 };
 
@@ -761,6 +801,36 @@ export type QuizAnswerTurnSseFrame =
   | SseFrame<'error', { code: string; detail: string; order_index?: number }>
   | SseFrame<'done', { ok: boolean }>;
 
+export type QuizFinishSseFrame =
+  | SseFrame<
+      'started',
+      {
+        job_id: string;
+        resource_id: number;
+        session_id?: number;
+        total_questions: number;
+      }
+    >
+  | SseFrame<
+      'progress',
+      {
+        phase: string;
+        included?: string[];
+        compacted?: boolean;
+      }
+    >
+  | SseFrame<
+      'result',
+      {
+        session_id: number;
+        scores: QuizScores;
+        summary?: QuizSessionSummary | null;
+        recall_md_path?: string | null;
+      }
+    >
+  | SseFrame<'error', { code: string; detail: string }>
+  | SseFrame<'done', { ok: boolean }>;
+
 export function createQuizSession(
   input: QuizSessionCreateInput,
 ): AsyncGenerator<QuizCreateSseFrame> {
@@ -815,6 +885,16 @@ export function submitQuizSession(sessionId: number): AsyncGenerator<QuizSubmitS
     method: 'POST',
     headers: { 'X-User-Id': USER_ID },
   });
+}
+
+export function finishQuizSession(sessionId: number): AsyncGenerator<QuizFinishSseFrame> {
+  return streamSse<QuizFinishSseFrame>(
+    `${API_BASE_URL}/api/quiz/sessions/${sessionId}/finish`,
+    {
+      method: 'POST',
+      headers: { 'X-User-Id': USER_ID },
+    },
+  );
 }
 
 export function submitQuizAnswerTurn(

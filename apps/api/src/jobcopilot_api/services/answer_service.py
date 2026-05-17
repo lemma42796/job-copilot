@@ -249,6 +249,7 @@ async def get_session_detail(
         abandoned_at=quiz_session.abandoned_at,
         scores=session_scores,
         recall_md_path=quiz_session.recall_md_path,
+        summary=_session_summary(quiz_session.agent_state),
         questions=question_items,
     )
 
@@ -306,6 +307,20 @@ async def list_sessions(
         next_cursor=items[-1].id if has_more and items else None,
         has_more=has_more,
     )
+
+
+async def get_session_recall_markdown(
+    session: AsyncSession,
+    session_id: int,
+) -> str:
+    quiz_session = await session.get(QuizSession, session_id)
+    if quiz_session is None:
+        raise NotFoundError(f"quiz_session {session_id} 不存在")
+    summary = _session_summary(quiz_session.agent_state)
+    markdown = summary.get("markdown") if summary else None
+    if not isinstance(markdown, str) or not markdown.strip():
+        raise NotFoundError(f"session {session_id} 还没有生成沉淀 markdown")
+    return markdown
 
 
 async def save_draft(
@@ -572,6 +587,13 @@ def _with_answer_turn_types(
         item["answer_turn_type"] = answer_type_by_round.get(round_index)
         out.append(item)
     return out
+
+
+def _session_summary(agent_state: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(agent_state, dict):
+        return None
+    summary = agent_state.get("final_summary")
+    return summary if isinstance(summary, dict) else None
 
 
 async def _finalize_session(

@@ -11,11 +11,13 @@ import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from jobcopilot_api.agents.answer_judge.scoring import total_score as compute_total_score
 from jobcopilot_api.agents.coach_chat import agent as coach_chat_agent
 from jobcopilot_api.errors import JobCopilotError, NotFoundError, ValidationError
 from jobcopilot_api.llm.errors import LLMError
@@ -56,6 +58,12 @@ class CoachCallFailedError(JobCopilotError):
     title = "教练解释调用失败"
 
 
+class SessionNotReadyToFinishError(JobCopilotError):
+    status_code = 409
+    code = "session_not_ready_to_finish"
+    title = "会话还不能结束"
+
+
 @dataclass(frozen=True)
 class _TurnContext:
     quiz_session: QuizSession
@@ -75,6 +83,30 @@ class _Decision:
     exit_reason: str | None
     remediation_prompt: dict[str, Any] | None
     unresolved_gaps: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class _FinishQuestion:
+    answer_id: int
+    order_index: int
+    question_id: int
+    question_type: str
+    prompt: str
+    evidence_chunk_ids: list[int]
+    reference_answer: str
+    scoring_points: list[dict[str, Any]]
+    user_answer: str
+    answer_turns: list[dict[str, Any]]
+    remediation_state: dict[str, Any]
+    coach_message: str | None
+    coverage_score: float
+    coverage_evidence: dict[str, Any]
+    fidelity_score: float
+    fidelity_evidence: dict[str, Any]
+    depth_score: float
+    depth_evidence: dict[str, Any]
+    total_score: float
+    judge_score_history: list[dict[str, float]]
 
 
 async def submit_answer_turn_sse(
@@ -264,6 +296,57 @@ async def submit_answer_turn_sse(
             "coach_message": judged.coach_message,
         },
     )
+    yield _ev("done", {"ok": True})
+
+
+async def finish_session_sse(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    session_id: int,
+) -> AsyncIterator[dict[str, Any]]:
+    """SSE for finishing an M2.1 interview session without re-judging answers."""
+    try:
+        questions = await _load_finish_questions(sessionmaker, session_id)
+    except JobCopilotError as e:
+        yield _ev("error", _error_payload(e))
+        yield _ev("done", {"ok": False})
+        return
+
+    yield _ev(
+        "started",
+        {
+            "job_id": f"finish-session-{session_id}",
+            "resource_id": session_id,
+            "session_id": session_id,
+            "total_questions": len(questions),
+        },
+    )
+    yield _ev(
+        "progress",
+        {
+            "phase": "summarizing",
+            "included": [
+                "questions",
+                "answer_turns",
+                "judge_scores",
+                "judge_gaps",
+                "remediation_state",
+            ],
+            "compacted": True,
+        },
+    )
+
+    try:
+        result = await _summarize_and_finish_session(
+            sessionmaker,
+            session_id=session_id,
+            questions=questions,
+        )
+    except JobCopilotError as e:
+        yield _ev("error", _error_payload(e))
+        yield _ev("done", {"ok": False})
+        return
+
+    yield _ev("result", result)
     yield _ev("done", {"ok": True})
 
 
@@ -559,6 +642,216 @@ async def _append_answer_turn(
         )
         await session.commit()
         return {"answer_id": answer.id, "round_index": round_index}
+
+
+async def _load_finish_questions(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    session_id: int,
+) -> list[_FinishQuestion]:
+    async with sessionmaker() as session:
+        quiz_session = await session.get(QuizSession, session_id)
+        if quiz_session is None:
+            raise NotFoundError(f"quiz_session {session_id} 不存在")
+        if quiz_session.status != "in_progress":
+            raise answer_service.SessionNotInProgressError(
+                f"session {session_id} 当前状态为 {quiz_session.status},不能结束本场"
+            )
+
+        answers = list(
+            (
+                await session.execute(
+                    sa.select(SessionAnswer)
+                    .where(SessionAnswer.session_id == session_id)
+                    .order_by(SessionAnswer.order_index)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not answers:
+            raise NotFoundError(f"session {session_id} 下没有答案行")
+
+        not_ready = [
+            answer.order_index
+            for answer in answers
+            if not (answer.user_answer or "").strip()
+            or answer.judged_at is None
+            or answer.coverage_score is None
+            or answer.fidelity_score is None
+            or answer.depth_score is None
+            or answer.total_score is None
+        ]
+        if not_ready:
+            raise SessionNotReadyToFinishError(
+                "请先逐题发送答案或补答,并等评分完成后再结束本场",
+                errors=[{"order_index": idx} for idx in not_ready],
+            )
+
+        question_ids = [answer.question_id for answer in answers]
+        questions = list(
+            (
+                await session.execute(
+                    sa.select(Question).where(Question.id.in_(question_ids))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        question_by_id = {question.id: question for question in questions}
+        if len(question_by_id) != len(set(question_ids)):
+            raise ContextPackFailedError("session_answers 引用了不存在的 question")
+
+        judge_events = list(
+            (
+                await session.execute(
+                    sa.select(SessionEvent)
+                    .where(SessionEvent.session_id == session_id)
+                    .where(SessionEvent.event_type == "judge_completed")
+                    .order_by(SessionEvent.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        history_by_answer_id: dict[int, list[dict[str, float]]] = {}
+        for event in judge_events:
+            if event.answer_id is None:
+                continue
+            scores = event.payload.get("scores") if isinstance(event.payload, dict) else None
+            if not isinstance(scores, dict):
+                continue
+            history_by_answer_id.setdefault(event.answer_id, []).append(
+                {
+                    "coverage": _score_value(scores.get("coverage")),
+                    "fidelity": _score_value(scores.get("fidelity")),
+                    "depth": _score_value(scores.get("depth")),
+                    "total": _score_value(scores.get("total")),
+                }
+            )
+
+        out: list[_FinishQuestion] = []
+        for answer in answers:
+            question = question_by_id[answer.question_id]
+            out.append(
+                _FinishQuestion(
+                    answer_id=answer.id,
+                    order_index=answer.order_index,
+                    question_id=question.id,
+                    question_type=question.type,
+                    prompt=question.prompt,
+                    evidence_chunk_ids=list(question.evidence_chunk_ids or []),
+                    reference_answer=question.reference_answer,
+                    scoring_points=list(question.scoring_points or []),
+                    user_answer=answer.user_answer or "",
+                    answer_turns=list(answer.answer_turns or []),
+                    remediation_state=dict(answer.remediation_state or {}),
+                    coach_message=answer.coach_message,
+                    coverage_score=_score_value(answer.coverage_score),
+                    coverage_evidence=dict(answer.coverage_evidence or {}),
+                    fidelity_score=_score_value(answer.fidelity_score),
+                    fidelity_evidence=dict(answer.fidelity_evidence or {}),
+                    depth_score=_score_value(answer.depth_score),
+                    depth_evidence=dict(answer.depth_evidence or {}),
+                    total_score=_score_value(answer.total_score),
+                    judge_score_history=history_by_answer_id.get(answer.id, []),
+                )
+            )
+        return out
+
+
+async def _summarize_and_finish_session(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    session_id: int,
+    questions: list[_FinishQuestion],
+) -> dict[str, Any]:
+    coverage = _average([question.coverage_score for question in questions])
+    fidelity = _average([question.fidelity_score for question in questions])
+    depth = _average([question.depth_score for question in questions])
+    total = compute_total_score(coverage, fidelity, depth)
+    scores = {
+        "coverage": coverage,
+        "fidelity": fidelity,
+        "depth": depth,
+        "total": total,
+    }
+
+    async with sessionmaker() as session:
+        quiz_session = await session.get(QuizSession, session_id)
+        if quiz_session is None:
+            raise NotFoundError(f"quiz_session {session_id} 不存在")
+        if quiz_session.status != "in_progress":
+            raise answer_service.SessionNotInProgressError(
+                f"session {session_id} 当前状态为 {quiz_session.status},不能结束本场"
+            )
+
+        now = datetime.now(UTC)
+        summary = _build_session_summary(
+            session_id=session_id,
+            query=quiz_session.query,
+            mode=quiz_session.mode,
+            scores=_scores_for_event(scores),
+            questions=questions,
+            final_context_chunk_ids=list(quiz_session.final_context_chunk_ids or []),
+            finished_at=now,
+        )
+        state = dict(quiz_session.agent_state or {})
+        state.update(
+            {
+                "last_agent_node": "finish_session",
+                "next_action": "finish",
+                "current_question_index": questions[-1].order_index if questions else 0,
+                "unresolved_gaps": summary.get("recurring_gaps", []),
+                "question_summaries": summary.get("question_summaries", []),
+                "summary_context_pack": summary.get("context_pack", {}),
+                "final_summary": summary,
+            }
+        )
+
+        quiz_session.status = "submitted"
+        quiz_session.coverage_score = answer_judge_service.score_decimal(coverage)
+        quiz_session.fidelity_score = answer_judge_service.score_decimal(fidelity)
+        quiz_session.depth_score = answer_judge_service.score_decimal(depth)
+        quiz_session.total_score = answer_judge_service.score_decimal(total)
+        quiz_session.submitted_at = now
+        quiz_session.recall_md_path = f"notes/_recall/{session_id}.md"
+        quiz_session.last_agent_node = "finish_session"
+        quiz_session.agent_state = state
+        quiz_session.updated_at = now
+        session.add(
+            SessionEvent(
+                session_id=session_id,
+                answer_id=None,
+                question_id=None,
+                event_type="session_summarized",
+                agent_node="summarize_session",
+                round_index=0,
+                payload=summary,
+            )
+        )
+        session.add(
+            SessionEvent(
+                session_id=session_id,
+                answer_id=None,
+                question_id=None,
+                event_type="session_finished",
+                agent_node="finish_session",
+                round_index=0,
+                payload={
+                    "scores": _scores_for_event(scores),
+                    "recall_md_path": quiz_session.recall_md_path,
+                    "finished_at": now.isoformat(),
+                },
+            )
+        )
+        await session.commit()
+
+    return {
+        "session_id": session_id,
+        "scores": _scores_for_event(scores),
+        "summary": summary,
+        "recall_md_path": f"notes/_recall/{session_id}.md",
+    }
 
 
 async def _build_context_pack(
@@ -938,6 +1231,356 @@ def _answer_scores(answer: SessionAnswer) -> dict[str, float | None]:
 
 def _maybe_float(value: Any) -> float | None:
     return float(value) if value is not None else None
+
+
+def _score_value(value: Any) -> float:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, int | float):
+        return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _average(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _build_session_summary(
+    *,
+    session_id: int,
+    query: str,
+    mode: str,
+    scores: dict[str, float],
+    questions: list[_FinishQuestion],
+    final_context_chunk_ids: list[int],
+    finished_at: datetime,
+) -> dict[str, Any]:
+    question_summaries: list[dict[str, Any]] = []
+    gap_counts: dict[str, dict[str, Any]] = {}
+    remediation_wins: list[str] = []
+
+    for question in questions:
+        coverage_gaps = _coverage_gaps(question)
+        fabricated_claims = _fabricated_claims(question)
+        missing_depth = _missing_depth(question)
+        first_total = (
+            question.judge_score_history[0]["total"]
+            if question.judge_score_history
+            else question.total_score
+        )
+        score_delta = round(question.total_score - first_total, 2)
+        improved = len(question.answer_turns) > 1 and score_delta >= 5.0
+        if improved:
+            remediation_wins.append(
+                f"第 {question.order_index + 1} 题补答后总分提升 {score_delta:.0f} 分"
+            )
+
+        _count_gap(
+            gap_counts,
+            key="coverage",
+            label="采分点遗漏或只答到部分",
+            amount=len(coverage_gaps),
+            examples=[gap["text"] for gap in coverage_gaps],
+        )
+        _count_gap(
+            gap_counts,
+            key="fidelity",
+            label="存在缺少笔记证据的说法",
+            amount=len(fabricated_claims),
+            examples=fabricated_claims,
+        )
+        for dimension in missing_depth:
+            _count_gap(
+                gap_counts,
+                key=f"depth:{dimension}",
+                label=f"Depth 缺少{_depth_label(dimension)}",
+                amount=1,
+                examples=[f"第 {question.order_index + 1} 题"],
+            )
+
+        question_summaries.append(
+            {
+                "order_index": question.order_index,
+                "question_id": question.question_id,
+                "prompt": question.prompt,
+                "scores": {
+                    "coverage": round(question.coverage_score, 2),
+                    "fidelity": round(question.fidelity_score, 2),
+                    "depth": round(question.depth_score, 2),
+                    "total": round(question.total_score, 2),
+                },
+                "round_count": len(question.answer_turns),
+                "improved_by_remediation": improved,
+                "score_delta": score_delta,
+                "coverage_gaps": coverage_gaps,
+                "fabricated_claims": fabricated_claims,
+                "missing_depth_dimensions": missing_depth,
+                "coach_message": question.coach_message,
+                "status": _question_status(question.total_score, coverage_gaps, fabricated_claims),
+            }
+        )
+
+    recurring_gaps = [
+        {
+            "type": key.split(":", 1)[0],
+            "key": key,
+            "label": value["label"],
+            "count": value["count"],
+            "examples": value["examples"][:3],
+        }
+        for key, value in sorted(
+            gap_counts.items(),
+            key=lambda item: (-int(item[1]["count"]), item[0]),
+        )
+        if int(value["count"]) > 0
+    ]
+    strengths = _summary_strengths(scores, questions)
+    suggestions = _review_suggestions(recurring_gaps)
+    headline = _summary_headline(scores, recurring_gaps)
+    context_pack = {
+        "version": "session_summary_v1",
+        "source": "deterministic_from_judge_events",
+        "question_count": len(questions),
+        "final_context_chunk_ids": final_context_chunk_ids,
+        "compacted_fields": [
+            "question_summaries",
+            "recurring_gaps",
+            "remediation_wins",
+            "review_suggestions",
+        ],
+    }
+    summary = {
+        "session_id": session_id,
+        "query": query,
+        "mode": mode,
+        "finished_at": finished_at.isoformat(),
+        "headline": headline,
+        "scores": scores,
+        "strengths": strengths,
+        "recurring_gaps": recurring_gaps,
+        "remediation_wins": remediation_wins,
+        "review_suggestions": suggestions,
+        "question_summaries": question_summaries,
+        "context_pack": context_pack,
+    }
+    summary["markdown"] = _summary_markdown(summary, questions)
+    return summary
+
+
+def _coverage_gaps(question: _FinishQuestion) -> list[dict[str, Any]]:
+    point_by_id = {
+        str(point.get("id")): point
+        for point in question.scoring_points
+        if isinstance(point, dict) and point.get("id") is not None
+    }
+    points = question.coverage_evidence.get("points")
+    if not isinstance(points, list):
+        return []
+    gaps: list[dict[str, Any]] = []
+    for point in points:
+        if not isinstance(point, dict) or point.get("label") not in ("partial", "miss"):
+            continue
+        point_id = str(point.get("id", ""))
+        scoring_point = point_by_id.get(point_id, {})
+        gaps.append(
+            {
+                "id": point_id,
+                "label": point.get("label"),
+                "text": str(scoring_point.get("text") or point_id or "未命名采分点"),
+            }
+        )
+    return gaps
+
+
+def _fabricated_claims(question: _FinishQuestion) -> list[str]:
+    claims = question.fidelity_evidence.get("claims")
+    if not isinstance(claims, list):
+        return []
+    return [
+        str(claim.get("text"))
+        for claim in claims
+        if isinstance(claim, dict) and claim.get("label") == "fabricated" and claim.get("text")
+    ]
+
+
+def _missing_depth(question: _FinishQuestion) -> list[str]:
+    dimensions = question.depth_evidence.get("dimensions")
+    if not isinstance(dimensions, dict):
+        return []
+    missing: list[str] = []
+    for key, value in dimensions.items():
+        if isinstance(value, dict) and value.get("covered") is False:
+            missing.append(str(key))
+    return missing
+
+
+def _count_gap(
+    gap_counts: dict[str, dict[str, Any]],
+    *,
+    key: str,
+    label: str,
+    amount: int,
+    examples: list[str],
+) -> None:
+    if amount <= 0:
+        return
+    item = gap_counts.setdefault(key, {"label": label, "count": 0, "examples": []})
+    item["count"] += amount
+    for example in examples:
+        text = example.strip()
+        if text and text not in item["examples"]:
+            item["examples"].append(text)
+
+
+def _summary_headline(scores: dict[str, float], recurring_gaps: list[dict[str, Any]]) -> str:
+    total = scores["total"]
+    if total >= 85 and not recurring_gaps:
+        return "这场整体很稳:覆盖、依据和深度都达到了继续加难度的水平。"
+    if total >= 80:
+        return "这场整体达标,主要收益在于把零散答案收束成了更完整的面试表达。"
+    if total >= 60:
+        return "这场已经能答出主线,下一步要集中补齐反复出现的漏点和深度维度。"
+    return "这场暴露了比较明确的复习缺口,建议先回到笔记把核心概念补牢。"
+
+
+def _summary_strengths(
+    scores: dict[str, float],
+    questions: list[_FinishQuestion],
+) -> list[str]:
+    strengths: list[str] = []
+    if scores["coverage"] >= 80:
+        strengths.append("多数题能覆盖核心采分点。")
+    if scores["fidelity"] >= 90:
+        strengths.append("答案基本能回到笔记证据,凭空发挥较少。")
+    if scores["depth"] >= 80:
+        strengths.append("取舍、原因和边界讲得比较完整。")
+    best = max(questions, key=lambda question: question.total_score, default=None)
+    if best is not None and not strengths:
+        strengths.append(
+            f"第 {best.order_index + 1} 题表现最好,可以把这题的表达方式迁移到其他题。"
+        )
+    return strengths
+
+
+def _review_suggestions(recurring_gaps: list[dict[str, Any]]) -> list[str]:
+    if not recurring_gaps:
+        return ["保留这次答题节奏,下一轮可以提高题目数量或选择更宽的主题。"]
+    suggestions: list[str] = []
+    keys = {str(gap.get("key")) for gap in recurring_gaps}
+    if "coverage" in keys:
+        suggestions.append("复盘每题采分点,把漏答项整理成 3-5 条短句再口述一遍。")
+    if "fidelity" in keys:
+        suggestions.append("遇到不确定说法时先说明证据来源,不要把行业常识当成本题笔记事实。")
+    if any(key.startswith("depth:") for key in keys):
+        suggestions.append("每个概念补一层 why / trade-off / boundary,避免只给定义。")
+    return suggestions
+
+
+def _question_status(
+    total: float,
+    coverage_gaps: list[dict[str, Any]],
+    fabricated_claims: list[str],
+) -> str:
+    if total >= 85 and not coverage_gaps and not fabricated_claims:
+        return "strong"
+    if total >= 75 and not fabricated_claims:
+        return "ok"
+    return "needs_review"
+
+
+def _depth_label(key: str) -> str:
+    labels = {
+        "tradeoff": "取舍",
+        "why": "原因",
+        "boundary": "边界",
+    }
+    return labels.get(key, key)
+
+
+def _summary_markdown(
+    summary: dict[str, Any],
+    questions: list[_FinishQuestion],
+) -> str:
+    lines = [
+        f"# 面试练习总结 #{summary['session_id']}",
+        "",
+        f"- 主题:{summary['query']}",
+        f"- 完成时间:{summary['finished_at']}",
+        "- 总分:"
+        f" Coverage {summary['scores']['coverage']}"
+        f" / Fidelity {summary['scores']['fidelity']}"
+        f" / Depth {summary['scores']['depth']}"
+        f" / Total {summary['scores']['total']}",
+        "",
+        "## 总结",
+        "",
+        str(summary["headline"]),
+        "",
+    ]
+    if summary["strengths"]:
+        lines.extend(["## 做得好的地方", ""])
+        lines.extend(f"- {item}" for item in summary["strengths"])
+        lines.append("")
+    if summary["recurring_gaps"]:
+        lines.extend(["## 反复缺口", ""])
+        for gap in summary["recurring_gaps"]:
+            lines.append(f"- {gap['label']}: {gap['count']} 处")
+        lines.append("")
+    if summary["remediation_wins"]:
+        lines.extend(["## 补答修正", ""])
+        lines.extend(f"- {item}" for item in summary["remediation_wins"])
+        lines.append("")
+    lines.extend(["## 复习建议", ""])
+    lines.extend(f"- {item}" for item in summary["review_suggestions"])
+    lines.append("")
+
+    question_by_order = {question.order_index: question for question in questions}
+    lines.extend(["## 每题回放", ""])
+    for item in summary["question_summaries"]:
+        question = question_by_order.get(int(item["order_index"]))
+        lines.extend(
+            [
+                f"### 第 {int(item['order_index']) + 1} 题",
+                "",
+                f"题目:{item['prompt']}",
+                "",
+                "分数:"
+                f" Coverage {item['scores']['coverage']}"
+                f" / Fidelity {item['scores']['fidelity']}"
+                f" / Depth {item['scores']['depth']}"
+                f" / Total {item['scores']['total']}",
+                "",
+            ]
+        )
+        if question is not None:
+            lines.extend(
+                [
+                    "我的累计答案:",
+                    "",
+                    question.user_answer,
+                    "",
+                    "Reference:",
+                    "",
+                    question.reference_answer,
+                    "",
+                ]
+            )
+        if item["coverage_gaps"]:
+            lines.append("Coverage 缺口:")
+            lines.extend(f"- {gap['text']}" for gap in item["coverage_gaps"])
+            lines.append("")
+        if item["missing_depth_dimensions"]:
+            lines.append(
+                "Depth 缺口:"
+                + "、".join(_depth_label(str(key)) for key in item["missing_depth_dimensions"])
+            )
+            lines.append("")
+        if item.get("coach_message"):
+            lines.extend(["教练反馈:", "", str(item["coach_message"]), ""])
+    return "\n".join(lines).strip() + "\n"
 
 
 def _extract_coach_chat_output(llm_result: Any) -> CoachChatOutput:

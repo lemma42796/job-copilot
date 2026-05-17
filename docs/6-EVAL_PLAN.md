@@ -1,7 +1,7 @@
 ---
 title: EVAL PLAN - JobCopilot v2(评测套件 + Cohen's kappa 守门)
 owner: lemma42796
-last_updated: 2026-05-16
+last_updated: 2026-05-17
 purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、不达标处理流程
 ---
 
@@ -761,7 +761,9 @@ python -m jobcopilot_api.scripts.eval_hybrid_search \
 4. **长上下文污染**:多轮后把全量聊天塞进 prompt,挤掉 source chunks / reference points / unresolved gaps。
 5. **追问幻觉**:纠偏 prompt 引入 source chunks 之外的新标准答案来源。
 
-## 8.2 dataset.jsonl schema
+## 8.2 dataset schema
+
+当前 M2.1 已落第一批最小流程 fixture:`evals/suites/interview_coach/dataset.flow_smoke.jsonl`。它先固定 harness 行为标签,不触发真实 LLM 评 Judge label 质量;后续 `eval_interview_coach.py` runner 接入后,再按需要沉淀稳定版 `dataset.jsonl`。
 
 每行是一个流程型 fixture:
 
@@ -806,17 +808,23 @@ python -m jobcopilot_api.scripts.eval_hybrid_search \
 
 ## 8.4 覆盖矩阵
 
-至少 10 条:
+当前 `dataset.flow_smoke.jsonl` 已按 10 条覆盖:
 
 | 类别 | 数量 | 期望 |
 |------|------|------|
 | 答得好 | 2 | 不纠偏,直接下一题 / 总结 |
-| coverage 缺口 | 2 | 指出漏掉 reference point,补答后重评 |
-| fabricated 高 | 2 | 追问依据来源,不直接下一题 |
+| coverage 缺口 | 2 | 指出漏掉 reference point,补答后重评 / 总结 |
+| fabricated 高 | 2 | 追问依据来源,不直接下一题 / 总结 |
 | depth 缺维度 | 1 | 明确追问 tradeoff / why / boundary |
 | 多轮无明显提升 | 1 | 退出纠偏并总结缺口 |
 | 中途恢复 | 1 | 从 `wait_user_answer` 恢复 |
 | 长上下文压缩 | 1 | 旧轮次摘要化,必需证据不丢 |
+
+下一刀 runner 最小输出:
+
+- 每条 fixture 的 `pass/fail`、实际 action、失败原因
+- 聚合 `branch_accuracy / remediation_target_accuracy / cumulative_rejudge_pass / loop_exit_pass / context_pack_pass / hallucination_guard_pass / recovery_pass`
+- 不连接真实 AnswerJudge label 质量评估;需要分数变化的 fixture 使用样本内给定 score history 或 stubbed Judge result
 
 # 9. 防回归约束
 
