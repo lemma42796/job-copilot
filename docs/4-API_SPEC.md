@@ -357,7 +357,7 @@ data: {
     "id": 1001,
     "type": "open_ended",
     "prompt": "解释 synchronized 的锁升级过程,以及每一阶段的优化目标",
-    "source_chunk_ids": [5001, 5002, 5003]
+    "evidence_chunk_ids": [5001, 5002, 5003]
   }
 }
 
@@ -429,21 +429,34 @@ session 详情(载入历史 / 续答用)。
         "id": 1001,
         "type": "open_ended",
         "prompt": "解释 synchronized 的锁升级过程",
-        "source_chunk_ids": [5001, 5002]
+        "evidence_chunk_ids": [5001, 5002]
       },
       "user_answer": "锁升级的过程是...",
       "answer_turns": [
         {"round_index": 0, "turn_type": "initial", "text": "锁升级的过程是..."}
       ],
+      "judge_turns": [
+        {"round_index": 0, "turn_type": "judge_feedback", "answer_turn_type": "initial", "coach_message": "..."}
+      ],
+      "coach_turns": [
+        {"round_index": 0, "turn_type": "coach_question", "text": "为什么这里要区分偏向锁和轻量级锁?", "coach_message": "..."}
+      ],
       "answer_submitted_at": "2026-05-08T03:05:00Z",
       "judged": true,
-      "latest_scores": {"coverage": 55.0, "fidelity": 90.0, "depth": 40.0, "total": 67.5},
+      "scores": {"coverage": 55.0, "fidelity": 90.0, "depth": 40.0, "total": 67.5},
+      "remediation_state": {
+        "last_decision": "remediate",
+        "exit_reason": null,
+        "judge_score_history": [{"coverage": 55.0, "fidelity": 90.0, "depth": 40.0, "total": 67.5}],
+        "unresolved_gaps": []
+      },
       "next_action": "remediate",
       "remediation_prompt": {
         "text": "你提到了锁升级,但还没解释为什么会从偏向锁升级到轻量级锁。请补充触发条件和代价。",
         "triggered_by": "coverage",
         "evidence_chunk_ids": [5001]
-      }
+      },
+      "coach_message": "..."
     },
     ...
   ]
@@ -454,9 +467,9 @@ session 详情(载入历史 / 续答用)。
 
 `status='submitted'` 时 `scores` 字段填充三层 + 总分,且每题带 `evidence`(coverage_evidence / fidelity_evidence / depth_evidence)。M2.1 的 `finish_session` 完成后还会返回 `summary`,内容来自 `agent_state.final_summary`。
 
-M2.1 起,in_progress session 可返回当前题最新 `remediation_prompt` 和 `answer_turns`,用于用户刷新页面后从 `wait_user_answer` 继续补答。
+M2.1 起,in_progress session 可返回当前题最新 `answer_turns / judge_turns / coach_turns / remediation_state / remediation_prompt / coach_message`,用于用户刷新页面后从 `wait_user_answer` 继续补答并回放多轮消息。`remediation_state.judge_score_history` 是后端判断连续无明显提升和生成整场总结的结构化依据。
 
-**重要**:这个端点**不返回 `reference_answer` / `reference_points`**,除非 `status='submitted'`。MVP 是 active recall 强约束,答题过程中前端拿不到 reference,防作弊。
+**重要**:这个端点**不返回 `reference_answer` / `scoring_points`**,除非 `status='submitted'`。MVP 是 active recall 强约束,答题过程中前端拿不到参考答案和采分点,防作弊。
 
 ## 4.3 `PUT /api/quiz/sessions/{id}/answers/{order_index}`
 
@@ -505,7 +518,7 @@ wait_user_answer
 }
 ```
 
-`turn_type` 取值:`auto` / `initial` / `remediation` / `coach_question`,默认 `auto`。
+`turn_type` 取值:`auto` / `initial` / `remediation` / `coach_question`,默认 `auto`。请求传 `auto` 时,`started.turn_type` 返回后端实际分流后的类型,前端据此显示"按答案处理"或"按追问处理"。
 
 - `auto`:后端判定实际类型。当前题还没有累计答案时归为 `initial`;明确补答词或大段技术陈述归为 `remediation`;明确提问词或模糊短句归为 `coach_question`。
 - `initial` / `remediation`:后端会把本轮文本追加到 `answer_turns`,并重建 `user_answer` 累计答案,随后重跑 AnswerJudge。
@@ -525,6 +538,7 @@ data: {
   "order_index": 0,
   "round_index": 1,
   "scores": {"coverage": 82.0, "fidelity": 92.0, "depth": 70.0, "total": 84.2},
+  "coach_message": "...",
   "unresolved_gaps": []
 }
 
@@ -542,7 +556,9 @@ data: {
   "round_index": 1,
   "next_action": "ask_next",
   "cumulative_answer": "锁升级的过程是...\n补充:...",
-  "remediation_prompt": null
+  "scores": {"coverage": 82.0, "fidelity": 92.0, "depth": 70.0, "total": 84.2},
+  "remediation_prompt": null,
+  "coach_message": "..."
 }
 
 event: done
@@ -581,7 +597,9 @@ event: done
 data: {"ok": true}
 ```
 
-长上下文治理:当答案轮次达到压缩阈值时,后端在 `session_events` 追加 `context_compacted`,并在 `context_pack_built` payload 写入 `prior_turn_summary / compacted / token_budget_exhausted`。source chunks、scoring points、累计答案和 unresolved gaps 不被丢弃;旧轮次只进入摘要。
+长上下文治理:当答案轮次达到压缩阈值时,后端在 `session_events` 追加 `context_compacted`,并在落库的 `context_pack_built` event payload 写入 `prior_turn_summary / compacted / token_budget_exhausted / judge_context_chunk_ids`。SSE `progress` 只暴露 `included / compacted` 等前端展示所需字段。source chunks、scoring points、累计答案和 unresolved gaps 不被丢弃;旧轮次只进入摘要。
+
+退出语义:当前实现的 `decision_done.exit_reason` 为 `target_reached` / `no_meaningful_improvement` / `token_budget` 之一或 `null`。`no_meaningful_improvement` 依赖 `remediation_state.judge_score_history`:第 3 轮起若最近两轮总分提升都低于阈值且缺口不变,后端不再继续 `remediate`,而是收住当前题。
 
 错误码:
 
@@ -590,7 +608,7 @@ data: {"ok": true}
 | `session_not_in_progress` | session 已 submitted / abandoned |
 | `order_index_not_found` | 题号不存在 |
 | `invalid_turn_type` | turn_type 非 auto / initial / remediation / coach_question |
-| `context_pack_failed` | 必需上下文缺失,例如 source chunks / reference points 不完整 |
+| `context_pack_failed` | 必需上下文缺失,例如 source chunks / scoring points 不完整 |
 | `judge_call_failed` | Judge LLM 失败(已重试) |
 | `coach_call_failed` | 教练解释 LLM 失败(已重试) |
 
@@ -699,6 +717,7 @@ data: {"ok": true}
 
 - `quiz_sessions.status = submitted`,写入 session-level scores、`submitted_at`、`recall_md_path`
 - `quiz_sessions.agent_state` 写入 `last_agent_node=finish_session`、`next_action=finish`、`question_summaries`、`summary_context_pack`、`final_summary`
+- 写入本地笔记根目录下的 `_recall/{session_id}.md`;`recall_md_path` 仍保存逻辑路径 `notes/_recall/{session_id}.md`
 - `session_events` 追加 `session_summarized` 与 `session_finished`
 
 错误码:
@@ -799,7 +818,9 @@ data: {"ok": true}
 
 下载 session 沉淀 markdown(US-11)— **存档语义**,不是评分展示。
 
-响应:`Content-Type: text/markdown; charset=utf-8`,body 是 markdown 文本。M2.1 当前实现从 `agent_state.final_summary.markdown` 读取;`recall_md_path=notes/_recall/{id}.md` 先作为逻辑存档路径写入 session,实际文件写入留后续接 `record_session_summary`。
+响应:`Content-Type: text/markdown; charset=utf-8`,body 是 markdown 文本。M2.1 当前实现优先读取 `recall_md_path=notes/_recall/{id}.md` 对应的本地文件;文件缺失时兼容回退到 `agent_state.final_summary.markdown`。
+
+本地文件路径:逻辑 `notes/` 对应的 filesystem root 由 `JOBCOPILOT_NOTES_FS_ROOT` 配置;留空时 dev 环境优先使用 `test-notes/llm-notes`,否则使用项目下 `notes/`。写入目标只允许固定 `_recall/{session_id}.md`,不接受请求传任意路径。
 
 注:答题完成页的评分 + evidence 直接用 §4.4 SSE 推过来的数据渲染,**不依赖此端点**。recall 文件的用途是用户存一份留档(放进自己的 Obsidian / 语雀库,日后翻看)。
 
@@ -1184,10 +1205,11 @@ data: {"ok": true}
 | 错误格式 | `{code, detail}`(沿用 v1 JobCopilotError) | code 给前端分支,detail 中文给用户看 |
 | 笔记批量导入 | 同步(MVP);前端按 50 条/批 POST,量大切异步 + SSE(M2 再说) | 走 File System Access API,免去 zip 打包 |
 | embedder | 异步后台 worker | API 端点不等 embedding 完;`embedding IS NULL` 的 chunk hybrid search 自动跳过 |
-| reference 防作弊 | session in_progress 时不返 reference_answer / reference_points | active recall 强约束 |
+| reference 防作弊 | session in_progress 时不返 reference_answer / scoring_points | active recall 强约束 |
 | Judge 调用粒度 | MVP 单次 LLM 调用拿三层分;后续可拆 | 简化 SSE 事件;若 Judge 准确度不达标再拆 |
 | M2.1 单题推进 | `POST /answers/{order_index}/turns` 提交一轮输入并推进 Agent | `turn_type=auto` 由后端分流为初答 / 补答 / 追问教练;补答后重评累计答案 |
-| M2.1 长上下文 | turn SSE 暴露 `context_pack_built` 事件 | 前端可见是否压缩旧轮次;后端保证 source chunks / reference points / unresolved gaps 不丢 |
+| M2.1 长上下文 | turn SSE 暴露 `context_pack_built` 事件 | 前端可见是否压缩旧轮次;后端保证 source chunks / scoring points / unresolved gaps 不丢 |
+| M2.1 退出策略 | `remediation_state.judge_score_history` 驱动无明显提升退出;token budget 退出单独标 `exit_reason=token_budget` | 不恢复"单题最多 1 轮"限制,但必须有 deterministic 退出条件 |
 | 题型比例 | 后端按 chunks 内容自动决定(B);前端不传 type_mix | 推荐逻辑见 5-AGENT_DESIGN;后端在 `progress.type_mix_decided` 事件回推决策 |
 | 答题草稿保存 | 边打边存(typing 防抖 1s 后 PUT) | 开放题答题长,断电一字不丢 > 省 PUT 请求 |
 | recall 文件语义 | 存档下载,不是评分展示 | 评分 evidence 走 SSE;recall 给用户存进 Obsidian / 语雀留档 |

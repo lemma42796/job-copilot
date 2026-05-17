@@ -904,12 +904,16 @@ class InterviewCoachState:
     current_question_index: int
     user_answers: list[str]              # 每题累计答案:初答 + 后续补答合并
     answer_turns: list[AnswerTurn]       # 每轮原始答案 / 补答,用于回放
+    judge_turns: list[JudgeTurn]         # 每轮 Judge 反馈消息,用于聊天流回放
+    coach_turns: list[CoachTurn]         # 用户追问教练后的解释消息,不进入评分
     judge_evidences: list[AnswerJudgeOutput]
     remediation_events: list[RemediationEvent]
+    remediation_state: dict              # last_decision / unresolved_gaps / judge_score_history
     unresolved_gaps: list[AnswerGap]
     question_summaries: list[QuestionContextSummary]
+    summary_context_pack: dict | None
     next_action: Literal["ask_next", "remediate", "summarize", "finish"]
-    final_summary: str | None
+    final_summary: dict | None
 ```
 
 Nodes:
@@ -928,7 +932,7 @@ retrieve_context
 
 当前已落地节点:
 
-- `wait_user_answer → build_context_pack → judge_answer → decide_next_action`:由 `POST /api/quiz/sessions/{id}/answers/{order_index}/turns` 推进;`turn_type=auto` 会先分流为初答 / 补答 / 追问教练。初答和补答追加到 `answer_turns`,并用累计答案重新跑 AnswerJudge。
+- `wait_user_answer → build_context_pack → judge_answer → decide_next_action`:由 `POST /api/quiz/sessions/{id}/answers/{order_index}/turns` 推进;`turn_type=auto` 会先分流为初答 / 补答 / 追问教练,`started.turn_type` 返回实际类型。初答和补答追加到 `answer_turns`,并用累计答案重新跑 AnswerJudge。
 - `coach_question → coach_chat`:用户追问教练反馈时走独立解释链路,只写 `session_events`,不改 `user_answer`,不重评,不推进题目状态。前端可以保持单输入框;状态边界仍由后端分流维护。
 - `summarize_session → finish_session`:由 `POST /api/quiz/sessions/{id}/finish` 推进;只汇总已经完成的每题最新 Judge 结果,不重新评分。结果写入 `agent_state.final_summary / question_summaries / summary_context_pack`,并追加 `session_summarized / session_finished` 事件。
 
@@ -939,7 +943,7 @@ retrieve_context
 | `search_notes(query)` | 主题检索,底层复用 retrieval pipeline | 必做 |
 | `lookup_claim_in_notes(claim)` | Judge 标 fabricated 前验证 | 必做(复用 §4.7) |
 | `get_source_chunks(question_id)` | 展开题目引用,供追问 / UI 对照 | 必做 |
-| `record_session_summary(session_id)` | 写 `notes/_recall/{session_id}.md` | 待接;当前先把 markdown 放在 `agent_state.final_summary.markdown`,并写逻辑 `recall_md_path` |
+| `record_session_summary(session_id)` | 写 `notes/_recall/{session_id}.md` | 已接;`finish_session` 写本地 `_recall/{session_id}.md`,DB 仍保存逻辑 `recall_md_path`,旧 session 可回退读 `agent_state.final_summary.markdown` |
 | `update_knowledge_gap(...)` | 写弱点与 SR 队列 | M3 接入,M2.1 只留接口 |
 
 工具不是给 LLM 任意调用的开放工具市场,每个 tool 都对应产品闭环里的明确动作。
@@ -992,8 +996,10 @@ class InterviewContextPack:
     cumulative_answer: str
     latest_judge_evidence: AnswerJudgeOutput | None
     unresolved_gaps: list[AnswerGap]
+    judge_score_history: list[dict[str, float]]
     recent_turns: list[AnswerTurn]        # 最近 1-2 轮原文
     prior_turn_summary: str | None        # 更早轮次压缩摘要
+    token_budget_exhausted: bool
 ```
 
 Token budget 优先级:
@@ -1005,7 +1011,7 @@ Token budget 优先级:
 
 Context Cache / prompt caching 只用于降低重复长前缀成本,不是会话记忆。真正的记忆是 `InterviewCoachState + session_events + per-question summary`。
 
-当前 v0 的 compaction 是 deterministic,不调用 LLM:达到阈值后从已落库的 `answer_turns`、`judge_score_history`、`unresolved_gaps` 拼出 `prior_turn_summary`,只把最近 1-2 轮原文留给当前节点。落库事件为 `context_compacted`,随后 `context_pack_built` 带 `compacted / prior_turn_summary / token_budget_exhausted`。
+当前 v0 的 compaction 是 deterministic,不调用 LLM:达到阈值后从已落库的 `answer_turns`、`judge_score_history`、`unresolved_gaps` 拼出 `prior_turn_summary`,只把最近 1-2 轮原文留给当前节点。落库事件为 `context_compacted`,随后 `context_pack_built` 带 `compacted / prior_turn_summary / token_budget_exhausted / judge_context_chunk_ids`;SSE 进度事件只回前端展示必要字段。
 
 追问 / 纠偏也必须 evidence-bound:
 
@@ -1037,6 +1043,8 @@ Context Cache / prompt caching 只用于降低重复长前缀成本,不是会话
   - depth 缺 trade-off / why / boundary → 深挖纠偏
   - 多轮后无明显提升 → 总结当前题缺口,不无限循环
   - 用户中途退出 → 从 `wait_user_answer` 恢复
+  - 长上下文压缩 / token budget 退出 → `prior_turn_summary` 存在且证据字段不丢
+  - 整场总结 → `summary_context_pack / final_summary` 基于最新 Judge 结果生成,不重新评分
 - 指标先用流程准确率(是否走到人工期望分支)、纠偏成功率(补答后是否达标或正确退出)、上下文治理通过率,不直接用 kappa;Judge 的 label 可靠性仍由 `answer_judge` suite 守门,自然语言 `turn_type=auto` 分类质量不放进本 suite。
 
 # 9. v1 教训如何应用
@@ -1069,6 +1077,7 @@ Context Cache / prompt caching 只用于降低重复长前缀成本,不是会话
 | 简历存储 | 单条记录(全库一行 resumes),无"简历库 / 多份切换";岗位类 query 拼"这一份 + 选定 JD 子集" | 一个人就一份简历;PRD §6 锁定 |
 | M2.1 单输入框 | 前端只有一个发送按钮;后端 `turn_type=auto` 分流初答 / 补答 / 追问教练 | UX 简化不改变状态边界;追问教练不进入 `user_answer` 评分 |
 | 多轮纠偏触发(M2.1) | `coverage_score < 60` / `fabricated_ratio > 0.3` / depth 缺维度 任一触发,进入 remediation loop | 不设单题固定 1 轮上限;靠达标、用户跳过、无明显提升、偏题、token budget 等条件退出 |
+| 多轮纠偏退出(M2.1) | `judge_score_history` 持续写入 `remediation_state`;无明显提升和 token budget 都要落 `exit_reason` | 退出是状态机策略,不是 LLM 自由决定 |
 | 多轮上下文治理(M2.1) | 原始对话落库回放,LLM 每次只拿 context pack | source chunks / reference_points / unresolved_gaps 优先级最高;Context Cache 不是记忆 |
 | Temperature | DashScope 默认,不暴露 | prompt 端约束逼近低温度 |
 | Prompt 版本号 | DB `prompt_versions` 表,改一次 bump | questions / session_answers 留旧 version |

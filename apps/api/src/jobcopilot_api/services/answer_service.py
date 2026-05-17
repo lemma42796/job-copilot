@@ -32,7 +32,7 @@ from jobcopilot_api.schemas.agents.quiz_generator import (
     GeneratedQuestion,
     QuizGenChunkInput,
 )
-from jobcopilot_api.services import answer_judge_service
+from jobcopilot_api.services import answer_judge_service, recall_service
 from jobcopilot_api.services.answer_judge_service import (
     JudgeCallFailedError,
     JudgeIntegrityError,
@@ -316,6 +316,12 @@ async def get_session_recall_markdown(
     quiz_session = await session.get(QuizSession, session_id)
     if quiz_session is None:
         raise NotFoundError(f"quiz_session {session_id} 不存在")
+    file_markdown = recall_service.read_session_summary_markdown(
+        quiz_session.recall_md_path
+    )
+    if isinstance(file_markdown, str) and file_markdown.strip():
+        return file_markdown
+
     summary = _session_summary(quiz_session.agent_state)
     markdown = summary.get("markdown") if summary else None
     if not isinstance(markdown, str) or not markdown.strip():

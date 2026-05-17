@@ -30,7 +30,7 @@ from jobcopilot_api.schemas.agents.answer_judge import AnswerJudgeInput, AnswerJ
 from jobcopilot_api.schemas.agents.coach_chat import CoachChatInput, CoachChatOutput
 from jobcopilot_api.schemas.agents.quiz_generator import GeneratedQuestion, QuizGenChunkInput
 from jobcopilot_api.schemas.quiz import AnswerTurnSubmitIn
-from jobcopilot_api.services import answer_judge_service, answer_service
+from jobcopilot_api.services import answer_judge_service, answer_service, recall_service
 
 DecisionAction = Literal["ask_next", "remediate", "summarize", "finish"]
 Trigger = Literal["coverage", "fidelity", "depth", "mixed", "none"]
@@ -983,6 +983,12 @@ async def _summarize_and_finish_session(
             final_context_chunk_ids=list(quiz_session.final_context_chunk_ids or []),
             finished_at=now,
         )
+        markdown = summary.get("markdown")
+        if not isinstance(markdown, str):
+            raise recall_service.RecallWriteFailedError("session summary markdown 缺失")
+        recall_md_path = recall_service.write_session_summary_markdown(
+            session_id, markdown
+        )
         state = dict(quiz_session.agent_state or {})
         state.update(
             {
@@ -1002,7 +1008,7 @@ async def _summarize_and_finish_session(
         quiz_session.depth_score = answer_judge_service.score_decimal(depth)
         quiz_session.total_score = answer_judge_service.score_decimal(total)
         quiz_session.submitted_at = now
-        quiz_session.recall_md_path = f"notes/_recall/{session_id}.md"
+        quiz_session.recall_md_path = recall_md_path
         quiz_session.last_agent_node = "finish_session"
         quiz_session.agent_state = state
         quiz_session.updated_at = now
@@ -1027,7 +1033,7 @@ async def _summarize_and_finish_session(
                 round_index=0,
                 payload={
                     "scores": _scores_for_event(scores),
-                    "recall_md_path": quiz_session.recall_md_path,
+                    "recall_md_path": recall_md_path,
                     "finished_at": now.isoformat(),
                 },
             )
@@ -1038,7 +1044,7 @@ async def _summarize_and_finish_session(
         "session_id": session_id,
         "scores": _scores_for_event(scores),
         "summary": summary,
-        "recall_md_path": f"notes/_recall/{session_id}.md",
+        "recall_md_path": recall_md_path,
     }
 
 

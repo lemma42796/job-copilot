@@ -23,6 +23,10 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 最新状态:
 
+- 本轮已接 `record_session_summary`:新增 `recall_service`, `finish_session` 会把 `agent_state.final_summary.markdown` 原子写入本地笔记根目录 `_recall/{session_id}.md`,DB 仍保存逻辑路径 `notes/_recall/{session_id}.md`;`GET /api/quiz/sessions/{id}/recall` 优先读落地文件,旧 session 文件缺失时回退 `agent_state.final_summary.markdown`。
+- 本轮新增 `JOBCOPILOT_NOTES_FS_ROOT`:用于配置逻辑 `notes/` 对应的本地 filesystem root;留空时 dev 环境优先用 `test-notes/llm-notes`,否则用项目下 `notes/`。已把 fallback `notes/` 加入 `.gitignore`,避免本地沉淀误入仓库。
+- 本轮同步正式文档:`docs/4-API_SPEC.md` / `docs/5-AGENT_DESIGN.md` / `docs/6-EVAL_PLAN.md` 已记录 `turn_type=auto` 实际分流、`judge_score_history` 无提升退出、`context_compacted / prior_turn_summary / token_budget`、flow smoke 10/10 口径,并把 `record_session_summary` 标为已接。
+- 本轮未跑自动化测试 / typecheck / build / Playwright,也按用户指示跳过 `record_session_summary` 人工验收;文件写入闭环仍待用户后续手动确认。
 - 本轮新增 `apps/api/scripts/eval_interview_coach.py` 离线 runner:读取 `evals/suites/interview_coach/dataset.flow_smoke.jsonl`,stub Judge evidence,复用 `interview_service._decide_next_action`,输出 branch accuracy / remediation target / cumulative rejudge / loop exit / context pack / hallucination guard / recovery 指标;不连 DB、不调 LLM、不评 Judge label 质量。
 - 本轮按用户指令跑过 `uv run python apps/api/scripts/eval_interview_coach.py`:最新报告 `evals/reports/interview-coach-flow-smoke-20260517-132154.md`,10/10 通过,`branch_accuracy / remediation_target_accuracy / cumulative_rejudge / loop_exit / context_pack_pass / hallucination_guard / recovery_pass` 全部 1.000。
 - 本轮补 M2.1 `loop exit policy`:每轮 decision 把 `judge_score_history` 写入 `session_answers.remediation_state`;第 3 轮起若最近两轮总分提升都低于 5 且缺口不变,不再继续 `remediate`,而是以 `exit_reason=no_meaningful_improvement` 收住当前题。
@@ -30,10 +34,10 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - 本轮 `/quiz` 单输入框自动分流已接入:`AnswerTurnSubmitIn.turn_type` 默认 `auto`;后端按规则判 `initial / remediation / coach_question`。前端移除单独“问教练”按钮,统一发送 `auto`,SSE `started.turn_type` 返回实际分流,进度流显示“按答案处理 / 按追问处理”。
 - 本轮未跑 typecheck / build / Playwright;只按用户指令跑了离线 `eval_interview_coach` runner。
 - 本轮新增 `summarize_session / finish_session` 闭环:`POST /api/quiz/sessions/{id}/finish` SSE 不重新 Judge,基于每题最新评分、`answer_turns`、Judge gaps 与 `remediation_state` 生成 `final_summary / question_summaries / summary_context_pack`,写回 `quiz_sessions.agent_state`,追加 `session_summarized / session_finished` 事件,并把 session 标为 `submitted`。
-- 本轮新增 session 沉淀读取:`GET /api/quiz/sessions/{id}` 返回 `summary`;`GET /api/quiz/sessions/{id}/recall` 返回 `agent_state.final_summary.markdown`。`recall_md_path` 先写为 `notes/_recall/{id}.md`,实际文件写入仍留后续再接。
+- 本轮新增 session 沉淀读取:`GET /api/quiz/sessions/{id}` 返回 `summary`;`GET /api/quiz/sessions/{id}/recall` 返回 session 沉淀 markdown。当前已从 DB summary 回退升级为优先读 `_recall/{id}.md` 文件。
 - 本轮 dogfood 已验收 finish session:按用户指令用本机 API + Next Web 查看 `/quiz?session=14`,`Langfuse Prompt 版本管理` 1 题初答后 Judge 给 Coverage 90 / Fidelity 100 / Depth 100 / Total 95,按钮切到"生成总结",点击后 session #14 变为"已评分",页面展示总分、做得好、反复缺口、复习建议和 `notes/_recall/14.md`。
 - 本轮新增 `evals/suites/interview_coach/` 最小流程型 fixture:`dataset.flow_smoke.jsonl` 10 条覆盖不纠偏、coverage 纠偏、fabricated 纠偏、depth 纠偏、多轮无提升退出、中途恢复、长上下文压缩和 finish summary;runner 已接入并跑通。
-- 本轮收尾已把必要交接上下文同步到正式文档:`docs/4-API_SPEC.md` 记录 `/finish` SSE 与 summary/recall 语义,`docs/5-AGENT_DESIGN.md` 记录已落地节点和待接 `record_session_summary`,`docs/6-EVAL_PLAN.md` 记录 `dataset.flow_smoke.jsonl` 与下一刀 runner 输出。
+- 本轮收尾已把必要交接上下文同步到正式文档:`docs/4-API_SPEC.md` 记录 `/finish` SSE 与 summary/recall 文件语义,`docs/5-AGENT_DESIGN.md` 记录已落地节点和 `record_session_summary`,`docs/6-EVAL_PLAN.md` 记录 `dataset.flow_smoke.jsonl` 与 runner 输出。
 - 本轮 M2.1 单题面试流继续推进:补答与追问教练已拆语义。`initial/remediation` 会追加到累计 `user_answer` 并重新跑 AnswerJudge;`coach_question` 走独立 `coach_chat` 解释链路,不改答案、不重评、不推进题目状态。
 - 本轮新增 `CoachChat` 非评分 agent:`coach_question` 输入上一轮 `coach_message/remediation_prompt/unresolved_gaps/累计答案/final_context_chunks`,只返回解释型 `coach_message`;追问与回复落 `session_events` 并通过 `coach_turns` 回放。
 - 本轮新增公共 `answer_judge_service`:统一承载 Judge context 构造、DB chunk id ↔ prompt-local `[N]` 映射、AnswerJudge hard timeout、输出校验、Python 算分、评分落库。`answer_service` 与 `interview_service` 不再互相借用 `answer_service._*` 私有 helper。
@@ -116,7 +120,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **M2.1 Agentic RAG 方向锁定**:`InterviewCoachAgent` 不做泛化多 Agent,而是 interview coaching harness:检索 → 出题 → 等答 → 评分 → 决策 → 多轮纠偏 / 总结;系统负责状态、工具、证据、分支、恢复、回放和评测。
 - **M2.1 单题 turn 最小闭环已落地**:`0020_interview_coach_state.py` + `SessionEvent` + 单题 turn SSE + `/quiz` 前端接入。`GET /quiz/sessions/{id}` 已返回 `agent_state / answer_turns / judge_turns / coach_turns / remediation_state / remediation_prompt`,用于刷新后从 `wait_user_answer` 继续并回放每轮 LLM 消息。
 - **M2.1 退出与上下文压缩已落地**:连续多轮无明显提升会以 `no_meaningful_improvement` 收住;长轮次会生成 deterministic `prior_turn_summary` 并记录 `context_compacted`,预算退出用 `token_budget`。
-- **M2.1 整场总结闭环已落地**:`finish_session` SSE 基于已完成单题 Judge 结果生成 deterministic session summary,写 `agent_state.final_summary / question_summaries / summary_context_pack` 与 `session_events`,前端在所有题已评分后显示"生成总结"并渲染总分、反复缺口、补答修正、复习建议。
+- **M2.1 整场总结闭环已落地**:`finish_session` SSE 基于已完成单题 Judge 结果生成 deterministic session summary,写 `agent_state.final_summary / question_summaries / summary_context_pack` 与 `session_events`,并通过 `record_session_summary` 写本地 `_recall/{session_id}.md`;前端在所有题已评分后显示"生成总结"并渲染总分、反复缺口、补答修正、复习建议。
 - **interview_coach flow smoke runner 已落地**:`evals/suites/interview_coach/dataset.flow_smoke.jsonl` 固定 harness 行为标签;`apps/api/scripts/eval_interview_coach.py` 离线验证状态机分支 / context pack / 事件落库 / finish summary,不重新评 Judge label 质量。最新 10/10 通过。
 - **QuizGenerator v1.3 引用收口已落地**:LLM 输出从多套引用字段收敛为 reference answer citations + `scoring_points[].supporting_chunk_ids`;`quiz_service` 统一派生 `reference_answer_chunk_ids / evidence_chunk_ids`,降低 citation/source/reference/evidence 漂移。
 - **AnswerJudge v1.4 反馈字段已落地**:评分 LLM 一次返回三层 evidence + `coach_message`;Python 仍负责总分计算、引用映射与完整性校验,前端只展示后端反馈。
@@ -137,11 +141,11 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **同步正式文档**:把本轮 `turn_type=auto` 自动分流、`judge_score_history` 无提升退出、`context_compacted / prior_turn_summary / token_budget`、`eval_interview_coach` runner 10/10 结果补到 `docs/4-API_SPEC.md` / `docs/5-AGENT_DESIGN.md` / `docs/6-EVAL_PLAN.md`。
+1. **准备提交**:整理当前 working tree diff,由用户确认后再 `git add` / `git commit`。本轮涉及 `.env.example`、`.gitignore`、API services、settings 与 M2.1 正式文档。
 
 备选:
 
-- 若继续产品闭环,接 `record_session_summary`:把 `agent_state.final_summary.markdown` 真正写入 `notes/_recall/{session_id}.md`,当前只写了 `recall_md_path` 和 recall API。
+- 若继续验收,手动完成一场 `/quiz` 后点"生成总结",确认 `test-notes/llm-notes/_recall/<session_id>.md` 生成,且 `GET /api/quiz/sessions/<id>/recall` 返回同一份 markdown。
 - 若继续验收,刷新 `/quiz?session=13` 应看到初答评分 89.67 与补答评分 100 两条 LLM 反馈都保留;刷新 `/quiz?session=14` 应看到已评分总分 95 与整场总结。
 - 若继续手动验自动分流,在 `/quiz` 一题评分后输入“为什么 HashMap 的数组大小必须是 2 的幂次?”应按追问处理;输入“我补充一下...”或大段技术陈述应按补答重评。
 - 若继续字段命名,优先评估是否把内部 `judge_context_chunk_ids` 再改回更直白的 `final_context_chunk_ids_for_judge`,避免误解为评分另取一批 chunks。

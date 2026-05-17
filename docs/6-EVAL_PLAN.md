@@ -763,7 +763,7 @@ python -m jobcopilot_api.scripts.eval_hybrid_search \
 
 ## 8.2 dataset schema
 
-当前 M2.1 已落第一批最小流程 fixture:`evals/suites/interview_coach/dataset.flow_smoke.jsonl`,并已接入离线 runner:`apps/api/scripts/eval_interview_coach.py`。它固定 harness 行为标签,不触发真实 LLM,也不重新评 Judge label 质量;需要分数变化的 fixture 使用样本内给定 score history / stubbed Judge result。后续再按需要沉淀稳定版 `dataset.jsonl`。
+当前 M2.1 已落第一批最小流程 fixture:`evals/suites/interview_coach/dataset.flow_smoke.jsonl`,并已接入离线 runner:`apps/api/scripts/eval_interview_coach.py`。它固定 harness 行为标签,不触发真实 LLM,也不重新评 Judge label 质量;需要分数变化的 fixture 使用样本内给定 score history / stubbed Judge result。自然语言 `turn_type=auto` 分类质量不放进本 suite,只验证分流进入状态机后的结构行为。后续再按需要沉淀稳定版 `dataset.jsonl`。
 
 每行是一个流程型 fixture:
 
@@ -788,7 +788,8 @@ python -m jobcopilot_api.scripts.eval_hybrid_search \
   },
   "context_expectation": {
     "must_include": ["question", "source_chunks", "reference_points", "cumulative_answer", "unresolved_gaps"],
-    "must_not_include": ["full_raw_transcript_when_over_budget"]
+    "must_not_include": ["full_raw_transcript_when_over_budget"],
+    "must_emit_events": ["context_pack_built"]
   },
   "notes": "测 coverage 缺口 → 补答 → 累计答案重评"
 }
@@ -805,6 +806,8 @@ python -m jobcopilot_api.scripts.eval_hybrid_search \
 | `context_pack_pass` | context pack 是否保留必需字段并压缩旧轮次 | 1.0 |
 | `hallucination_guard_pass` | 纠偏 prompt 是否只围绕 source chunks / reference_points / Judge gaps | 1.0 |
 | `recovery_pass` | 从 `wait_user_answer` / `judge_answer` 后恢复能继续同一节点 | 1.0 |
+
+`finish_session` 暂不单列 headline 指标,而是并入 `branch_accuracy / context_pack_pass / recovery_pass` 检查:runner 要确认整场总结只读取最新 Judge 结果、`answer_turns`、Judge gaps 与 `remediation_state`,不重新调用 AnswerJudge,并产出 `summary_context_pack / final_summary`。
 
 ## 8.4 覆盖矩阵
 
@@ -824,6 +827,7 @@ python -m jobcopilot_api.scripts.eval_hybrid_search \
 
 - 每条 fixture 的 `pass/fail`、实际 action、失败原因
 - 聚合 `branch_accuracy / remediation_target_accuracy / cumulative_rejudge_pass / loop_exit_pass / context_pack_pass / hallucination_guard_pass / recovery_pass`
+- 检查 `judge_score_history` 无明显提升退出、`context_compacted / prior_turn_summary / token_budget_exhausted` 长上下文治理、`session_events` 回放和 finish summary 结构
 - 不连接真实 AnswerJudge label 质量评估;需要分数变化的 fixture 使用样本内给定 score history 或 stubbed Judge result
 
 最近一次结果(`2026-05-17`,report:`evals/reports/interview-coach-flow-smoke-20260517-132154.md`):

@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # (apps/api vs project root) loads the same file. Layout:
 # apps/api/src/jobcopilot_api/settings.py → parents[4] = monorepo root
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
+PROJECT_ROOT = _PROJECT_ROOT
 
 
 class Settings(BaseSettings):
@@ -46,6 +47,11 @@ class Settings(BaseSettings):
     # Query embedding cache 专用守门。评测脚本默认打开 cache-only,避免重复
     # 跑 smoke 时继续请求 embedding provider;产品链路默认允许 miss 后实时计算。
     query_embedding_cache_only: bool = Field(default=False)
+
+    # Local filesystem root that corresponds to logical `notes/`.
+    # Empty = dev auto-detects test-notes/llm-notes when present, otherwise
+    # falls back to <project>/notes. Used only for generated recall markdown.
+    notes_fs_root: str = Field(default="")
 
     # Langfuse 三件套(M0 v2)— SDK 走 LANGFUSE_* 命名,本项目走 JOBCOPILOT_ 前缀,
     # main.py 启动时把字段镜像到 os.environ 给 SDK 用。public_key 留空 = noop 模式
