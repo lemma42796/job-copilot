@@ -730,7 +730,7 @@ export type QuizSubmitSseFrame =
 
 export type QuizAnswerTurnSubmitInput = {
   text: string;
-  turn_type: 'initial' | 'remediation' | 'coach_question';
+  turn_type: 'auto' | 'initial' | 'remediation' | 'coach_question';
   client_turn_id?: string | null;
 };
 

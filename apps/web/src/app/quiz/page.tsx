@@ -6,7 +6,6 @@ import {
   ChevronDown,
   Folder,
   Loader2,
-  MessageCircleQuestion,
   Play,
   RotateCcw,
   Send,
@@ -46,7 +45,6 @@ import {
 import { cn } from '@/lib/utils';
 
 type Stage = 'idle' | 'generating' | 'answering' | 'submitting' | 'submitted';
-type TurnIntent = 'answer' | 'coach_question';
 type SaveState =
   | { kind: 'idle' }
   | { kind: 'saving' }
@@ -1022,35 +1020,15 @@ export default function QuizPage() {
   }, [activeTurnOrder, answerTurns, answers, questions, sessionId, stage]);
 
   const handleSubmitTurn = useCallback(
-    async (orderIndex: number, intent: TurnIntent = 'answer') => {
+    async (orderIndex: number) => {
       if (stage !== 'answering' || sessionId === null || activeTurnOrder !== null) return;
       const text = (answers[orderIndex] ?? '').trim();
       if (!text) {
-        setRunError(
-          intent === 'coach_question'
-            ? `第 ${orderIndex + 1} 题追问不能为空`
-            : `第 ${orderIndex + 1} 题答案不能为空`,
-        );
+        setRunError(`第 ${orderIndex + 1} 题内容不能为空`);
         return;
       }
 
-      const priorTurns = answerTurns[orderIndex] ?? [];
-      const hasPriorCoachContext = Boolean(
-        questionResults[orderIndex]?.coachMessage ||
-          remediationPrompts[orderIndex] ||
-          turnStates[orderIndex]?.coachMessage ||
-          turnStates[orderIndex]?.remediationPrompt,
-      );
-      if (intent === 'coach_question' && !hasPriorCoachContext) {
-        setRunError(`第 ${orderIndex + 1} 题先等教练反馈，再追问教练`);
-        return;
-      }
-      const turnType =
-        intent === 'coach_question'
-          ? 'coach_question'
-          : priorTurns.length > 0
-            ? 'remediation'
-            : 'initial';
+      let resolvedTurnType: 'auto' | 'initial' | 'remediation' | 'coach_question' = 'auto';
       const clientTurnId = `web-${sessionId}-${orderIndex}-${Date.now()}`;
 
       setRunError(null);
@@ -1068,16 +1046,8 @@ export default function QuizPage() {
         appendProgress(items, {
           id: `turn-start-${orderIndex}-${Date.now()}`,
           group: 'judge',
-          label:
-            intent === 'coach_question'
-              ? `第 ${orderIndex + 1} 题追问教练`
-              : `第 ${orderIndex + 1} 题提交`,
-          detail:
-            turnType === 'coach_question'
-              ? '追问'
-              : turnType === 'initial'
-                ? '初答'
-                : '补答',
+          label: `第 ${orderIndex + 1} 题发送`,
+          detail: '自动分流',
         }),
       );
 
@@ -1085,20 +1055,37 @@ export default function QuizPage() {
       try {
         for await (const frame of submitQuizAnswerTurn(sessionId, orderIndex, {
           text,
-          turn_type: turnType,
+          turn_type: 'auto',
           client_turn_id: clientTurnId,
         })) {
           if (frame.event === 'started') {
+            resolvedTurnType = frame.data.turn_type ?? resolvedTurnType;
             setTurnStates((prev) => ({
               ...prev,
               [orderIndex]: {
                 ...(prev[orderIndex] ?? { status: 'running' as const }),
                 status: 'running',
                 phase:
-                  turnType === 'coach_question' ? 'coach_question_started' : 'started',
+                  resolvedTurnType === 'coach_question' ? 'coach_question_started' : 'started',
                 roundIndex: frame.data.round_index,
               },
             }));
+            setProgressItems((items) =>
+              appendProgress(items, {
+                id: `turn-routed-${orderIndex}-${Date.now()}`,
+                group: 'judge',
+                label:
+                  resolvedTurnType === 'coach_question'
+                    ? `第 ${orderIndex + 1} 题按追问处理`
+                    : `第 ${orderIndex + 1} 题按答案处理`,
+                detail:
+                  resolvedTurnType === 'coach_question'
+                    ? '不重评'
+                    : resolvedTurnType === 'initial'
+                      ? '初答'
+                      : '补答',
+              }),
+            );
           } else if (frame.event === 'progress') {
             setTurnStates((prev) => ({
               ...prev,
@@ -1825,25 +1812,10 @@ export default function QuizPage() {
                     activeTurnOrder === null &&
                     (answers[activeQuestion.order_index] ?? '').trim().length > 0
                   }
-                  canAskCoach={
-                    stage === 'answering' &&
-                    sessionId !== null &&
-                    activeTurnOrder === null &&
-                    (answers[activeQuestion.order_index] ?? '').trim().length > 0 &&
-                    Boolean(
-                      questionResults[activeQuestion.order_index]?.coachMessage ||
-                        remediationPrompts[activeQuestion.order_index] ||
-                        turnStates[activeQuestion.order_index]?.coachMessage ||
-                        turnStates[activeQuestion.order_index]?.remediationPrompt,
-                    )
-                  }
                   onAnswer={(value) =>
                     setAnswers((prev) => ({ ...prev, [activeQuestion.order_index]: value }))
                   }
-                  onSubmitTurn={() => void handleSubmitTurn(activeQuestion.order_index, 'answer')}
-                  onAskCoach={() =>
-                    void handleSubmitTurn(activeQuestion.order_index, 'coach_question')
-                  }
+                  onSubmitTurn={() => void handleSubmitTurn(activeQuestion.order_index)}
                 />
               ) : null}
             </div>
@@ -2112,10 +2084,8 @@ function QuestionPanel({
   turnState,
   turnBusy,
   canSubmitTurn,
-  canAskCoach,
   onAnswer,
   onSubmitTurn,
-  onAskCoach,
 }: {
   item: QuizQuestionReady;
   answer: string;
@@ -2129,14 +2099,12 @@ function QuestionPanel({
   turnState?: QuestionTurnState;
   turnBusy: boolean;
   canSubmitTurn: boolean;
-  canAskCoach: boolean;
   onAnswer: (value: string) => void;
   onSubmitTurn: () => void;
-  onAskCoach: () => void;
 }) {
   const promptText = remediationText(remediationPrompt ?? turnState?.remediationPrompt);
   const currentAction = nextAction ?? turnState?.nextAction ?? null;
-  const submitLabel = answerTurns.length > 0 || promptText ? '发送补答' : '发送回答';
+  const submitLabel = '发送';
   const scores = turnState?.scores ?? result?.scores;
   const coachMessage = turnState?.coachMessage ?? result?.coachMessage ?? null;
   const judgeByRound = new Map<number, QuizJudgeTurn>();
@@ -2282,19 +2250,8 @@ function QuestionPanel({
             onChange={(event) => onAnswer(event.target.value)}
             disabled={disabled || turnBusy}
             className="min-h-11 flex-1 resize-none border-0 bg-transparent px-1 py-2 leading-6 shadow-none focus-visible:ring-0"
-            placeholder={answerTurns.length > 0 ? '只写这一轮补充，不需要重复前文' : '在这里作答'}
+            placeholder={answerTurns.length > 0 ? '继续补充或追问' : '在这里作答'}
           />
-          <Button
-            variant="ghost"
-            className="mb-1 size-8 shrink-0 rounded-full p-0"
-            size="icon"
-            onClick={onAskCoach}
-            disabled={disabled || turnBusy || !canAskCoach}
-            title="问教练"
-            aria-label="问教练"
-          >
-            <MessageCircleQuestion className="size-4" />
-          </Button>
           <Button
             className="mb-1 size-8 shrink-0 rounded-full p-0"
             size="icon"

@@ -30,7 +30,7 @@ class AnswerDraftIn(BaseModel):
 
 class AnswerTurnSubmitIn(BaseModel):
     text: str
-    turn_type: Literal["initial", "remediation", "coach_question"] = "initial"
+    turn_type: Literal["auto", "initial", "remediation", "coach_question"] = "auto"
     client_turn_id: str | None = None
 
 

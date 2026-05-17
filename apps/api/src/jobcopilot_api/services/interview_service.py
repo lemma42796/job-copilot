@@ -39,6 +39,74 @@ COVERAGE_REMEDIATE_THRESHOLD = 60.0
 TARGET_COVERAGE = 80.0
 TARGET_FABRICATED_RATIO = 0.1
 FABRICATED_REMEDIATE_RATIO = 0.3
+NO_MEANINGFUL_IMPROVEMENT_MIN_TURNS = 3
+NO_MEANINGFUL_IMPROVEMENT_DELTA = 5.0
+MAX_JUDGE_SCORE_HISTORY = 8
+CONTEXT_COMPACTION_TURN_THRESHOLD = 3
+TOKEN_BUDGET_EXIT_TURN_THRESHOLD = 6
+ANSWER_MARKERS = (
+    "我补充",
+    "补充一下",
+    "我的答案",
+    "我重新答",
+    "重新回答",
+    "这题应该",
+    "我认为",
+    "我总结一下",
+    "可以这样答",
+    "答案是",
+)
+QUESTION_MARKERS = (
+    "为什么",
+    "什么意思",
+    "是什么",
+    "怎么理解",
+    "能解释",
+    "解释一下",
+    "举个例子",
+    "比如呢",
+    "我不懂",
+    "没懂",
+    "不太懂",
+    "区别是什么",
+    "哪里错",
+    "为什么错",
+    "coverage 不够",
+)
+TECH_TERMS = (
+    "事务",
+    "幂等",
+    "重试",
+    "一致性",
+    "缓存",
+    "索引",
+    "队列",
+    "锁",
+    "延迟",
+    "吞吐",
+    "边界",
+    "取舍",
+    "复杂度",
+    "可靠性",
+    "降级",
+    "补偿",
+    "异步",
+    "hash",
+    "hashmap",
+    "数组",
+)
+ANSWER_CONNECTORS = (
+    "因为",
+    "所以",
+    "首先",
+    "其次",
+    "另外",
+    "最后",
+    "本质上",
+    "核心是",
+    "区别在于",
+    "适用于",
+)
 
 
 class InvalidTurnTypeError(ValidationError):
@@ -73,6 +141,9 @@ class _TurnContext:
     chunks: list[QuizGenChunkInput]
     judge_context_chunk_ids: list[int]
     total_questions: int
+    compacted: bool
+    prior_turn_summary: str | None
+    token_budget_exhausted: bool
 
 
 @dataclass(frozen=True)
@@ -116,18 +187,38 @@ async def submit_answer_turn_sse(
     payload: AnswerTurnSubmitIn,
 ) -> AsyncIterator[dict[str, Any]]:
     """SSE for POST /quiz/sessions/{id}/answers/{order_index}/turns."""
-    if payload.turn_type not in ("initial", "remediation", "coach_question"):
+    if payload.turn_type not in ("auto", "initial", "remediation", "coach_question"):
         exc = InvalidTurnTypeError(f"turn_type={payload.turn_type!r} 非法")
         yield _ev("error", _error_payload(exc))
         yield _ev("done", {"ok": False})
         return
     if not payload.text.strip():
         exc = ValidationError(
-            "追问不能为空" if payload.turn_type == "coach_question" else "答案不能为空"
+            "追问不能为空"
+            if payload.turn_type == "coach_question"
+            else "内容不能为空"
+            if payload.turn_type == "auto"
+            else "答案不能为空"
         )
         yield _ev("error", _error_payload(exc))
         yield _ev("done", {"ok": False})
         return
+    if payload.turn_type == "auto":
+        try:
+            payload = payload.model_copy(
+                update={
+                    "turn_type": await _classify_auto_turn_type(
+                        sessionmaker,
+                        session_id=session_id,
+                        order_index=order_index,
+                        text=payload.text,
+                    )
+                }
+            )
+        except JobCopilotError as e:
+            yield _ev("error", _error_payload(e))
+            yield _ev("done", {"ok": False})
+            return
     if payload.turn_type == "coach_question":
         async for event in _submit_coach_question_sse(
             sessionmaker,
@@ -160,6 +251,7 @@ async def submit_answer_turn_sse(
             "session_id": session_id,
             "order_index": order_index,
             "round_index": round_index,
+            "turn_type": payload.turn_type,
         },
     )
 
@@ -169,6 +261,45 @@ async def submit_answer_turn_sse(
             session_id=session_id,
             order_index=order_index,
         )
+        included = [
+            "question",
+            "judge_context_chunks",
+            "scoring_points",
+            "cumulative_answer",
+            "unresolved_gaps",
+        ]
+        if context.compacted:
+            included.append("prior_turn_summary")
+            await _record_event(
+                sessionmaker,
+                session_id=session_id,
+                answer_id=answer_id,
+                question_id=context.question.id,
+                event_type="context_compacted",
+                agent_node="build_context_pack",
+                round_index=round_index,
+                payload={
+                    "reason": (
+                        "token_budget"
+                        if context.token_budget_exhausted
+                        else "turn_history"
+                    ),
+                    "answer_turn_count": len(context.answer.answer_turns or []),
+                    "prior_turn_summary": context.prior_turn_summary,
+                    "kept_fields": [
+                        "question",
+                        "judge_context_chunks",
+                        "scoring_points",
+                        "cumulative_answer",
+                        "unresolved_gaps",
+                    ],
+                    "compacted_fields": [
+                        "older_answer_turns",
+                        "judge_feedback",
+                        "coach_messages",
+                    ],
+                },
+            )
         await _record_event(
             sessionmaker,
             session_id=session_id,
@@ -178,29 +309,19 @@ async def submit_answer_turn_sse(
             agent_node="build_context_pack",
             round_index=round_index,
             payload={
-                "included": [
-                    "question",
-                    "judge_context_chunks",
-                    "scoring_points",
-                    "cumulative_answer",
-                    "unresolved_gaps",
-                ],
+                "included": included,
                 "judge_context_chunk_ids": context.judge_context_chunk_ids,
-                "compacted": False,
+                "compacted": context.compacted,
+                "prior_turn_summary": context.prior_turn_summary,
+                "token_budget_exhausted": context.token_budget_exhausted,
             },
         )
         yield _ev(
             "progress",
             {
                 "phase": "context_pack_built",
-                "included": [
-                    "question",
-                    "judge_context_chunks",
-                    "scoring_points",
-                    "cumulative_answer",
-                    "unresolved_gaps",
-                ],
-                "compacted": False,
+                "included": included,
+                "compacted": context.compacted,
             },
         )
 
@@ -264,6 +385,9 @@ async def submit_answer_turn_sse(
         question=context.question,
         order_index=order_index,
         total_questions=context.total_questions,
+        answer_turns=list(context.answer.answer_turns or []),
+        remediation_state=dict(context.answer.remediation_state or {}),
+        token_budget_exhausted=context.token_budget_exhausted,
     )
     await _persist_decision(
         sessionmaker,
@@ -272,6 +396,7 @@ async def submit_answer_turn_sse(
         question_id=context.question.id,
         round_index=round_index,
         decision=decision,
+        scores=scores,
     )
 
     yield _ev(
@@ -390,18 +515,21 @@ async def _submit_coach_question_sse(
             session_id=session_id,
             order_index=order_index,
         )
+        included = [
+            "question",
+            "judge_context_chunks",
+            "cumulative_answer",
+            "previous_coach_message",
+            "remediation_prompt",
+        ]
+        if context.compacted:
+            included.append("prior_turn_summary")
         yield _ev(
             "progress",
             {
                 "phase": "coach_context_built",
-                "included": [
-                    "question",
-                    "judge_context_chunks",
-                    "cumulative_answer",
-                    "previous_coach_message",
-                    "remediation_prompt",
-                ],
-                "compacted": False,
+                "included": included,
+                "compacted": context.compacted,
             },
         )
 
@@ -553,6 +681,66 @@ async def _record_coach_question(
             "round_index": round_index,
             "submitted_at": now.isoformat(),
         }
+
+
+async def _classify_auto_turn_type(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    session_id: int,
+    order_index: int,
+    text: str,
+) -> Literal["initial", "remediation", "coach_question"]:
+    async with sessionmaker() as session:
+        answer = (
+            await session.execute(
+                sa.select(SessionAnswer)
+                .where(SessionAnswer.session_id == session_id)
+                .where(SessionAnswer.order_index == order_index)
+            )
+        ).scalar_one_or_none()
+        if answer is None:
+            raise NotFoundError(
+                f"session {session_id} 下不存在 order_index={order_index} 的答案"
+            )
+        answer_turns = list(answer.answer_turns or [])
+        if not answer_turns or not (answer.user_answer or "").strip():
+            return "initial"
+        return _classify_text_turn_type(text)
+
+
+def _classify_text_turn_type(text: str) -> Literal["remediation", "coach_question"]:
+    normalized = _normalize_turn_text(text)
+    if _has_explicit_answer_marker(normalized):
+        return "remediation"
+    if _has_explicit_question_marker(normalized):
+        return "coach_question"
+    if _looks_like_long_technical_answer(normalized):
+        return "remediation"
+    return "coach_question"
+
+
+def _normalize_turn_text(text: str) -> str:
+    return " ".join(text.strip().lower().split())
+
+
+def _has_explicit_answer_marker(text: str) -> bool:
+    return any(marker in text for marker in ANSWER_MARKERS)
+
+
+def _has_explicit_question_marker(text: str) -> bool:
+    return (
+        "?" in text
+        or "？" in text
+        or any(marker in text for marker in QUESTION_MARKERS)
+    )
+
+
+def _looks_like_long_technical_answer(text: str) -> bool:
+    if len(text) < 80:
+        return False
+    term_hits = sum(1 for term in TECH_TERMS if term in text)
+    connector_hits = sum(1 for connector in ANSWER_CONNECTORS if connector in text)
+    return term_hits >= 2 and connector_hits >= 1
 
 
 async def _append_answer_turn(
@@ -902,6 +1090,15 @@ async def _build_context_pack(
             question,
             judge_context.chunk_ids,
         )
+        answer_turns = list(answer.answer_turns or [])
+        remediation_state = dict(answer.remediation_state or {})
+        compacted = _should_compact_context(answer_turns)
+        token_budget_exhausted = _token_budget_exhausted(answer_turns)
+        prior_turn_summary = (
+            _build_prior_turn_summary(answer_turns, remediation_state)
+            if compacted
+            else None
+        )
 
         return _TurnContext(
             quiz_session=quiz_session,
@@ -911,6 +1108,9 @@ async def _build_context_pack(
             chunks=judge_context.chunks,
             judge_context_chunk_ids=judge_context.chunk_ids,
             total_questions=total_questions,
+            compacted=compacted,
+            prior_turn_summary=prior_turn_summary,
+            token_budget_exhausted=token_budget_exhausted,
         )
 
 
@@ -957,6 +1157,9 @@ def _decide_next_action(
     question: Question,
     order_index: int,
     total_questions: int,
+    answer_turns: list[dict[str, Any]] | None = None,
+    remediation_state: dict[str, Any] | None = None,
+    token_budget_exhausted: bool = False,
 ) -> _Decision:
     fabricated_claims = [
         claim for claim in judged.fidelity_evidence.claims if claim.label == "fabricated"
@@ -977,15 +1180,51 @@ def _decide_next_action(
         if point.label in ("partial", "miss")
     ]
 
+    remediation: _Decision | None = None
     if fabricated_ratio > FABRICATED_REMEDIATE_RATIO:
-        prompt = _fidelity_prompt(fabricated_claims)
-        return _remediate("fidelity", "fabricated ratio 过高", prompt)
-    if scores["coverage"] < COVERAGE_REMEDIATE_THRESHOLD:
-        prompt = _coverage_prompt(question, coverage_gaps)
-        return _remediate("coverage", "coverage 未达阈值", prompt)
-    if missing_depth:
-        prompt = _depth_prompt(missing_depth)
-        return _remediate("depth", "depth 缺少关键维度", prompt)
+        remediation = _remediate(
+            "fidelity",
+            "fabricated ratio 过高",
+            _fidelity_prompt(fabricated_claims),
+        )
+    elif scores["coverage"] < COVERAGE_REMEDIATE_THRESHOLD:
+        remediation = _remediate(
+            "coverage",
+            "coverage 未达阈值",
+            _coverage_prompt(question, coverage_gaps),
+        )
+    elif missing_depth:
+        remediation = _remediate(
+            "depth",
+            "depth 缺少关键维度",
+            _depth_prompt(missing_depth),
+        )
+
+    if remediation is not None:
+        if token_budget_exhausted:
+            return _advance_or_summarize(
+                order_index,
+                total_questions,
+                "token_budget",
+                triggered_by=remediation.triggered_by,
+                decision_reason="上下文已达到预算退出条件,先收住当前题并总结缺口",
+                unresolved_gaps=remediation.unresolved_gaps,
+            )
+        if _should_exit_no_meaningful_improvement(
+            scores=scores,
+            answer_turns=answer_turns or [],
+            remediation_state=remediation_state or {},
+            unresolved_gaps=remediation.unresolved_gaps,
+        ):
+            return _advance_or_summarize(
+                order_index,
+                total_questions,
+                "no_meaningful_improvement",
+                triggered_by=remediation.triggered_by,
+                decision_reason="连续多轮补答无明显提升,先收住当前题并总结缺口",
+                unresolved_gaps=remediation.unresolved_gaps,
+            )
+        return remediation
 
     if (
         scores["coverage"] >= TARGET_COVERAGE
@@ -1012,24 +1251,129 @@ def _advance_or_summarize(
     order_index: int,
     total_questions: int,
     exit_reason: str,
+    *,
+    triggered_by: Trigger = "none",
+    decision_reason: str | None = None,
+    unresolved_gaps: list[dict[str, Any]] | None = None,
 ) -> _Decision:
     if order_index >= total_questions - 1:
         return _Decision(
             next_action="summarize",
-            triggered_by="none",
-            decision_reason="当前题已达到进入总结条件",
+            triggered_by=triggered_by,
+            decision_reason=decision_reason or "当前题已达到进入总结条件",
             exit_reason=exit_reason,
             remediation_prompt=None,
-            unresolved_gaps=[],
+            unresolved_gaps=unresolved_gaps or [],
         )
     return _Decision(
         next_action="ask_next",
-        triggered_by="none",
-        decision_reason="当前题已达到进入下一题条件",
+        triggered_by=triggered_by,
+        decision_reason=decision_reason or "当前题已达到进入下一题条件",
         exit_reason=exit_reason,
         remediation_prompt=None,
-        unresolved_gaps=[],
+        unresolved_gaps=unresolved_gaps or [],
     )
+
+
+def _should_exit_no_meaningful_improvement(
+    *,
+    scores: dict[str, float],
+    answer_turns: list[dict[str, Any]],
+    remediation_state: dict[str, Any],
+    unresolved_gaps: list[dict[str, Any]],
+) -> bool:
+    if len(answer_turns) < NO_MEANINGFUL_IMPROVEMENT_MIN_TURNS:
+        return False
+
+    history = _score_history_from_state(remediation_state)
+    if len(history) < 2:
+        return False
+
+    previous_previous_total = _score_value(history[-2].get("total"))
+    previous_total = _score_value(history[-1].get("total"))
+    current_total = _score_value(scores.get("total"))
+    previous_delta = previous_total - previous_previous_total
+    current_delta = current_total - previous_total
+    if (
+        previous_delta >= NO_MEANINGFUL_IMPROVEMENT_DELTA
+        or current_delta >= NO_MEANINGFUL_IMPROVEMENT_DELTA
+    ):
+        return False
+
+    previous_gap_keys = _gap_keys(remediation_state.get("unresolved_gaps"))
+    current_gap_keys = _gap_keys(unresolved_gaps)
+    if previous_gap_keys and current_gap_keys and current_gap_keys != previous_gap_keys:
+        return False
+
+    return True
+
+
+def _score_history_from_state(state: dict[str, Any]) -> list[dict[str, float]]:
+    raw = state.get("judge_score_history")
+    if not isinstance(raw, list):
+        return []
+    history: list[dict[str, float]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        history.append(
+            {
+                "coverage": _score_value(item.get("coverage")),
+                "fidelity": _score_value(item.get("fidelity")),
+                "depth": _score_value(item.get("depth")),
+                "total": _score_value(item.get("total")),
+            }
+        )
+    return history[-MAX_JUDGE_SCORE_HISTORY:]
+
+
+def _gap_keys(value: Any) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    keys: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        gap_type = str(item.get("type") or "")
+        if gap_type == "coverage":
+            key = item.get("scoring_point_id")
+        elif gap_type == "fidelity":
+            key = item.get("claim")
+        elif gap_type == "depth":
+            key = item.get("dimension")
+        else:
+            key = item
+        keys.add(f"{gap_type}:{key}")
+    return keys
+
+
+def _should_compact_context(answer_turns: list[dict[str, Any]]) -> bool:
+    return len(answer_turns) >= CONTEXT_COMPACTION_TURN_THRESHOLD
+
+
+def _token_budget_exhausted(answer_turns: list[dict[str, Any]]) -> bool:
+    return len(answer_turns) >= TOKEN_BUDGET_EXIT_TURN_THRESHOLD
+
+
+def _build_prior_turn_summary(
+    answer_turns: list[dict[str, Any]],
+    remediation_state: dict[str, Any],
+) -> str:
+    history = _score_history_from_state(remediation_state)
+    first_total = history[0]["total"] if history else None
+    last_total = history[-1]["total"] if history else None
+    gap_keys = sorted(_gap_keys(remediation_state.get("unresolved_gaps")))
+
+    lines = [f"用户已提交 {len(answer_turns)} 轮答案。"]
+    if first_total is not None and last_total is not None:
+        delta = last_total - first_total
+        lines.append(
+            f"最近总分从 {first_total:.2f} 到 {last_total:.2f},变化 {delta:+.2f}。"
+        )
+    if gap_keys:
+        lines.append("当前仍未解决的缺口:" + "、".join(gap_keys))
+    lines.append("旧轮次反馈已压缩,不再逐条传入当前上下文。")
+    return "".join(lines)
 
 
 def _coverage_prompt(
@@ -1111,17 +1455,24 @@ async def _persist_decision(
     question_id: int,
     round_index: int,
     decision: _Decision,
+    scores: dict[str, float],
 ) -> None:
     now = datetime.now(UTC)
-    state = {
-        "last_decision": decision.next_action,
-        "triggered_by": decision.triggered_by,
-        "decision_reason": decision.decision_reason,
-        "exit_reason": decision.exit_reason,
-        "remediation_prompt": decision.remediation_prompt,
-        "unresolved_gaps": decision.unresolved_gaps,
-    }
     async with sessionmaker() as session:
+        answer = await session.get(SessionAnswer, answer_id)
+        previous_state = dict(answer.remediation_state or {}) if answer is not None else {}
+        score_history = _score_history_from_state(previous_state)
+        score_history.append(_scores_for_event(scores))
+        score_history = score_history[-MAX_JUDGE_SCORE_HISTORY:]
+        state = {
+            "last_decision": decision.next_action,
+            "triggered_by": decision.triggered_by,
+            "decision_reason": decision.decision_reason,
+            "exit_reason": decision.exit_reason,
+            "remediation_prompt": decision.remediation_prompt,
+            "unresolved_gaps": decision.unresolved_gaps,
+            "judge_score_history": score_history,
+        }
         await session.execute(
             sa.update(SessionAnswer)
             .where(SessionAnswer.id == answer_id)

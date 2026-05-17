@@ -763,7 +763,7 @@ python -m jobcopilot_api.scripts.eval_hybrid_search \
 
 ## 8.2 dataset schema
 
-当前 M2.1 已落第一批最小流程 fixture:`evals/suites/interview_coach/dataset.flow_smoke.jsonl`。它先固定 harness 行为标签,不触发真实 LLM 评 Judge label 质量;后续 `eval_interview_coach.py` runner 接入后,再按需要沉淀稳定版 `dataset.jsonl`。
+当前 M2.1 已落第一批最小流程 fixture:`evals/suites/interview_coach/dataset.flow_smoke.jsonl`,并已接入离线 runner:`apps/api/scripts/eval_interview_coach.py`。它固定 harness 行为标签,不触发真实 LLM,也不重新评 Judge label 质量;需要分数变化的 fixture 使用样本内给定 score history / stubbed Judge result。后续再按需要沉淀稳定版 `dataset.jsonl`。
 
 每行是一个流程型 fixture:
 
@@ -820,11 +820,17 @@ python -m jobcopilot_api.scripts.eval_hybrid_search \
 | 中途恢复 | 1 | 从 `wait_user_answer` 恢复 |
 | 长上下文压缩 | 1 | 旧轮次摘要化,必需证据不丢 |
 
-下一刀 runner 最小输出:
+当前 runner 输出:
 
 - 每条 fixture 的 `pass/fail`、实际 action、失败原因
 - 聚合 `branch_accuracy / remediation_target_accuracy / cumulative_rejudge_pass / loop_exit_pass / context_pack_pass / hallucination_guard_pass / recovery_pass`
 - 不连接真实 AnswerJudge label 质量评估;需要分数变化的 fixture 使用样本内给定 score history 或 stubbed Judge result
+
+最近一次结果(`2026-05-17`,report:`evals/reports/interview-coach-flow-smoke-20260517-132154.md`):
+
+- 10/10 fixtures pass
+- `branch_accuracy / remediation_target_accuracy / cumulative_rejudge_pass / loop_exit_pass / context_pack_pass / hallucination_guard_pass / recovery_pass` 均为 `1.000`
+- 本 suite 不评自然语言 `turn_type=auto` 分类质量;它只验证进入状态机后的分支、context pack、`session_events`、finish summary 等结构行为
 
 # 9. 防回归约束
 

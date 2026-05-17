@@ -23,10 +23,16 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 最新状态:
 
+- 本轮新增 `apps/api/scripts/eval_interview_coach.py` 离线 runner:读取 `evals/suites/interview_coach/dataset.flow_smoke.jsonl`,stub Judge evidence,复用 `interview_service._decide_next_action`,输出 branch accuracy / remediation target / cumulative rejudge / loop exit / context pack / hallucination guard / recovery 指标;不连 DB、不调 LLM、不评 Judge label 质量。
+- 本轮按用户指令跑过 `uv run python apps/api/scripts/eval_interview_coach.py`:最新报告 `evals/reports/interview-coach-flow-smoke-20260517-132154.md`,10/10 通过,`branch_accuracy / remediation_target_accuracy / cumulative_rejudge / loop_exit / context_pack_pass / hallucination_guard / recovery_pass` 全部 1.000。
+- 本轮补 M2.1 `loop exit policy`:每轮 decision 把 `judge_score_history` 写入 `session_answers.remediation_state`;第 3 轮起若最近两轮总分提升都低于 5 且缺口不变,不再继续 `remediate`,而是以 `exit_reason=no_meaningful_improvement` 收住当前题。
+- 本轮补 deterministic context compaction / token budget 退出:第 3 轮起生成 `prior_turn_summary`,记录 `context_compacted` 事件;达到预算退出条件且仍需纠偏时以 `exit_reason=token_budget` 收住。v0 不调 LLM,只总结轮次数、分数变化与未解决缺口。
+- 本轮 `/quiz` 单输入框自动分流已接入:`AnswerTurnSubmitIn.turn_type` 默认 `auto`;后端按规则判 `initial / remediation / coach_question`。前端移除单独“问教练”按钮,统一发送 `auto`,SSE `started.turn_type` 返回实际分流,进度流显示“按答案处理 / 按追问处理”。
+- 本轮未跑 typecheck / build / Playwright;只按用户指令跑了离线 `eval_interview_coach` runner。
 - 本轮新增 `summarize_session / finish_session` 闭环:`POST /api/quiz/sessions/{id}/finish` SSE 不重新 Judge,基于每题最新评分、`answer_turns`、Judge gaps 与 `remediation_state` 生成 `final_summary / question_summaries / summary_context_pack`,写回 `quiz_sessions.agent_state`,追加 `session_summarized / session_finished` 事件,并把 session 标为 `submitted`。
 - 本轮新增 session 沉淀读取:`GET /api/quiz/sessions/{id}` 返回 `summary`;`GET /api/quiz/sessions/{id}/recall` 返回 `agent_state.final_summary.markdown`。`recall_md_path` 先写为 `notes/_recall/{id}.md`,实际文件写入仍留后续再接。
 - 本轮 dogfood 已验收 finish session:按用户指令用本机 API + Next Web 查看 `/quiz?session=14`,`Langfuse Prompt 版本管理` 1 题初答后 Judge 给 Coverage 90 / Fidelity 100 / Depth 100 / Total 95,按钮切到"生成总结",点击后 session #14 变为"已评分",页面展示总分、做得好、反复缺口、复习建议和 `notes/_recall/14.md`。
-- 本轮新增 `evals/suites/interview_coach/` 最小流程型 fixture:`dataset.flow_smoke.jsonl` 10 条覆盖不纠偏、coverage 纠偏、fabricated 纠偏、depth 纠偏、多轮无提升退出、中途恢复、长上下文压缩和 finish summary;当前只落行为标签与 README,未接 runner。
+- 本轮新增 `evals/suites/interview_coach/` 最小流程型 fixture:`dataset.flow_smoke.jsonl` 10 条覆盖不纠偏、coverage 纠偏、fabricated 纠偏、depth 纠偏、多轮无提升退出、中途恢复、长上下文压缩和 finish summary;runner 已接入并跑通。
 - 本轮收尾已把必要交接上下文同步到正式文档:`docs/4-API_SPEC.md` 记录 `/finish` SSE 与 summary/recall 语义,`docs/5-AGENT_DESIGN.md` 记录已落地节点和待接 `record_session_summary`,`docs/6-EVAL_PLAN.md` 记录 `dataset.flow_smoke.jsonl` 与下一刀 runner 输出。
 - 本轮 M2.1 单题面试流继续推进:补答与追问教练已拆语义。`initial/remediation` 会追加到累计 `user_answer` 并重新跑 AnswerJudge;`coach_question` 走独立 `coach_chat` 解释链路,不改答案、不重评、不推进题目状态。
 - 本轮新增 `CoachChat` 非评分 agent:`coach_question` 输入上一轮 `coach_message/remediation_prompt/unresolved_gaps/累计答案/final_context_chunks`,只返回解释型 `coach_message`;追问与回复落 `session_events` 并通过 `coach_turns` 回放。
@@ -109,11 +115,12 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **百炼 Context Cache 代码已接入但默认关闭**:保留稳定 chunks 前缀渲染与审计字段;后续多轮面试讨论再开启显式 cache。
 - **M2.1 Agentic RAG 方向锁定**:`InterviewCoachAgent` 不做泛化多 Agent,而是 interview coaching harness:检索 → 出题 → 等答 → 评分 → 决策 → 多轮纠偏 / 总结;系统负责状态、工具、证据、分支、恢复、回放和评测。
 - **M2.1 单题 turn 最小闭环已落地**:`0020_interview_coach_state.py` + `SessionEvent` + 单题 turn SSE + `/quiz` 前端接入。`GET /quiz/sessions/{id}` 已返回 `agent_state / answer_turns / judge_turns / coach_turns / remediation_state / remediation_prompt`,用于刷新后从 `wait_user_answer` 继续并回放每轮 LLM 消息。
+- **M2.1 退出与上下文压缩已落地**:连续多轮无明显提升会以 `no_meaningful_improvement` 收住;长轮次会生成 deterministic `prior_turn_summary` 并记录 `context_compacted`,预算退出用 `token_budget`。
 - **M2.1 整场总结闭环已落地**:`finish_session` SSE 基于已完成单题 Judge 结果生成 deterministic session summary,写 `agent_state.final_summary / question_summaries / summary_context_pack` 与 `session_events`,前端在所有题已评分后显示"生成总结"并渲染总分、反复缺口、补答修正、复习建议。
-- **interview_coach flow smoke fixture 已落地**:`evals/suites/interview_coach/dataset.flow_smoke.jsonl` 先固定 harness 行为标签,runner 后续再接;该 suite 只守状态机分支 / context pack / 事件落库,不重新评 Judge label 质量。
+- **interview_coach flow smoke runner 已落地**:`evals/suites/interview_coach/dataset.flow_smoke.jsonl` 固定 harness 行为标签;`apps/api/scripts/eval_interview_coach.py` 离线验证状态机分支 / context pack / 事件落库 / finish summary,不重新评 Judge label 质量。最新 10/10 通过。
 - **QuizGenerator v1.3 引用收口已落地**:LLM 输出从多套引用字段收敛为 reference answer citations + `scoring_points[].supporting_chunk_ids`;`quiz_service` 统一派生 `reference_answer_chunk_ids / evidence_chunk_ids`,降低 citation/source/reference/evidence 漂移。
 - **AnswerJudge v1.4 反馈字段已落地**:评分 LLM 一次返回三层 evidence + `coach_message`;Python 仍负责总分计算、引用映射与完整性校验,前端只展示后端反馈。
-- **/quiz 聊天式练习 UI 已落地**:题数下拉 `1/3/5`;一个主题多题用左侧分组切换;主面板用 Apple Messages 风格聊天流;多轮补答作为新 turn 追加;评分卡折叠到教练反馈下。
+- **/quiz 聊天式练习 UI 已落地**:题数下拉 `1/3/5`;一个主题多题用左侧分组切换;主面板用 Apple Messages 风格聊天流;单输入框自动分流补答 / 追问;评分卡折叠到教练反馈下。
 - **hybrid_search smoke 标签已升级并复核一轮**:`evals/suites/hybrid_search/dataset.note_smoke.jsonl` 覆盖 M2/M3 边界、Context Cache、reranker/query rewrite、AnswerJudge、SSE 恢复、MVCC、Outbox、epoll、provider timeout/429、zero-hit;`direct_evidence_chunk_ids` 只放可直接回答 query 的 chunk。
 - **hybrid_search note/chunk smoke 脚本已落地**:`apps/api/scripts/eval_hybrid_search_note_smoke.py` 只读 DB / 写本地 report + trace(`evals/reports/` gitignore),输出 top notes、top chunks、heading/anchor coverage、hard-negative intrusion、zero-hit、召回指标与成本;`--score-trace` 支持只按新标签离线重算。
 - **hybrid_search A/B 诊断开关已落地**:可单独比较 provider rerank / 纯 hybrid、rerank 输入池大小、selected topK、parent-doc on/off,用于拆分"召回 / 粗排排序 / 精排 / parent-doc"责任。
@@ -130,12 +137,13 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **`eval_interview_coach` runner 设计与最小实现**:读取 `dataset.flow_smoke.jsonl`,先验证 deterministic decision / context pack / session_events / finish summary 的结构性行为,不要重新评价 Judge label 质量;输出 branch accuracy、remediation target、cumulative rejudge、recovery/context/hallucination guard 结果。
+1. **同步正式文档**:把本轮 `turn_type=auto` 自动分流、`judge_score_history` 无提升退出、`context_compacted / prior_turn_summary / token_budget`、`eval_interview_coach` runner 10/10 结果补到 `docs/4-API_SPEC.md` / `docs/5-AGENT_DESIGN.md` / `docs/6-EVAL_PLAN.md`。
 
 备选:
 
-- 若继续长上下文治理,先定义 session-level summary/event compaction:原始 transcript/events 全量落库回放,LLM 当前输入只拿当前题、source chunks、reference/scoring points、unresolved gaps、最近少量 turns 与 session summary。
+- 若继续产品闭环,接 `record_session_summary`:把 `agent_state.final_summary.markdown` 真正写入 `notes/_recall/{session_id}.md`,当前只写了 `recall_md_path` 和 recall API。
 - 若继续验收,刷新 `/quiz?session=13` 应看到初答评分 89.67 与补答评分 100 两条 LLM 反馈都保留;刷新 `/quiz?session=14` 应看到已评分总分 95 与整场总结。
+- 若继续手动验自动分流,在 `/quiz` 一题评分后输入“为什么 HashMap 的数组大小必须是 2 的幂次?”应按追问处理;输入“我补充一下...”或大段技术陈述应按补答重评。
 - 若继续字段命名,优先评估是否把内部 `judge_context_chunk_ids` 再改回更直白的 `final_context_chunk_ids_for_judge`,避免误解为评分另取一批 chunks。
 - 若继续 UI,先人工验 `/quiz` 主题输入 → 1/3/5 出题 → 左侧题目切换 → 初答/补答 turn → 刷新恢复 → 评分详情展开,重点看移动端文本是否挤压。
 - 若只做人工验证,重点看 `/quiz?session=<id>` 单题按钮、纠偏提示、补答后累计答案重评、刷新恢复。
@@ -192,6 +200,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **[来自 M2.1] QuizGenerator 引用编号是 prompt-local**:`[N]` / `evidence_chunk_ids` / `reference_answer_chunk_ids` / `supporting_chunk_ids` 都先是本次 `final_context_chunks` 的 `1..K`,入库前才映射到真实 `note_chunks.id`;后端派生重复字段,不要信 LLM 维护多份一致性。
 - **[来自 M2.1] 出题和评分必须使用同一批 final context chunks**:评分阶段可以追加题目证据子集缺失的 chunk id 作兼容保护,但产品语义上不要把它描述成另一批 retrieved chunks。
 - **[来自 M2.1] 补答和追问教练不能混写同一状态**:只有明确补答才写入 `user_answer` 并重评;追问解释应走 coach chat,不改变分数 / 轮次推进。
+- **[来自 M2.1] 单输入框只是 UX,状态边界仍在后端**:`turn_type=auto` 可自动分流,但模糊输入默认追问;不能把 coach 解释或用户追问混进正式答案评分。
 - **[来自 M2.1] 每轮 LLM 回答都必须是消息**:多轮模拟面试不能只保留最新 `coach_message`;Judge 评分反馈与 coach 追问解释都要按 turn/event 回放,后续长上下文靠 summary/context pack 压缩,不是覆盖历史。
 
 # 文档导航

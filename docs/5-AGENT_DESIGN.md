@@ -928,8 +928,8 @@ retrieve_context
 
 当前已落地节点:
 
-- `wait_user_answer → build_context_pack → judge_answer → decide_next_action`:由 `POST /api/quiz/sessions/{id}/answers/{order_index}/turns` 推进;补答会追加到 `answer_turns`,并用累计答案重新跑 AnswerJudge。
-- `coach_question → coach_chat`:用户追问教练反馈时走独立解释链路,不改 `user_answer`,不重评,不推进题目状态。
+- `wait_user_answer → build_context_pack → judge_answer → decide_next_action`:由 `POST /api/quiz/sessions/{id}/answers/{order_index}/turns` 推进;`turn_type=auto` 会先分流为初答 / 补答 / 追问教练。初答和补答追加到 `answer_turns`,并用累计答案重新跑 AnswerJudge。
+- `coach_question → coach_chat`:用户追问教练反馈时走独立解释链路,只写 `session_events`,不改 `user_answer`,不重评,不推进题目状态。前端可以保持单输入框;状态边界仍由后端分流维护。
 - `summarize_session → finish_session`:由 `POST /api/quiz/sessions/{id}/finish` 推进;只汇总已经完成的每题最新 Judge 结果,不重新评分。结果写入 `agent_state.final_summary / question_summaries / summary_context_pack`,并追加 `session_summarized / session_finished` 事件。
 
 ## 8.3 工具边界
@@ -971,11 +971,13 @@ M2.1 不再把追问限制成"单题最多 1 轮"。`InterviewCoachAgent` 的核
 
 - 用户显式选择"跳过 / 下一题 / 结束本场"
 - 当前题达到目标,例如 `coverage_score >= 80`、`fabricated_ratio <= 0.1` 且 depth 不再缺核心维度
-- 连续多轮提升很小,例如最近两轮 `total_score` 提升低于阈值
+- 连续多轮提升很小:当前 v0 实现要求答案轮次 `>= 3`,最近两次 `total_score` 增量都 `< 5`,且 unresolved gap keys 没有变化,则 `exit_reason=no_meaningful_improvement`
 - 用户明显偏题,改为总结当前题缺口并建议进入下一题
-- context pack 超过 token budget,先压缩历史轮次;若仍超限则总结当前题,不继续塞上下文
+- context pack 超过 token budget,先压缩历史轮次;当前 v0 用答案轮次数近似预算,`>= 3` 轮生成 `prior_turn_summary`,`>= 6` 轮仍需纠偏则 `exit_reason=token_budget`
 
 因此删除"单题最多 1 轮"限制,但仍禁止无退出条件的自主循环。
+
+每次 `decide_next_action` 会把最近 Judge 分数写入 `SessionAnswer.remediation_state.judge_score_history`,只保留最近 8 条。这个 history 是无明显提升判断和 finish summary 的结构化输入,不依赖重新读聊天文本猜状态。
 
 ## 8.5 长上下文与幻觉治理
 
@@ -1003,6 +1005,8 @@ Token budget 优先级:
 
 Context Cache / prompt caching 只用于降低重复长前缀成本,不是会话记忆。真正的记忆是 `InterviewCoachState + session_events + per-question summary`。
 
+当前 v0 的 compaction 是 deterministic,不调用 LLM:达到阈值后从已落库的 `answer_turns`、`judge_score_history`、`unresolved_gaps` 拼出 `prior_turn_summary`,只把最近 1-2 轮原文留给当前节点。落库事件为 `context_compacted`,随后 `context_pack_built` 带 `compacted / prior_turn_summary / token_budget_exhausted`。
+
 追问 / 纠偏也必须 evidence-bound:
 
 - 每个 `RemediationEvent` 必须记录 `triggered_by: coverage | fidelity | depth | mixed`
@@ -1026,14 +1030,14 @@ Context Cache / prompt caching 只用于降低重复长前缀成本,不是会话
 ## 8.7 评测与可观测
 
 - Langfuse trace 根节点按 `session_id` 聚合,完整链路:`retrieve_context → generate_question → wait_user_answer → build_context_pack → judge_answer → decide_next_action → generate_remediation_prompt? → summarize_session`
-- `evals/suites/interview_coach/` 收流程型样本;当前已有 `dataset.flow_smoke.jsonl` 10 条最小 fixture,runner 待接。至少覆盖:
+- `evals/suites/interview_coach/` 收流程型样本;当前已有 `dataset.flow_smoke.jsonl` 10 条最小 fixture,`apps/api/scripts/eval_interview_coach.py` 已接入离线 runner。最近一次 `2026-05-17` 跑通 10/10,各聚合指标为 1.000。至少覆盖:
   - 答得好 → 不追问
   - 漏 reference point → 提示缺口 → 补答后累计答案重评
   - fabricated ratio 高 → 依据追问
   - depth 缺 trade-off / why / boundary → 深挖纠偏
   - 多轮后无明显提升 → 总结当前题缺口,不无限循环
   - 用户中途退出 → 从 `wait_user_answer` 恢复
-- 指标先用流程准确率(是否走到人工期望分支)、纠偏成功率(补答后是否达标或正确退出)、上下文治理通过率,不直接用 kappa;Judge 的 label 可靠性仍由 `answer_judge` suite 守门
+- 指标先用流程准确率(是否走到人工期望分支)、纠偏成功率(补答后是否达标或正确退出)、上下文治理通过率,不直接用 kappa;Judge 的 label 可靠性仍由 `answer_judge` suite 守门,自然语言 `turn_type=auto` 分类质量不放进本 suite。
 
 # 9. v1 教训如何应用
 
@@ -1063,6 +1067,7 @@ Context Cache / prompt caching 只用于降低重复长前缀成本,不是会话
 | query 形态 | M2 仅主题类;M3 加岗位类(三源融合)+ 空 query(SR 系统自选) | 见 PRD §5.2 + 7-ROADMAP M3 |
 | Agent 编排深度 | M2.1 上 `InterviewCoachAgent` 状态机;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不做泛化多 Agent 互聊 | 见 §8 |
 | 简历存储 | 单条记录(全库一行 resumes),无"简历库 / 多份切换";岗位类 query 拼"这一份 + 选定 JD 子集" | 一个人就一份简历;PRD §6 锁定 |
+| M2.1 单输入框 | 前端只有一个发送按钮;后端 `turn_type=auto` 分流初答 / 补答 / 追问教练 | UX 简化不改变状态边界;追问教练不进入 `user_answer` 评分 |
 | 多轮纠偏触发(M2.1) | `coverage_score < 60` / `fabricated_ratio > 0.3` / depth 缺维度 任一触发,进入 remediation loop | 不设单题固定 1 轮上限;靠达标、用户跳过、无明显提升、偏题、token budget 等条件退出 |
 | 多轮上下文治理(M2.1) | 原始对话落库回放,LLM 每次只拿 context pack | source chunks / reference_points / unresolved_gaps 优先级最高;Context Cache 不是记忆 |
 | Temperature | DashScope 默认,不暴露 | prompt 端约束逼近低温度 |

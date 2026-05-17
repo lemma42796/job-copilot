@@ -483,7 +483,7 @@ M2.1 起,in_progress session 可返回当前题最新 `remediation_prompt` 和 `
 
 ### 4.3.1 `POST /api/quiz/sessions/{id}/answers/{order_index}/turns`(**SSE,M2.1**)
 
-提交当前题的一轮答案 / 补答,并推进 `InterviewCoachAgent`:
+提交当前题的一轮用户输入,并推进 `InterviewCoachAgent`。前端只有一个发送入口;后端根据 `turn_type=auto` 把文本分流为初答 / 补答 / 追问教练:
 
 ```
 wait_user_answer
@@ -500,21 +500,25 @@ wait_user_answer
 ```json
 {
   "text": "补充:Outbox 会和业务事务一起落库,再由后台任务投递 MQ。",
-  "turn_type": "initial",
+  "turn_type": "auto",
   "client_turn_id": "local-uuid-optional"
 }
 ```
 
-`turn_type` 取值:`initial` / `remediation`。后端会把本轮文本追加到 `answer_turns`,并重建 `user_answer` 累计答案。
+`turn_type` 取值:`auto` / `initial` / `remediation` / `coach_question`,默认 `auto`。
+
+- `auto`:后端判定实际类型。当前题还没有累计答案时归为 `initial`;明确补答词或大段技术陈述归为 `remediation`;明确提问词或模糊短句归为 `coach_question`。
+- `initial` / `remediation`:后端会把本轮文本追加到 `answer_turns`,并重建 `user_answer` 累计答案,随后重跑 AnswerJudge。
+- `coach_question`:用于用户追问教练反馈,只写 `session_events`,不改 `user_answer`,不重评,不推进题目状态。
 
 SSE 事件:
 
 ```
 event: started
-data: {"job_id": "01HX...", "resource_id": 789, "order_index": 0, "round_index": 1}
+data: {"job_id": "01HX...", "resource_id": 789, "order_index": 0, "round_index": 1, "turn_type": "remediation"}
 
 event: progress
-data: {"phase": "context_pack_built", "included": ["question", "source_chunks", "reference_points", "cumulative_answer", "unresolved_gaps"], "compacted": true}
+data: {"phase": "context_pack_built", "included": ["question", "judge_context_chunks", "scoring_points", "cumulative_answer", "unresolved_gaps", "prior_turn_summary"], "compacted": true}
 
 event: judge_done
 data: {
@@ -561,15 +565,34 @@ data: {"ok": true}
 }
 ```
 
+若本轮被分流为 `coach_question`,事件流变为:
+
+```
+event: started
+data: {"job_id": "coach-question-789-0-0", "resource_id": 789, "order_index": 0, "round_index": 0, "turn_type": "coach_question"}
+
+event: progress
+data: {"phase": "coach_context_built", "included": ["question", "judge_context_chunks", "cumulative_answer", "previous_coach_message", "remediation_prompt"], "compacted": false}
+
+event: coach_done
+data: {"order_index": 0, "round_index": 0, "turn_type": "coach_question", "text": "为什么 Outbox 比直接发 MQ 更稳?", "coach_message": "..."}
+
+event: done
+data: {"ok": true}
+```
+
+长上下文治理:当答案轮次达到压缩阈值时,后端在 `session_events` 追加 `context_compacted`,并在 `context_pack_built` payload 写入 `prior_turn_summary / compacted / token_budget_exhausted`。source chunks、scoring points、累计答案和 unresolved gaps 不被丢弃;旧轮次只进入摘要。
+
 错误码:
 
 | code | 说明 |
 |------|----|
 | `session_not_in_progress` | session 已 submitted / abandoned |
 | `order_index_not_found` | 题号不存在 |
-| `invalid_turn_type` | turn_type 非 initial / remediation |
+| `invalid_turn_type` | turn_type 非 auto / initial / remediation / coach_question |
 | `context_pack_failed` | 必需上下文缺失,例如 source chunks / reference points 不完整 |
 | `judge_call_failed` | Judge LLM 失败(已重试) |
+| `coach_call_failed` | 教练解释 LLM 失败(已重试) |
 
 ## 4.4 `POST /api/quiz/sessions/{id}/submit`(**SSE**)
 
@@ -1163,7 +1186,7 @@ data: {"ok": true}
 | embedder | 异步后台 worker | API 端点不等 embedding 完;`embedding IS NULL` 的 chunk hybrid search 自动跳过 |
 | reference 防作弊 | session in_progress 时不返 reference_answer / reference_points | active recall 强约束 |
 | Judge 调用粒度 | MVP 单次 LLM 调用拿三层分;后续可拆 | 简化 SSE 事件;若 Judge 准确度不达标再拆 |
-| M2.1 单题推进 | `POST /answers/{order_index}/turns` 提交一轮答案 / 补答并推进 Agent | 返回 `next_action=remediate/ask_next/summarize/finish`;补答后重评累计答案 |
+| M2.1 单题推进 | `POST /answers/{order_index}/turns` 提交一轮输入并推进 Agent | `turn_type=auto` 由后端分流为初答 / 补答 / 追问教练;补答后重评累计答案 |
 | M2.1 长上下文 | turn SSE 暴露 `context_pack_built` 事件 | 前端可见是否压缩旧轮次;后端保证 source chunks / reference points / unresolved gaps 不丢 |
 | 题型比例 | 后端按 chunks 内容自动决定(B);前端不传 type_mix | 推荐逻辑见 5-AGENT_DESIGN;后端在 `progress.type_mix_decided` 事件回推决策 |
 | 答题草稿保存 | 边打边存(typing 防抖 1s 后 PUT) | 开放题答题长,断电一字不丢 > 省 PUT 请求 |
