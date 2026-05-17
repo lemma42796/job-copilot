@@ -1,5 +1,5 @@
 ---
-title: AGENT DESIGN - JobCopilot v2(QueryRewriter + QuizGenerator + AnswerJudge + InterviewCoachAgent)
+title: AGENT DESIGN - JobCopilot v2(QueryRewriter + QuizGenerator + AnswerJudge + InterviewCoachAgent + JDAnalysisAgent)
 owner: lemma42796
 last_updated: 2026-05-17
 purpose: 锁核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / Agentic RAG 编排 / 模型路由 / 版本号策略
@@ -13,13 +13,13 @@ purpose: 锁核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / Agentic R
 - **QuizGenerator**:吃 query + retrieved chunks(retrieval pipeline 输出)→ 出 N 道题(open_ended + definition 自动配比)+ reference_answer + reference_points
 - **AnswerJudge**:吃(题, reference, chunks, 用户答案)→ 输出三层 evidence(coverage / fidelity / depth)
 - **InterviewCoachAgent(M2.1)**:LangGraph session root orchestrator,串起检索 → 出题 → 等答 → 评分 → 纠偏循环 → 总结;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不是多 Agent 数量
-- **JdParser / JdAggregator(M2.5)** + **ResumeAdvisor(M3)**:JD / 简历相关
+- **JdParser / JdAggregator / JDAnalysisAgent(M2.5)**:JD Intelligence 生产力主线,自动编排 OCR / 解析 / 聚合 / 去重 / 频次重算 / 学习路径 / 报告保存
 
 # 2. 通用约定
 
 ## 2.1 模型 + thinking 模式(按 agent 决定)
 
-**所有 LLM 调用走 qwen3.6-flash**(Quiz / Judge / 截图 OCR / JD 解析 / 简历诊断 — qwen3.6 系列 plus/flash/35b-a3b 整体是视觉模型,文本和图像任务共用同一个 model id)。
+**所有 LLM 调用走 qwen3.6-flash**(Quiz / Judge / 截图 OCR / JD 解析 / JD 聚合 — qwen3.6 系列 plus/flash/35b-a3b 整体是视觉模型,文本和图像任务共用同一个 model id)。
 
 **thinking 模式按 agent 决定**(默认 off):
 
@@ -33,20 +33,20 @@ purpose: 锁核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / Agentic R
 | JdAggregator(同义合并 + 频次)| **off** | MVP 先关;dogfood 后看 kappa 决定要不要开 |
 | 学习路径生成 | **off** | 模板化输出 |
 | 截图 OCR(Qwen 多模态)| **off** | 纯文本提取 |
-| ResumeAdvisor(简历诊断)| **on** | 综合 JD 通用要求 + 简历段落判断 |
 | InterviewCoachAgent(M2.1 编排决策)| **on** | 纠偏分支 / 下一步决策需要 reasoning;不参与出题事实生成 |
+| JDAnalysisAgent(M2.5 编排决策)| **off** | 主体是 deterministic harness;LLM 只在解析 / 合并 / 学习路径节点局部工作 |
 | Embedder(text-embedding-v4)| N/A | 不是聊天模型 |
 
 **默认 off 的代价收益**:thinking 输出的 reasoning_tokens 计入 output token 计费,关掉省成本和延迟。需要 reasoning 的 agent 显式开;粗粒度调度(关 thinking 跑完 dogfood,kappa 不达标再考虑开)是 OK 的。
 
-**v1 LESSONS §7.1 自评偏差不适用 v2**:v1 教训说的是"Judge LLM 评 Drafter LLM 写的简历,同模型自评偏高 5-10pp"。v2 场景里 **评委是 LLM、被评者是人类用户的答题文本(笔记主线)或人类简历(求职流)** — 不存在 LLM 评 LLM 的自评关系。Cohen's kappa 守门照常,但意义是"Judge 输出可靠性",不是"防自评"。
+**v1 LESSONS §7.1 自评偏差不适用 v2**:v1 教训说的是"Judge LLM 评 Drafter LLM 写的简历,同模型自评偏高 5-10pp"。v2 保留的评测场景里 **评委是 LLM、被评者是人类用户的答题文本** — 不存在 LLM 评 LLM 的自评关系。Cohen's kappa 守门照常,但意义是"Judge 输出可靠性",不是"防自评"。
 
 ## 2.2 Temperature
 
 OpenAI 兼容接口标准支持 `temperature` 参数(可直接传)。各 agent 默认值:
 
 - **QueryRewriter** / **QuizGenerator** / **JdParser** / **JdAggregator**:`0.3`(降随机性,要稳定结构)
-- **AnswerJudge** / **ResumeAdvisor**:`0.2`(评分 / 诊断要可复现)
+- **AnswerJudge**:`0.2`(评分要可复现)
 - **学习路径生成** / **截图 OCR**:`0.5`(内容生成允许少许多样性)
 
 具体值在 `apps/api/src/jobcopilot_api/agents/<agent>/agent.py` 调用处显式传 `temperature=`,**不依赖模型默认**(模型默认值跟思考 / 非思考模式联动,易踩坑)。
@@ -775,86 +775,78 @@ LLM prompt 要点:
 - 频次 Python 重算(LLM 给的频次字段忽略)
 - 落 jd_analyses 表 + emit SSE result
 
-# 7. ResumeAdvisor(简历诊断,M3)
+# 7. JDAnalysisAgent(M2.5 harness)
 
-诊断 JD 通用要求 vs 用户简历的覆盖度 + 给出"该补什么主题"建议。**两方锚点严格,永不输出改写文案**。
+JDAnalysisAgent 是后续唯一生产力主线。目标不是再加一个聊天 prompt,而是让 LLM 被固定 harness 驱动,像 Codex / Claude Code 那样持续调用工具完成一个可交付任务:读一批 JD → 结构化解析 → 聚合岗位要求 → 去重并重算频次 → 对照笔记 → 生成学习路径 → 保存报告。
 
 ## 7.1 输入 / 输出
 
 ```python
 @dataclass
-class ResumeAdvisorInput:
-    requirements: list[Requirement]   # 来自 jd_analyses.aggregated_requirements
-    resume_chunks: list[ResumeChunk]  # 来自 resumes.parsed_chunks
+class JDAnalysisInput:
+    scope: JDSelectionScope          # all / recent_n / title_query
+    include_note_match: bool = True
+    max_jds: int = 200
 
 @dataclass
-class ResumeAdvisorOutput:
-    suggestions: list[ResumeSuggestion]  # schema 见 3-DATA_MODEL §6.10
+class JDAnalysisOutput:
+    analysis_id: int
+    requirement_map: list[CanonicalRequirement]
+    frequency_summary: list[RequirementFrequency]
+    learning_path_markdown: str
+    quiz_topic_candidates: list[str]
+    note_match_summary: list[NoteMatch]
+    evidence_jd_ids: list[int]
 ```
 
-## 7.2 SYSTEM prompt(`resume_advisor` v1.0,要点)
+## 7.2 工具序列
+
+| Tool | 输入 | 输出 | 失败处理 |
+|------|------|------|----------|
+| `load_jds(scope)` | 用户选定范围 | JD 原文 + parsed_payload 快照 | 0 条直接返回可解释错误 |
+| `ocr_if_needed(jd)` | 截图 JD | text | OCR 失败标记该条不可解析,不中断整批 |
+| `parse_jd(jd)` | JD text | responsibilities / hard_skills / soft_skills / business_domains | schema 失败重试一次,仍失败标 invalid |
+| `aggregate_requirements(parsed_jds)` | parsed_payload list | raw requirement groups | 分批 map,单批失败可重跑 |
+| `dedupe_requirements(groups)` | raw groups | canonical requirements | LLM 只做同义合并,频次不信 LLM |
+| `recompute_frequency(canonicals)` | canonical + supporting_jd_ids | frequency | Python SSoT |
+| `match_notes(requirements)` | canonical requirements | note heading / chunk 粗匹配 | 可选,失败不阻塞报告 |
+| `generate_learning_path(requirements)` | 排序后的 canonical requirements | markdown + quiz topics | 禁止编具体课程 / 资源 |
+| `write_report(output)` | 结构化结果 | `jd_analyses` 快照 | 写失败整体失败,防报告丢失 |
+
+## 7.3 编排原则
+
+- **LLM 不自由规划**:节点顺序由程序固定;LLM 只在 OCR / 解析 / 同义合并 / markdown 生成这些局部任务里工作。
+- **频次由 Python 重算**:canonical 在多少条 JD 里至少出现一次是事实计算,不是语言模型判断。
+- **证据必须可回看**:每个 canonical requirement 至少带 `supporting_jd_ids`;报告里能点回原 JD。
+- **失败可降级**:少数 JD 解析失败不应拖死整批;最终报告要列出 invalid / skipped 条目。
+- **产出可执行**:学习路径只按频次和已有笔记覆盖状态排序,不编外部课程名;quiz topic 候选用于进入已落地的主题类 RAG 面试流。
+
+## 7.4 Harness Engineering 标准
+
+JDAnalysisAgent 的高级感来自可恢复、可观测、可评测的工具编排,不是 Agent 名字数量:
 
 ```
-你是简历诊断 Agent。任务:对照 JD 通用要求清单 + 用户简历段落,逐条诊断覆盖度。
-
-【硬约束】
-
-1. **永远不输出改写文案**:suggestion_topic 字段只描述"该补什么主题"(如"在项目经历中补一段跟 Redis 集群相关的实战");**禁止写"建议改写为 'XXX'"**这类替用户编经验的文字
-2. **两方锚点严格**:
-   - 每条 requirement 必须给 resume_position(简历段落 §N 标号)或 null
-   - 不要凭空挂位置:简历里搜不到对应内容时填 null,不要乱挂段落
-3. **覆盖度判定**:
-   - strong:简历明确体现该要求(项目经历或技能列表里有具体描述)
-   - weak:简历提到该主题词但缺细节 / 缺实战
-   - missing:简历完全没体现
-4. **不替用户判断价值**:不要写"这个要求对你不重要"或"建议跳过";只陈述事实
-
-【输出格式】严格 JSON, schema 见 3-DATA_MODEL §6.10
+load_jds
+→ ocr_if_needed
+→ parse_jd
+→ aggregate_requirements
+→ dedupe_requirements
+→ recompute_frequency
+→ match_notes?
+→ generate_learning_path
+→ write_report
 ```
 
-USER 模板:requirements 列表(canonical_text + frequency + raw_phrases)+ resume parsed_chunks 列表(position + type + content)逐项编号传入。
-
-## 7.3 service 层后处理(锚点校验)
-
-```python
-for s in suggestions:
-    if s.req_id and s.resume_position:
-        s.tag = "anchored"
-    else:
-        s.tag = "unanchored"
-        # unanchored 的 suggestion_topic 强制清空(LLM 没锚点还给建议=废话)
-        if s.tag == "unanchored":
-            s.suggestion_topic = None
-```
-
-**硬性 prompt 漏洞检测**(防 LLM 越界写文案):
-
-```python
-FORBIDDEN_PATTERNS = [
-    r'建议改写为',
-    r'可以这样写[::]',
-    r'^\s*"[^"]+"\s*$',   # 整段被引号包裹的"文案"
-    # ... dogfood 中持续累积
-]
-for s in suggestions:
-    if s.suggestion_topic and any(re.search(p, s.suggestion_topic) for p in FORBIDDEN_PATTERNS):
-        # 模式越界 → 强制 retry Judge 一次,prompt 加更狠的反向警告
-        # 仍越界 → 把 suggestion_topic 截断到第一个换行,trace 打 warning
-        ...
-```
-
-## 7.4 anchored ratio 守门(M3 DoD)
-
-`anchored_count / (anchored_count + unanchored_count) ≥ 0.7` — 不达标说明 prompt / chunker 有问题(LLM 找不到 resume_position 锚点的比例过高),触发 prompt 改版。
+Langfuse trace 根节点按 `jd_analysis_id` 聚合;每个节点记录输入条数、失败条数、token / cost、cache 命中、输出 schema 校验结果。评测用 `jd_aggregator` suite 守同义合并 F1 和频次 MAE,不再新增简历诊断类 suite。
 
 # 8. M2.1:InterviewCoachAgent(Agentic RAG 编排)
 
 M2.1 把 M2 的 RAG 出题闭环升级成 **Agentic RAG 面试教练**。设计目标不是堆多个 Agent,而是让一次 session 具备:
 
 - **状态**:跨多题 / 多轮纠偏保存上下文
-- **工具**:可查笔记、查 source chunks、记录 session、后续接入 knowledge_gap
+- **工具**:可查笔记、查 source chunks、记录 session,并可消费 JD Intelligence 报告里的 quiz topic 候选
 - **分支**:根据 Coverage / Fidelity / Depth evidence 决定提示哪里答不好、继续补答或进入下一题
-- **记忆**:M3 接入 SR 后把薄弱 heading_path 写入长期弱点
+- **记忆**:只做 session 级回放与 `_recall/{session_id}.md` 沉淀;不做长期弱点 / SR 队列
 - **评测**:流程型样本可复现追问 / 不追问 / fabricated / 恢复
 - **可恢复**:用户退出后能从 `wait_user_answer` 继续
 
@@ -944,7 +936,7 @@ retrieve_context
 | `lookup_claim_in_notes(claim)` | Judge 标 fabricated 前验证 | 必做(复用 §4.7) |
 | `get_source_chunks(question_id)` | 展开题目引用,供追问 / UI 对照 | 必做 |
 | `record_session_summary(session_id)` | 写 `notes/_recall/{session_id}.md` | 已接;`finish_session` 写本地 `_recall/{session_id}.md`,DB 仍保存逻辑 `recall_md_path`,旧 session 可回退读 `agent_state.final_summary.markdown` |
-| `update_knowledge_gap(...)` | 写弱点与 SR 队列 | M3 接入,M2.1 只留接口 |
+| `write_quiz_topic_candidates(...)` | 接收 JD Intelligence 报告里的练习主题候选 | M2.5 接入,不写长期弱点 / SR 队列 |
 
 工具不是给 LLM 任意调用的开放工具市场,每个 tool 都对应产品闭环里的明确动作。
 
@@ -1057,7 +1049,7 @@ Context Cache / prompt caching 只用于降低重复长前缀成本,不是会话
 | §8.2 Prompt 是产品代码 | 没版本号 → 无法回退 / ablation | §2.3 prompt 落 `prompt_versions` 表,改一次 bump version,questions / session_answers 留旧 version 字段 |
 | §8.3 信任输入差异化 | 一刀切 retrieval | QuizGenerator 吃节点 prefix 全量 chunks(完整性);AnswerJudge 只吃 source_chunk_ids 那批(相关性聚焦) |
 | §8.4 动态 user message 是权威指令位 | 鼓励性文案 = 命令 | SYSTEM 写硬约束,user message 只放任务数据(chunks / 题 / 用户答),不放 hint |
-| §1.2 Drafter 镜像 JD | 把候选人没有的技能抄进简历 | ResumeAdvisor §7.2 硬约束 #1 + service 层 FORBIDDEN_PATTERNS 拦截"建议改写为 X"句式 |
+| §1.2 Drafter 镜像 JD | 把候选人没有的技能抄进简历 | 后续简历链路全部砍掉;JDAnalysisAgent 只输出岗位要求地图 / 学习路径 / quiz topic 候选,不生成简历文案 |
 | §1.4 ProfileParser description 幻觉 | 从 bullets[0] 改写复述 | JdParser §5.2 硬约束 #1:只抽 JD 文本明确出现的内容,不"行业常识"补全 |
 | §5.1 JDParser OR 误抽 AND | "熟悉 X 或 Y" 误抽成"X+Y 合一" | JdParser §5.2 硬约束 #4 显式警告 |
 | §5.3-5.4 JDParser 杂项污染 | 平台标签 / IDE / 学术名混入 hard_skills | JdParser §5.2 硬约束 #5 显式警告 |
@@ -1072,9 +1064,9 @@ Context Cache / prompt caching 只用于降低重复长前缀成本,不是会话
 | QuizGenerator 输入 | **query + retrieved chunks**(含 heading_path / note_title 元数据);M2 出题入口由"节点点击"改为"聊天框 query" | 见 §3.1 + 2-TECH §5.2 数据流 |
 | QueryRewriter | M2 retrieval pipeline 第一段;扩 ≤5 项,首项必为原 query;失败回退原 query 不阻塞 | 见 §2.7 |
 | Reranker | cross-encoder(本地 / 百炼 reranker 接口),非 LLM 调用,不进 prompt_versions | 见 §2.7.5 + PRD Q-07 |
-| query 形态 | M2 仅主题类;M3 加岗位类(三源融合)+ 空 query(SR 系统自选) | 见 PRD §5.2 + 7-ROADMAP M3 |
+| query 形态 | M2 仅主题类;岗位类三源出题与空 query 系统自选已砍掉 | JD 分析报告只产出 quiz topic 候选,再进入主题类 RAG 面试流 |
 | Agent 编排深度 | M2.1 上 `InterviewCoachAgent` 状态机;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不做泛化多 Agent 互聊 | 见 §8 |
-| 简历存储 | 单条记录(全库一行 resumes),无"简历库 / 多份切换";岗位类 query 拼"这一份 + 选定 JD 子集" | 一个人就一份简历;PRD §6 锁定 |
+| 后续主线 | 只做 JDAnalysisAgent | LLM 被 harness 驱动完成 JD 分析任务;不做 SR / 弱点 dashboard / 简历诊断 |
 | M2.1 单输入框 | 前端只有一个发送按钮;后端 `turn_type=auto` 分流初答 / 补答 / 追问教练 | UX 简化不改变状态边界;追问教练不进入 `user_answer` 评分 |
 | 多轮纠偏触发(M2.1) | `coverage_score < 60` / `fabricated_ratio > 0.3` / depth 缺维度 任一触发,进入 remediation loop | 不设单题固定 1 轮上限;靠达标、用户跳过、无明显提升、偏题、token budget 等条件退出 |
 | 多轮纠偏退出(M2.1) | `judge_score_history` 持续写入 `remediation_state`;无明显提升和 token budget 都要落 `exit_reason` | 退出是状态机策略,不是 LLM 自由决定 |
@@ -1099,10 +1091,9 @@ Context Cache / prompt caching 只用于降低重复长前缀成本,不是会话
 | thinking 默认 off | 按 agent 显式开 | §2.1 决策表;省成本和延迟 |
 | Temperature 显式传 | 各 agent 调用处显式传 0.2-0.5 | 不依赖模型默认值(易踩坑) |
 | JD 解析时机 | **上传即解析**(M2.5 US-15) | parsed_payload 持久化,后续一键分析 reduce 复用 |
-| JD 一键分析 | 三阶段 hierarchical reduce(分批 → 二次 merge → Python 重算频次) | 单次上限 200 条;M3+ 才考虑跨批增量 |
+| JD 一键分析 | 三阶段 hierarchical reduce(分批 → 二次 merge → Python 重算频次) | 单次上限 200 条;跨批跨时间增量聚合不进入后续计划 |
 | 频次重算位置 | Python(SSoT)| LLM 不算 — 同 §4.5 算分原则 |
-| 简历诊断锚点 | 两方严格(req_id + resume_position 双非空 = anchored)| anchored ratio ≥ 0.7 守门 |
-| 简历改写文案 | **永不输出**(prompt 硬约束 + service 层 forbidden_patterns 拦截) | 直接撞 v1 失败模式;只描述"该补什么主题" |
+| 简历功能 | **全部砍掉** | 不上传、不诊断、不改写、不参与出题;避免回到 v1 失败模式 |
 
 ---
 

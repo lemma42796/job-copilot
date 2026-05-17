@@ -375,15 +375,15 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 - **教训**:**不要先入为主把"批量数据处理"等同于"batch 上传"**。先问清楚用户行为(一次性 / 累积),再选数据模型 — 累积型资产对应"我的 X 库 + 一键 Y" 的工作流,比 batch 模型更符合用户真实使用 LLM 工具的方式
 - **关联**:LLM 官网做不到累积型资产管理(单 session 用完即弃),这是本产品 vs LLM 官网差异化的痛点 C(见 PRD §3.2)
 
-## 8.10 简历 / JD 类输出绝不替写文案(v2 设计阶段沉淀)
+## 8.10 简历 / JD 类输出绝不替写文案(v2 设计阶段沉淀,简历链路已废弃)
 
 - **背景**:v1 W8 实测发现"JD 同质化导致定制简历建议价值低" — 根因是 LLM 倾向于编经验("建议补充 Redis 项目经历"但用户没做过)
-- **v2 修法**:ResumeAdvisor 输出 schema 显式拆 `diagnosis`(陈述事实 — 简历缺什么)+ `suggestion_topic`(只描述"该补什么主题");**禁止替写文案**
+- **v2 修法(已废弃实现方案)**:曾计划让 ResumeAdvisor 输出 schema 显式拆 `diagnosis`(陈述事实 — 简历缺什么)+ `suggestion_topic`(只描述"该补什么主题");后续路线已砍掉全部简历链路,该方案不再实现。
 - **多层防御**:
   1. **Prompt 硬约束**:SYSTEM 显式禁"建议改写为 XXX"句式
   2. **schema 字段命名引导**:`suggestion_topic`(主题)而非 `suggestion_text`(文案)
   3. **service 层 forbidden_pattern 拦截**:正则检测越界句式,触发即 retry + trace warning
-  4. **评测 dataset 红队样本**:专门测 prompt injection 场景,触发 = M3 DoD 不通过
+  4. **评测 dataset 红队样本**:若未来任何功能试图输出用户经历文案,必须先有红队样本守门
 - **教训**:**对抗 LLM 默认行为(替写)需要多层防御,单靠 prompt 不够**。schema / forbidden_pattern / dataset 红队样本三层叠加才能稳住。**任何"看着像专业建议但没事实依据"的输出对用户都是负价值** — 用户分不清是真建议还是 hallucinate
 
 ## 8.11 事实核查类问题三件证据齐再下结论 ⭐(v1 §1.1 引申)
@@ -500,7 +500,7 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 - **AnswerJudge 评分**:LLM 只给 evidence 和 label,总分由 Python 算;重点记录 fabricated 锁顶、证据不足、评分漂移、judge prompt 与 deterministic 权重的边界。
 - **InterviewCoachAgent 状态机**:不要讲"多 Agent 数量",要讲状态、工具、分支、恢复、追问依据、wait_user_answer 人类暂停点;重点记录追问什么时候继续、什么时候总结、什么时候承认证据不足。
 - **Tool use 边界**:tool 不是给 LLM 自由发挥,而是在最容易错的判定上提供验证手段;重点记录强制调工具、调几次、调不到怎么办、如何防循环。
-- **多源岗位类 query**:M3 会融合笔记 RAG、单条简历、JD 子集;重点记录三源 evidence 对齐、缺源降级、不能编造简历/JD 内容。
+- **JDAnalysisAgent 工具编排**:重点记录 load_jds / OCR / parse_jd / aggregate / dedupe / Python 频次重算 / match_notes / write_report 这些节点哪里失败、如何恢复、报告怎样真正节省人工整理。
 - **zero-hit / insufficient evidence**:"答不上来"是能力,不是失败;重点记录怎样用 core entity、anchor、source diversity 和 score 组合守住边界。
 
 ---

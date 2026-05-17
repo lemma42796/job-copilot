@@ -7,7 +7,7 @@ purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、
 
 # 1. 一句话总览
 
-六套评测,每套对应一个 DoD:
+五套评测,每套对应一个 DoD:
 
 | Suite | M? DoD | 守什么 | 阈值 |
 |-------|--------|-------|------|
@@ -16,7 +16,6 @@ purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、
 | `answer_judge` | M2 | 三层 label 跟人工标注一致性 | Cohen's `κ ≥ 0.7`(三层独立) |
 | `interview_coach` | M2.1 | Agent 状态机是否走到人工期望分支 + 多轮纠偏是否正确退出 | branch accuracy ≥ 0.8 / recovery + context + hallucination case 全过 |
 | `jd_aggregator` | M2.5 | 同义合并准确 + 频次重算正确 | F1 ≥ 0.85 / freq MAE ≤ 0.03 |
-| `resume_advisor` | M3 | anchored ratio + 锚点正确率 + 永不替写文案 | anchored ≥ 0.7 / forbidden 触发率 ≤ 0.05 |
 
 不达标 → 改 prompt(bump version) / 分支阈值 / 状态机逻辑 + 重跑全套,**不切模型**(沿用 5-AGENT_DESIGN §2.1)。
 
@@ -39,10 +38,7 @@ evals/
 │   ├── interview_coach/
 │   │   ├── dataset.jsonl
 │   │   └── README.md
-│   ├── jd_aggregator/
-│   │   ├── dataset.jsonl
-│   │   └── README.md
-│   └── resume_advisor/
+│   └── jd_aggregator/
 │       ├── dataset.jsonl
 │       └── README.md
 ├── reports/                       # 跑评测产物(.gitignored)
@@ -60,8 +56,7 @@ apps/api/scripts/
 ├── eval_quiz_generator.py
 ├── eval_answer_judge.py
 ├── eval_interview_coach.py
-├── eval_jd_aggregator.py
-└── eval_resume_advisor.py
+└── eval_jd_aggregator.py
 ```
 
 ## 2.2 dataset.jsonl 通用约定
@@ -121,7 +116,7 @@ Baseline 跟主路对照是 harness engineering 标准动作 — 没对照就不
 **例外**:**功能型计数**仍用篇数(产品规格 ≠ 负载指标),例如:
 - 一次面试 session 出 5 题(题数)
 - 一键分析 ≤ 200 条 JD(条数)
-- 简历单条记录(份数)
+- 一次 JD 分析 ≤ 200 条 JD(条数)
 
 这类是产品契约,不是工程负载,继续用篇数 / 条数 / 题数表达。
 
@@ -412,62 +407,11 @@ python -m jobcopilot_api.scripts.eval_jd_aggregator \
 
 **不达标处理**:类似 §3.5,先看 per_fixture trace(Langfuse 按 fixture_id 过滤);改 prompt 重跑;调 Stage 1 / Stage 2 拆 batch 大小。
 
-# 6. `resume_advisor` suite(M3 DoD)
+# 6. 已砍掉的 suite
 
-## 6.1 评什么
+`resume_advisor` suite 不再规划。后续不做简历上传 / 简历诊断 / 简历改写 / 简历参与出题,因此不再维护 anchored ratio、resume_position 锚点或 forbidden resume copy 指标。
 
-简历诊断难有"绝对正确的标准答案"(每条建议是否合理是主观的),所以**不强求 kappa**,只测**结构指标**:
-
-| 指标 | 定义 | 阈值 |
-|------|------|----|
-| **anchored ratio** | `anchored_count / (anchored_count + unanchored_count)` | ≥ 0.7 |
-| **forbidden_pattern 触发率** | service 层检测到 LLM 输出"建议改写为 X"等违规句式的比例 | ≤ 0.05 |
-| **resume_position 锚点正确率** | LLM 给的 resume_position vs 人工标(按段落 §N 比对一致) | ≥ 0.8 |
-| **诊断陈述合理度**(主观) | 作者人工审 30 条 fixture 的 diagnosis 文本,合理打 1 不合理打 0 | ≥ 0.8 |
-
-## 6.2 dataset.jsonl schema
-
-```json
-{
-  "id": "ra001",
-  "source": "dogfood_2026_06",
-  "input": {
-    "requirements": [...]   // 来自一份真实 jd_analyses 报告(脱敏后)
-    "resume_chunks": [...]  // 真实简历段落(作者本人或脱敏样本)
-  },
-  "ground_truth": {
-    "anchored_expected_ratio": 0.75,    // 这份输入预期 anchored 比例 ~75%
-    "key_anchors": [
-      {"req_id": "req_1", "expected_resume_position": "§3"},
-      {"req_id": "req_5", "expected_resume_position": "§4 项目 A"}
-    ],
-    "forbidden_must_not_appear": true   // 这条 fixture 不应触发任何 forbidden_pattern
-  },
-  "notes": "测高频要求锚到正确简历段落;反证 LLM 不替写文案"
-}
-```
-
-## 6.3 数据集容量
-
-**MVP 起步 15 条**(简历样本难收集,人工审每条工作量大):
-
-| # | 场景 |
-|---|------|
-| 1-5 | 简历跟 JD 强匹配(预期 anchored ratio > 0.8)|
-| 6-10 | 简历跟 JD 弱匹配(预期 anchored ratio 0.4-0.6;unanchored 主要是 missing)|
-| 11-13 | 故意省略简历段落(测 LLM 不要乱挂位置)|
-| 14-15 | 红队样本:用 prompt injection 试图让 LLM 输出 "建议改写为 'XXX'"(测 forbidden_pattern 拦截)|
-
-## 6.4 跑法 + 阈值
-
-```
-python -m jobcopilot_api.scripts.eval_resume_advisor \
-    --suite evals/suites/resume_advisor \
-    --prompt-version v1.0 \
-    --output evals/reports/2026-05-08_resume_advisor_v1.0.json
-```
-
-**dogfood 自查硬约束**:跑出任意一条触发 forbidden_pattern 的 fixture → **prompt 漏洞,M3 DoD 不通过**(必须修 prompt + 加 forbidden_pattern + 重跑直到 0 触发)。
+这一类风险只保留为 v1 失败复盘经验:JDAnalysisAgent 只能产出岗位要求地图、学习路径和 quiz topic 候选,不能生成任何简历文案。
 
 # 7. `hybrid_search` suite(M2 补测 / M2.1 前置)
 
@@ -628,9 +572,9 @@ MVP 起步 50 条主题 query,总 fixture 笔记 ≥ 10 万字。
 ```json
 {
   "case_id": "hs_note_001",
-  "query": "M2 是否支持岗位类 query？",
+  "query": "为什么砍掉岗位类三源出题？",
   "predicted_zero_hit": false,
-  "expanded_queries": ["M2 是否支持岗位类 query？", "..."],
+  "expanded_queries": ["为什么砍掉岗位类三源出题？", "..."],
   "candidate_chunk_ids": [2212, 2333, 434],
   "rerank_chunk_ids": [2212, 434],
   "rerank_movements": [
@@ -857,7 +801,7 @@ MVP **单人主标注 + 抽样复核**,不上双人 inter-rater agreement。理�
 - hybrid_search 的 ground_truth / unsafe boundary 由 Codex 主标注,用户抽样复核与争议裁决,降低人工负担
 - quiz_generator / answer_judge 等主观语义标注仍以作者 dogfood 复核为准,标注语义边界跟产品方向高度对齐
 - 30-50 条样本 × 2 人 = 60-100 人时,投入产出比低
-- M3 SaaS 化后再考虑双人交叉(M4+)
+- 单用户 dogfood 稳定后再考虑是否需要双人交叉;当前不进入后续主线
 
 风险:单人 / Codex 标注偏差进 dataset。**对冲手段**:每条 fixture 必须填 `notes` 字段说"这条想测什么";Codex 低置信样本标 `needs_review: true`;用户抽查失败样本与争议样本。
 
@@ -902,8 +846,7 @@ MVP **单人主标注 + 抽样复核**,不上双人 inter-rater agreement。理�
 | Tool use 评测路径 | **不禁** + 跑 baseline(tool=off)对比 | 没 baseline 不知道工具有没有真实价值 |
 | Trace 集成 | 评测 LLM 调用全进 Langfuse,tag `eval_run_id` + `fixture_id` | 不达标 5 分钟定位,vs 翻日志半小时 |
 | jd_aggregator 不算 kappa | 用 F1(集合)+ MAE(频次)指标 | canonical 不是 categorical label,kappa 不适用 |
-| resume_advisor 不强求 kappa | anchored ratio + forbidden 触发率 + 主观合理度 | 简历建议主观度高,结构指标 + 自查更稳 |
-| forbidden_pattern 触发 | M3 DoD 硬卡(0 容忍)| 触发即 prompt 漏洞;修 prompt + 加 pattern + 重跑直到 0 触发 |
+| 简历相关 suite | 全部砍掉 | 不上传、不诊断、不改写、不参与出题 |
 | dogfood 笔记 fixture | hybrid_search suite 强依赖固定笔记库(notes_fixture/ 或 notes_fixture.zip)| chunk_id 稳定才能比;chunker 改动后用 heading_path + anchors 复核 |
 | 跑评测 CLI | `eval_<suite>.py --suite <dir> --prompt-version <v> --output <path>` | 各 suite 统一 |
 

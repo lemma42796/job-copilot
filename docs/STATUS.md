@@ -19,11 +19,13 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 # 当前快照
 
-当前阶段:**M2.5 — JD 累积上传 + 一键分析 + 学习路径**。
+当前阶段:**M2.5 — JD Intelligence Agent:自动读 JD → 岗位要求地图 → 学习路径 → quiz topics**。
 
 最新状态:
 
 - **M2.1 已由用户确认收口**:收口 tag 为 `v0.5-m2.1-end`;下一阶段切到 M2.5。
+- **后续路线已收束**:M2.5 之后不再规划 SR / 弱点 dashboard / 岗位类三源出题 / 简历诊断 / 简历上传等分支;唯一生产力主线改为 `JDAnalysisAgent` 自动编排 OCR / 解析 / 聚合 / 去重 / 频次重算 / 笔记粗匹配 / 学习路径 / 报告保存。
+- **本轮 pivot 文档已同步**:`docs/1-PRD.md` / `docs/2-TECH_DESIGN.md` / `docs/3-DATA_MODEL.md` / `docs/4-API_SPEC.md` / `docs/5-AGENT_DESIGN.md` / `docs/6-EVAL_PLAN.md` / `docs/7-ROADMAP.md` / `docs/8-ENGINEERING.md` / `docs/9-LESSONS.md` 均已从旧后续路线改为 JD Intelligence Agent;新会话从本文档和 Roadmap 接续即可。
 - 本轮已接 `record_session_summary`:新增 `recall_service`, `finish_session` 会把 `agent_state.final_summary.markdown` 原子写入本地笔记根目录 `_recall/{session_id}.md`,DB 仍保存逻辑路径 `notes/_recall/{session_id}.md`;`GET /api/quiz/sessions/{id}/recall` 优先读落地文件,旧 session 文件缺失时回退 `agent_state.final_summary.markdown`。
 - 本轮新增 `JOBCOPILOT_NOTES_FS_ROOT`:用于配置逻辑 `notes/` 对应的本地 filesystem root;留空时 dev 环境优先用 `test-notes/llm-notes`,否则用项目下 `notes/`。已把 fallback `notes/` 加入 `.gitignore`,避免本地沉淀误入仓库。
 - 本轮同步正式文档:`docs/4-API_SPEC.md` / `docs/5-AGENT_DESIGN.md` / `docs/6-EVAL_PLAN.md` 已记录 `turn_type=auto` 实际分流、`judge_score_history` 无提升退出、`context_compacted / prior_turn_summary / token_budget`、flow smoke 10/10 口径,并把 `record_session_summary` 标为已接。
@@ -110,8 +112,8 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 | M1 | 笔记入库 + chunker + 树形导航 + Langfuse 起步 | ✅ `v0.3-m1-end` |
 | M2 | 主题 query → 全库 RAG → 出题 + Judge 三层评分 | ✅ 待 tag `v0.4-m2-end` |
 | M2.1 | `InterviewCoachAgent`:Agentic RAG 面试状态机 + 多轮纠偏分支 | ✅ `v0.5-m2.1-end` |
-| M2.5 | JD 累积上传 + 一键分析 + 学习路径 | ⏳ 当前 |
-| M3 | 弱点跟踪 + SR + 岗位类三源出题 + 简历诊断 | ⏳ |
+| M2.5 | JD Intelligence Agent:自动读 JD → 岗位要求地图 → 学习路径 → quiz topics | ⏳ 当前 |
+| M3 | 弱点跟踪 + SR + 岗位类三源出题 + 简历诊断 | 🪓 已砍,不再规划 |
 
 # 当前已落地
 
@@ -127,7 +129,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **QuizGenerator v1.3 引用收口已落地**:LLM 输出从多套引用字段收敛为 reference answer citations + `scoring_points[].supporting_chunk_ids`;`quiz_service` 统一派生 `reference_answer_chunk_ids / evidence_chunk_ids`,降低 citation/source/reference/evidence 漂移。
 - **AnswerJudge v1.4 反馈字段已落地**:评分 LLM 一次返回三层 evidence + `coach_message`;Python 仍负责总分计算、引用映射与完整性校验,前端只展示后端反馈。
 - **/quiz 聊天式练习 UI 已落地**:题数下拉 `1/3/5`;一个主题多题用左侧分组切换;主面板用 Apple Messages 风格聊天流;单输入框自动分流补答 / 追问;评分卡折叠到教练反馈下。
-- **hybrid_search smoke 标签已升级并复核一轮**:`evals/suites/hybrid_search/dataset.note_smoke.jsonl` 覆盖 M2/M3 边界、Context Cache、reranker/query rewrite、AnswerJudge、SSE 恢复、MVCC、Outbox、epoll、provider timeout/429、zero-hit;`direct_evidence_chunk_ids` 只放可直接回答 query 的 chunk。
+- **hybrid_search smoke 标签已升级并复核一轮**:`evals/suites/hybrid_search/dataset.note_smoke.jsonl` 覆盖 M2 / M2.1 RAG 边界、已砍掉的岗位类 query 判断、Context Cache、reranker/query rewrite、AnswerJudge、SSE 恢复、MVCC、Outbox、epoll、provider timeout/429、zero-hit;`direct_evidence_chunk_ids` 只放可直接回答 query 的 chunk。
 - **hybrid_search note/chunk smoke 脚本已落地**:`apps/api/scripts/eval_hybrid_search_note_smoke.py` 只读 DB / 写本地 report + trace(`evals/reports/` gitignore),输出 top notes、top chunks、heading/anchor coverage、hard-negative intrusion、zero-hit、召回指标与成本;`--score-trace` 支持只按新标签离线重算。
 - **hybrid_search A/B 诊断开关已落地**:可单独比较 provider rerank / 纯 hybrid、rerank 输入池大小、selected topK、parent-doc on/off,用于拆分"召回 / 粗排排序 / 精排 / parent-doc"责任。
 - **hybrid_search 粗排诊断已落地**:`search_service` 暴露 diagnostics-only 路径;smoke report 可解释 direct evidence 为什么在 top20/top50 后、哪条 expanded query 贡献 hard-negative、q0 加权会让哪些 labeled chunks 上下移动。
@@ -143,7 +145,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **M2.5 第一刀:JD 单条上传 + 解析入库**。先接文本粘贴 JD → `jd_parser` 立即解析 → 落 `jds` 表,再接"我的 JD 库"最小列表。
+1. **M2.5 第一刀:JDAnalysisAgent 骨架 + JD 单条上传解析入库**。先接文本粘贴 JD → `jd_parser` 立即解析 → 落 `jds` 表,并预留 `load_jds / parse_jd / aggregate_requirements / dedupe_requirements / generate_learning_path / write_report` 的 harness 节点。
 
 备选:
 
@@ -158,14 +160,15 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 | 项 | 决策 |
 |----|------|
 | 出题入口 | 只走聊天框 query;笔记面板只查看 / 编辑 / 上传 / 导航,不触发出题。 |
-| M2 query | 仅主题类 query;岗位类与空 query 放 M3。 |
+| M2 query | 仅主题类 query;岗位类三源出题与空 query 系统自选已砍掉。 |
 | RAG pipeline | `query_rewriter → hybrid + RRF → reranker(top50 challenger) → post-rerank governance/blend → dynamic clean-context selection → evidence verifier` + 0 命中守门;parent-doc 默认关闭。 |
 | 0 命中 | 命中 chunks < 3 起步直接报"笔记里没这主题",不兜底让 LLM 编。 |
 | Reranker | 百炼 `qwen3-rerank`(`/compatible-api/v1/reranks`);本地 fallback 暂不做。 |
 | M2.1 Agent | `InterviewCoachAgent` 状态机;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不是多 Agent 数量。 |
 | M2.1 纠偏 | 不设单题固定 1 轮上限;答不好进入 remediation loop,靠达标 / 用户跳过 / 无明显提升 / 偏题 / token budget 退出。 |
-| 简历 | 全库单条记录,不做简历库 / 多份切换。 |
-| 岗位类 query | M3 三源融合:笔记 RAG + 那一份简历 + 用户选定 JD 子集职责/要求。 |
+| 后续主线 | 只做 `JDAnalysisAgent`;LLM 被 harness 驱动去自动读 JD、聚合要求、生成学习路径和 quiz topic 候选。 |
+| 简历 | 全部砍掉:不上传、不诊断、不改写、不参与出题。 |
+| 岗位类 query | 全部砍掉:不做笔记 + 简历 + JD 三源融合;JD 分析只产出 quiz topic 候选。 |
 | 评分 | LLM-as-Judge 给 evidence;总分权重在 Python,不让 LLM 算。 |
 | 测试 / CI | 用户手动跑验证;GitHub Actions 只手动触发。 |
 
@@ -179,8 +182,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **[来自 M1] embeddings / rerank 不自动 instrument**:Langfuse 需要手动 `generation()` 包成功 / 失败路径。
 - **[来自 M1] 评测指标挂到能力首次真实消费的里程碑**:例如 hybrid recall 挂 M2,不挂 M1 service 就绪阶段。
 - **[来自 M2] 聊天框 query 是唯一出题入口**:不要回退到节点点击出题。
-- **[来自 M2] 简历单条记录**:岗位类 query 只拼当前简历 + JD 子集,不做多简历 UX。
-- **[来自 M2] 岗位类 query 必须三源融合**:不要把岗位类降级成普通主题类 query。
+- **[来自 M2.5] 后续功能收束到 JD Intelligence Agent**:不再做 SR、弱点 dashboard、岗位类三源出题、简历上传 / 诊断 / 改写;生产力来自 LLM 被 harness 自动编排工具完成 JD 分析任务。
 - **[来自 M2] Context Cache 不是会话记忆**:请求仍需带必要上下文;cache 只优化重复公共前缀的 provider 侧计算 / 计费。
 - **[来自 M2] Context Cache 当前默认关闭**:一次性答题流不依赖 5 分钟 TTL;等 M2.1 多轮面试讨论再开启显式 cache。
 - **[来自 M2] 本地开发优先 Docker Postgres + 本机 API**:api 容器需额外处理 `DASHSCOPE_API_KEY` 映射,日常避免走全 compose。
@@ -222,7 +224,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 # 历史定位
 
-JobCopilot v1 是"AI 改简历 + 投递追踪",已用 tag `v0.1-jobcopilot-v1` 留档。v2 转向"JD 找方向 + 笔记 RAG 面试陪练 + 简历诊断"。v1 失败复盘与工程教训保留在 `docs/9-LESSONS.md`。
+JobCopilot v1 是"AI 改简历 + 投递追踪",已用 tag `v0.1-jobcopilot-v1` 留档。v2 收束为"JD Intelligence Agent + 笔记 RAG 面试陪练";简历诊断 / 改写不再进入后续路线。v1 失败复盘与工程教训保留在 `docs/9-LESSONS.md`。
 
 # 不在本文档范围
 

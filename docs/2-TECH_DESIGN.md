@@ -1,13 +1,13 @@
 ---
 title: TECH DESIGN - JobCopilot v2(架构 / 模块分层 / 数据流 / 错误处理)
 owner: lemma42796
-last_updated: 2026-05-16
+last_updated: 2026-05-17
 purpose: 锁系统架构、技术栈、模块边界、核心数据流、错误处理分层、v1 沿用 / 砍除清单
 ---
 
 # 1. 一句话总览
 
-monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind + Monaco** 前端,**LLM 走阿里云百炼 OpenAI 兼容接口 + qwen3.6-flash 多模态**(thinking 按 agent 决定),M2.1 起用 LangGraph 编排 InterviewCoachAgent 状态机与多轮纠偏循环。慢请求(出题 / 评分 / JD 一键分析 / 简历诊断)走 SSE,embedder 走后台 worker。
+monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind + Monaco** 前端,**LLM 走阿里云百炼 OpenAI 兼容接口 + qwen3.6-flash 多模态**(thinking 按 agent 决定),M2.1 起用 LangGraph 编排 InterviewCoachAgent 状态机与多轮纠偏循环,M2.5 起新增 JDAnalysisAgent 工具编排。慢请求(出题 / 评分 / JD 一键分析)走 SSE,embedder 走后台 worker。
 
 # 2. 系统架构
 
@@ -27,10 +27,10 @@ monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind
 │  │ routers/     │  │ services/    │  │ agents/            │    │
 │  │  notes       │←→│  notes_svc   │←→│  quiz_generator    │    │
 │  │  quiz        │  │  chunk_svc   │  │  answer_judge      │    │
-│  │  dashboard   │  │  quiz_svc    │  │  embedder          │    │
+│  │  jd          │  │  quiz_svc    │  │  embedder          │    │
 │  │  (SSE)       │  │  answer_svc  │  │  interview_coach   │    │
 │  └──────────────┘  │  search_svc  │  └─────────┬──────────┘    │
-│                    │  gap_svc(M3) │            │ llm/          │
+│                    │  jd_svc      │            │ llm/          │
 │                    └──────┬───────┘            ▼               │
 │                           │            ┌────────────────┐     │
 │                           │            │ DashScope SDK  │     │
@@ -73,7 +73,7 @@ monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind
 | LLM 模型 | qwen3.6-flash(多模态:文本 + 图像 + tool use 一把抓);thinking 按 agent 决定 | 详见 5-AGENT §2.1;qwen3.6 系列整体是视觉模型 |
 | LLM cache | 两层:应用层 `llm_response_cache` + 百炼 Context Cache | response cache 缓完整请求/响应;Context Cache 缓重复公共前缀、只降成本和延迟,不是会话记忆;详见 5-AGENT §2.4 |
 | Embedding | text-embedding-v4(1024 维) | 沿用 v1 |
-| Agent 编排 | M2 仍是 service 直接编排;M2.1 起上 LangGraph `InterviewCoachAgent` 状态机 + remediation loop;M3 扩 SR / 三源岗位流 | LangGraph checkpointer 序列化坑见 LESSONS §2.1;长上下文靠 context pack,不塞全量 transcript |
+| Agent 编排 | M2.1 起上 LangGraph `InterviewCoachAgent` 状态机 + remediation loop;M2.5 新增 `JDAnalysisAgent` 工具编排 | LangGraph checkpointer 序列化坑见 LESSONS §2.1;长上下文靠 context pack,不塞全量 transcript |
 | SSE | `sse-starlette.EventSourceResponse` | 沿用 v1;前端走 `web/lib/sse.ts`(永久约束 #21)|
 | 前端框架 | Next.js 14 App Router + React 18 | 沿用 v1 |
 | 前端样式 | Tailwind 自己写,无组件库 | macOS 风(PRD §9)|
@@ -96,8 +96,6 @@ apps/api/src/jobcopilot_api/
 │   ├── notes.py                    # POST/GET/PUT/DELETE /api/notes/*
 │   ├── quiz.py                     # POST /api/quiz/sessions(SSE)等
 │   ├── jd.py                       # M2.5:POST/GET /api/jds + jd-analyses(SSE)
-│   ├── resume.py                   # M3:POST/GET /api/resumes + resume-analyses(SSE)
-│   ├── dashboard.py                # M3
 │   └── health.py
 ├── services/                       # 业务逻辑层(无 LLM 调用)
 │   ├── notes_service.py            # CRUD + zip unpack
@@ -111,8 +109,7 @@ apps/api/src/jobcopilot_api/
 │   ├── interview_service.py        # M2.1:InterviewCoachAgent session 编排 / checkpoint / SSE
 │   ├── answer_service.py           # 答题落库 + 算分 + finalize session
 │   ├── jd_service.py               # M2.5:JD 上传(立即调 jd_parser)+ 一键分析编排(map-reduce + Python 重算频次)
-│   ├── resume_service.py           # M3:简历入库 + 段落 chunker
-│   └── knowledge_gap_service.py    # M3:upsert + SR 队列
+│   └── jd_report_service.py        # M2.5:报告持久化 + quiz topic 候选
 ├── agents/                         # LLM 调用层
 │   ├── embedder/                   # 沿用 v1
 │   ├── quiz_generator/
@@ -129,10 +126,6 @@ apps/api/src/jobcopilot_api/
 │   │   ├── agent.py                # 三阶段编排(batch reduce / merge / learning_path)
 │   │   ├── prompts.py
 │   │   └── frequency.py            # Python 重算频次 SSoT
-│   ├── resume_advisor/             # M3:两方锚点严格诊断
-│   │   ├── agent.py                # 包含 forbidden_pattern 后处理校验
-│   │   ├── prompts.py
-│   │   └── forbidden_patterns.py   # 替写文案漏洞检测正则集
 │   └── interview_coach/            # M2.1 LangGraph:状态机 + 工具 + 多轮纠偏分支
 ├── llm/                            # LLM 客户端(改造:DashScope SDK → OpenAI Python SDK)
 │   ├── client.py                   # LLMClient + cache + retry(走 base_url 兼容接口)
@@ -149,15 +142,12 @@ apps/api/src/jobcopilot_api/
 │   ├── note.py / note_chunk.py
 │   ├── question.py
 │   ├── quiz_session.py / session_answer.py
-│   ├── knowledge_gap.py
 │   ├── jd.py / jd_analysis.py                       # M2.5
-│   ├── resume.py / resume_analysis.py               # M3
 │   ├── prompt_version.py / llm_call.py / llm_response_cache.py  # 沿用 v1
 │   └── base.py                     # Base / IDMixin / TimestampMixin(沿用 v1)
 ├── schemas/                        # Pydantic IO 校验(REST + SSE 事件 + agent IO)
-│   ├── notes.py / quiz.py / dashboard.py
-│   ├── jd.py / resume.py
-│   ├── agents/{quiz_generator, answer_judge, interview_coach, jd_parser, jd_aggregator, resume_advisor}.py
+│   ├── notes.py / quiz.py / jd.py
+│   ├── agents/{quiz_generator, answer_judge, interview_coach, jd_parser, jd_aggregator}.py
 │   └── sse.py                      # SSE 事件 schema(详见 4-API_SPEC §2.3)
 ├── prompts/                        # Prompt 加载器(沿用 v1 LoadedPrompt)
 ├── evals/                          # 评测框架(沿用 v1)
@@ -170,7 +160,6 @@ apps/api/src/jobcopilot_api/
     ├── eval_quiz_generator.py
     ├── eval_answer_judge.py
     ├── eval_jd_aggregator.py       # M2.5
-    ├── eval_resume_advisor.py      # M3
     └── seed.py                     # dev 灌测试数据
 ```
 
@@ -183,17 +172,13 @@ apps/web/src/
 │   │   ├── page.tsx                # 树 + 编辑器双栏
 │   │   └── import/page.tsx         # 本地目录 / 单篇导入(File System Access API)
 │   ├── (quiz)/
-│   │   ├── new/page.tsx            # **聊天框输 query** + 启动 session(M3 加岗位类多源 / 空 query SR 自选)
+│   │   ├── new/page.tsx            # **聊天框输 query** + 启动 topic session
 │   │   ├── [sessionId]/page.tsx    # 答题页(笔记面板隐藏)
 │   │   └── [sessionId]/score/page.tsx   # 评分页(笔记面板恢复)
 │   ├── (jd)/                       # M2.5:JD 上传 + 我的 JD 库 + 一键分析
 │   │   ├── upload/page.tsx
 │   │   ├── library/page.tsx        # 列表 + 筛选 + 选范围一键分析按钮
 │   │   └── analyses/[id]/page.tsx  # 分析报告详情(频次表 + 学习路径 markdown)
-│   ├── (resume)/                   # M3:简历上传 + 诊断
-│   │   ├── upload/page.tsx
-│   │   └── diagnose/[id]/page.tsx  # 三方对照视图(JD 要求 / 简历段落 / 建议主题)
-│   ├── (dashboard)/page.tsx        # M3:弱点 + 今日复习
 │   └── layout.tsx
 ├── lib/
 │   ├── api.ts                      # fetch 封装 + 错误格式解析
@@ -287,9 +272,7 @@ FE → POST /api/quiz/sessions {query, count}        # query 例:"考考我多�
 
 任意阶段炸 → `error{code,detail}` + `done(ok=false)`,session 行标 abandoned_at。
 
-**M3 扩展(本文档 M2 阶段不实施,占位说明)**:
-- **岗位类 query**(US-5b):入参增 `mode='job'` + `jd_ids[]`;`retrieval_pipeline` 内多走两路并入(简历全文段落 / JD 子集职责+要求聚合),最终三源 chunks 合并喂 quiz_generator。详见 7-ROADMAP M3
-- **空 query / 系统自选**(US-5c):入参 `query` 留空 + `mode='auto'`;routers 调 `services/knowledge_gap_service.pick_next_topic()` → SR 选 heading_path → 复用主题类 pipeline
+**已砍掉的扩展**:不再做 `mode='job'` 岗位类三源出题,也不做 `mode='auto'` 空 query / SR 系统自选。JD Intelligence 报告只产出 quiz topic 候选,用户选择 topic 后复用主题类 pipeline。
 
 ## 5.3 答题草稿(同步 PUT)
 
@@ -335,13 +318,7 @@ FE → POST /api/quiz/sessions/{id}/submit
   → services/answer_service.finalize_session(session_id)
       ├─ 算 session 三层均值 + total
       ├─ UPDATE quiz_sessions SET status=submitted, scores, recall_md_path
-      ├─ 写 notes/_recall/{session_id}.md(含题 / 答 / 评 / reference)
-      └─ services/knowledge_gap_service.upsert_from_session(session_id)
-          → for each (folder_path, heading_path) hit:
-            UPSERT knowledge_gaps(attempt_count++,
-              error_count += (total < 60 ? 1 : 0),
-              last_score, last_attempt_at,
-              SR 算法更新 prev_interval_days + next_review_at)
+      └─ 写 notes/_recall/{session_id}.md(含题 / 答 / 评 / reference)
   → emit result{session_id, scores, recall_md_path}
   → emit done(ok=true)
 ```
@@ -417,32 +394,15 @@ FE 选范围 + 点"一键分析" → POST /api/jd-analyses {filter} (SSE)
 
 任意阶段炸 → emit error + done(ok=false),jd_analyses.status=failed + failure_reason 落库。
 
-## 5.8 简历诊断 SSE(M3,两方锚点严格)
+## 5.8 已砍掉的未来流
 
-```
-FE 选 JD 报告 + 简历 → POST /api/resume-analyses {jd_analysis_id, resume_id} (SSE)
-  → routers/resume.diagnose
-  → INSERT resume_analyses(status=in_progress)
-  → emit started{resource_id, jd_count, resume_chunk_count}
+以下旧占位不再实现:
 
-  → emit progress{phase=loading_inputs}
-      ├─ load jd_analyses.aggregated_requirements
-      └─ load resumes.parsed_chunks
+- 简历上传 / 简历诊断 / 简历改写 / 简历参与出题
+- 弱点跟踪 / SR / dashboard / 今日复习队列
+- 岗位类三源出题 / 项目深挖题
 
-  → emit progress{phase=diagnosing}
-      └─ agents/resume_advisor.run(requirements, resume_chunks)
-            ├─ thinking on,temperature 0.2
-            └─ Pydantic 校验 + retry ≤1
-
-  → emit progress{phase=anchor_validation}
-      └─ for each suggestion:
-            tag = anchored if (req_id and resume_position) else unanchored
-            forbidden_pattern 检测(suggestion_topic)→ 越界 trace warning + 截断
-
-  → UPDATE resume_analyses SET suggestions, anchored_count, ...
-  → emit result{analysis_id, anchored_count, unanchored_count, coverage_summary}
-  → emit done(ok=true)
-```
+M2.5 之后唯一新增生产力流是 JDAnalysisAgent:自动读 JD、聚合岗位要求、生成学习路径和 quiz topic 候选。
 
 # 6. 可观测性 / Tracing(Langfuse 自部署)
 
@@ -555,7 +515,7 @@ services:
 | `note_not_found` | 404 | services/notes_service |
 | `duplicate_folder_title` | 409 | services/notes_service |
 | `invalid_zip` | 400 | services/notes_service |
-| `query_required` | 422 | routers/quiz(M2 主题类 query 为空且非 auto 模式)|
+| `query_required` | 422 | routers/quiz(topic query 为空)|
 | `query_too_long` | 422 | routers/quiz(query 超长,例如 > 200 字符)|
 | `no_chunks_for_query` | SSE error | services/retrieval_pipeline(0 命中,守门后报"笔记里没这主题",见 PRD Q-10 阈值) |
 | `query_rewrite_failed` | trace warning(回退原 query,不抛错) | services/query_rewriter |
@@ -564,15 +524,13 @@ services:
 | `llm_call_failed` | SSE error | agents/* |
 | `session_not_in_progress` | 409 | services/answer_service |
 | `unanswered_questions` | 409 | services/answer_service |
-| `invalid_image_format` | 400 | services/jd_service / services/resume_service |
-| `image_too_large` | 413 | services/jd_service / services/resume_service(> 7MB) |
-| `ocr_failed` | SSE error | services/jd_service / services/resume_service |
+| `invalid_image_format` | 400 | services/jd_service |
+| `image_too_large` | 413 | services/jd_service(> 7MB) |
+| `ocr_failed` | SSE error | services/jd_service |
 | `jd_parse_failed` | SSE error | agents/jd_parser |
 | `jd_count_exceeds_limit` | 422 | services/jd_service(filter 命中 > 200) |
 | `jd_count_zero` | 422 | services/jd_service(filter 命中 0) |
 | `aggregator_call_failed` | SSE error | agents/jd_aggregator |
-| `resume_advisor_call_failed` | SSE error | agents/resume_advisor |
-| `forbidden_pattern_persists` | trace warning(不抛错) | service 层后处理(LLM 越界写文案) |
 
 # 8. v1 沿用清单(M0 不动)
 
@@ -645,7 +603,7 @@ evals/suites/
 | 模块分层 | routers / services / agents / llm / models / schemas | services 不直接调 LLM,走 agents/ |
 | ORM | SQLAlchemy 2.x async,**不写 relationship** | ADR-0005 D1 |
 | Embed worker | 后台 asyncio 单进程轮询;不上 redis / celery | MVP 量小;M4+ SaaS 再说 |
-| LangGraph | M2.1 起用于 `InterviewCoachAgent` 状态机 + 多轮纠偏循环;M3 扩 SR / 三源岗位流 | M2 仍由 service 直接编排,先把 RAG/Judge 闭环打稳 |
+| LangGraph | M2.1 起用于 `InterviewCoachAgent` 状态机 + 多轮纠偏循环;M2.5 用于 `JDAnalysisAgent` 工具编排 | 可靠性来自状态、工具边界、恢复、回放和评测 |
 | 错误分层 | routers 转协议 / services 集中分发 / agents 不吞 | 沿用 LESSONS §8.6 |
 | 错误码命名 | snake_case + 出处明确 | 同 v1 JobCopilotError |
 | SSE 实现 | sse-starlette + 前端 lib/sse.ts | 永久约束 #21 |
@@ -655,21 +613,18 @@ evals/suites/
 | M2.1 幻觉治理 | 纠偏 prompt evidence-bound,每次 remediation 记录触发原因和证据 id | coverage 带 missing reference point;fidelity 带 fabricated claim + lookup;depth 带缺失维度 |
 | 部署 | docker compose 本地 | postgres / api / web / caddy / langfuse / langfuse-db 六服务 |
 | Tracing 选型 | Langfuse 自部署 | LLM-native + 数据不出本地;详见 §6 |
-| Tool use 范围 | 仅 AnswerJudge 用 `lookup_in_notes_global`;Quiz / Embedder / JdParser / JdAggregator / ResumeAdvisor 不用 | 直击 LESSONS §1.1 假阳性,精准不滥用 |
-| 出题入口 | **聊天框 query**(M2 主题类 / M3 岗位类 + 空 query 自选);**笔记面板不再触发出题** | 笔记面板降级为查看 / 编辑 / 导航;PRD §6 锁定 |
+| Tool use 范围 | AnswerJudge 用 `lookup_in_notes_global`;JDAnalysisAgent 用固定工具链 `load_jds → parse_jd → aggregate → dedupe → recompute_frequency → match_notes → write_report` | 工具有明确输入输出和 trace,不做开放工具市场 |
+| 出题入口 | **聊天框 topic query**或 JD 报告里的 quiz topic 候选;**笔记面板不再触发出题** | 岗位类三源出题 / 空 query 自选已砍掉 |
 | M2 retrieval pipeline | **query_rewrite → hybrid + RRF → reranker(top50) → post-rerank governance/blend → dynamic clean-context selection → parent-doc 扩展**;每段独立可观测进 Langfuse | 见 §5.2 数据流;0 命中守门 < 3 chunks → 返"笔记里没这主题"不兜底;provider rerank 是 challenger source,不是最终成员裁判 |
 | Reranker 选型 | 百炼 **`qwen3-rerank`**(`/compatible-api/v1/reranks`,¥0.0005/k token);本地 bge-reranker-v2-m3 作 fallback 不实施 | 详见 5-AGENT §2.7.5 + memory `reference_aliyun_dashscope_rerank.md`;langfuse 不自动 instrument 要手动 generation 包 |
 | Parent-doc 扩展粒度 | **自适应**:命中段 < 200 字 → 扩到同 H2 父段;≥ 200 字 → 不扩 | 阈值在 M2 实施时按 dogfood 命中分布调 |
-| 简历存储模型 | 单条记录(全库一行 resumes);无"简历库 / 多份切换" | 一个人就一份简历;岗位类 query 拼"这一份 + 选定 JD 子集"已够 |
-| M3 岗位类三源融合 | retrieval_pipeline 多走两路:简历单条全文 + 用户选定 JD 子集职责/要求,合并喂 quiz_generator | 重点考"简历写了 JD 也要"交集 + "JD 强要 简历没写"缺口 |
 | LLM SDK | OpenAI Python SDK(via 百炼兼容接口)| Langfuse OpenAI wrapper(chat 自动 instrument,embedding 手动);langfuse SDK 锁 <3.0(server v2 不支持 OTLP);env mirror 必须早于 routers import — 见 STATUS 永久约束 |
 | Context Cache 代码改造 | 扩 `LLMClient.complete` / `ProviderRequest` 支持 messages content array + `cache_control`;ProviderResponse 读 `cache_creation_input_tokens` | 当前只有 `system: str` + `user: str`,无法表达显式缓存 marker;落地细节见 5-AGENT §2.4.2 |
-| qwen3.6-flash 多模态 | 文本 / 图像 / tool use 一把抓,JD 截图 + 简历 PDF 共用 | 简化模型路由 |
+| qwen3.6-flash 多模态 | 文本 / 图像 / tool use 一把抓,JD 截图 OCR 与文本解析共用 | 简化模型路由 |
 | thinking 按 agent | 默认 off;评分 / 综合判断类显式 on(详见 5-AGENT §2.1) | 节省 reasoning_tokens 成本 |
 | JD 累积型 | jds 表跨时间累积,parsed_payload 上传即落库 | 类比笔记;不做 batch 概念 |
 | JD 一键分析 | hierarchical map-reduce,单次上限 200 条;频次 Python 重算 | 避免单次 LLM context 爆 |
-| 简历段落不进 hybrid search | resumes.parsed_chunks JSONB,直接全文喂 LLM | 简历短,无需 retrieval |
-| forbidden_pattern 拦截 | ResumeAdvisor service 层正则检测"建议改写为 X"等违规句式 | 避免 LLM 替写文案;0 触发是 M3 DoD |
+| 已砍掉的旧方向 | 简历、SR、弱点 dashboard、岗位类三源出题全部不进入后续计划 | 防止项目回到 v1 失败模式 |
 
 ---
 

@@ -7,7 +7,7 @@ purpose: 锁前后端接口契约;每个端点的 path / method / 请求 / 响�
 
 # 1. 一句话总览
 
-REST 走标准 JSON,慢请求(出题 / 单轮评分纠偏 / 整场评分 / JD 一键分析 / 简历诊断)走 SSE 推进度。**单用户本地部署,无 auth,无版本前缀**(端点直接挂 `/api/`,FastAPI 默认)。
+REST 走标准 JSON,慢请求(出题 / 单轮评分纠偏 / 整场评分 / JD 一键分析)走 SSE 推进度。**单用户本地部署,无 auth,无版本前缀**(端点直接挂 `/api/`,FastAPI 默认)。
 
 # 2. 通用约定
 
@@ -177,7 +177,7 @@ web 编辑器创建单篇笔记。
 
 `headings` 由后端从 `note_chunks.heading_path` 去重聚合得来 — 树形导航的最深一层(heading 级)直接用这里。
 
-性能注:笔记量 < 1000 篇前直接全量返;超过再加分页 / lazy load(M3)。
+性能注:笔记量 < 1000 篇前直接全量返;超过再加分页 / lazy load。
 
 ## 3.4 `GET /api/notes/{id}`
 
@@ -279,9 +279,9 @@ web 编辑器创建单篇笔记。
 
 ## 4.1 `POST /api/quiz/sessions`(**SSE**)
 
-聊天框 query 出题(M2 主题类;M3 加岗位类 + 空 query 自选)。
+聊天框 topic query 出题。岗位类三源出题和空 query 系统自选已砍掉。
 
-请求(M2 主题类):
+请求:
 
 ```json
 {
@@ -291,42 +291,19 @@ web 编辑器创建单篇笔记。
 }
 ```
 
-请求(M3 岗位类 — 三源融合):
-
-```json
-{
-  "query": "模拟一面 Java 后端",
-  "mode": "job",
-  "jd_ids": [101, 102, 105],
-  "question_count": 5
-}
-```
-
-请求(M3 空 query / 系统自选 — SR 调度):
-
-```json
-{
-  "query": "",
-  "mode": "auto",
-  "question_count": 5
-}
-```
-
 | field | type | 说明 |
 |-------|------|----|
-| `query` | string | 用户聊天框输入(`mode=auto` 时可空)|
-| `mode` | enum `topic` \| `job` \| `auto` | 默认 `topic`(M2 仅支持此值;`job`/`auto` 在 M3 启用)|
-| `jd_ids` | int[] | (`mode=job` 必填)用户从 JD 库选定的 JD 子集 id 数组 |
-| `question_count` | int | 3 ≤ N ≤ 10 |
+| `query` | string | 用户聊天框输入;或从 JD Intelligence 报告选择的 quiz topic 候选 |
+| `mode` | enum `topic` | 默认 `topic`;其他值不支持 |
+| `question_count` | int | 1 / 3 / 5 |
 
 **约束**:
-- `mode=topic` 时 `query` 不能空(违反 → 422 `query_required`);query 长度 ≤ 200 字符(否则 422 `query_too_long`)
-- `mode=auto` 在 M3 才启用,M2 阶段返 422 `mode_not_implemented`
-- `mode=job` 在 M3 才启用,M2 阶段同上;启用时 `jd_ids` 至少 1 个
+- `query` 不能空(违反 → 422 `query_required`);query 长度 ≤ 200 字符(否则 422 `query_too_long`)
+- `mode` 只能是 `topic`;`job` / `auto` 返回 422 `mode_not_supported`
 
 **题型比例由后端按 chunks 内容自动决定**(开放式 vs 八股),具体推荐逻辑见 5-AGENT_DESIGN。
 
-SSE 事件序列(M2 主题类):
+SSE 事件序列:
 
 ```
 event: started
@@ -381,15 +358,15 @@ data: {"ok": false}
 
 | code | HTTP / SSE | 说明 |
 |------|----|----|
-| `query_required` | 422 | `mode=topic` 但 query 为空 |
+| `query_required` | 422 | topic query 为空 |
 | `query_too_long` | 422 | query 超长(> 200 字符)|
-| `mode_not_implemented` | 422 | M2 阶段传 `mode=job` 或 `mode=auto` |
+| `mode_not_supported` | 422 | 传 `mode=job` 或 `mode=auto` |
 | `no_chunks_for_query` | SSE error | retrieval pipeline 命中 chunks < 阈值(PRD Q-10);**直接报"笔记里没这主题",不兜底放宽** |
 | `query_rewrite_failed` | trace warning(回退原 query,不抛错) | 详见 2-TECH §7 |
 | `rerank_failed` | trace warning(回退 hybrid top-K) | 同上 |
 | `llm_call_failed` | SSE error | quiz_generator LLM 调用失败(已重试) |
 
-**后端落库顺序(M2 主题类)**:
+**后端落库顺序(主题类)**:
 1. 收到请求,validate query / mode / question_count
 2. INSERT `quiz_sessions`(status=`in_progress`, query, mode)拿到 session_id,emit `started`
 3. retrieval pipeline:query rewrite → hybrid search → rerank + post-rerank governance/blend → parent-doc 扩展(每段 emit `progress`)
@@ -463,7 +440,7 @@ session 详情(载入历史 / 续答用)。
 }
 ```
 
-`mode='job'` 时 `jd_ids` 数组非空(M3 岗位类);`mode='auto'` 时 `query` 为后端 SR 调度自选的 heading_path 末段(M3 系统自选)。
+`mode` 当前只支持 `topic`;JD Intelligence 报告里的 quiz topic 候选进入本端点时也作为普通 topic query 处理。
 
 `status='submitted'` 时 `scores` 字段填充三层 + 总分,且每题带 `evidence`(coverage_evidence / fidelity_evidence / depth_evidence)。M2.1 的 `finish_session` 完成后还会返回 `summary`,内容来自 `agent_state.final_summary`。
 
@@ -760,9 +737,7 @@ data: {"ok": true}
 
 异常:任一阶段炸 → `error` + `done(ok=false)`,session 行标 `abandoned_at`。
 
-**M3 扩展事件**:
-- `mode=job`:在 `query_rewriting_done` 之后并入 `phase=jd_subset_aggregating` + `phase=resume_loading` 两步,然后才到 `hybrid_searching`(三源融合)
-- `mode=auto`:在 `started` 之后插 `phase=sr_picking_topic` + `phase=sr_topic_picked{heading_path}` 两步,后续走主题类 pipeline
+**已砍掉的扩展事件**:`mode=job` 岗位类三源出题和 `mode=auto` SR 系统自选不再实现,因此不会出现 `jd_subset_aggregating`、`resume_loading`、`sr_picking_topic` 等事件。
 
 **评分(`POST /api/quiz/sessions/{id}/submit`)完整事件流**:
 
@@ -824,70 +799,9 @@ data: {"ok": true}
 
 注:答题完成页的评分 + evidence 直接用 §4.4 SSE 推过来的数据渲染,**不依赖此端点**。recall 文件的用途是用户存一份留档(放进自己的 Obsidian / 语雀库,日后翻看)。
 
-# 5. 弱点 + 复习 API(M3)
+# 5. 已砍掉的弱点 / 复习 API
 
-## 5.1 `GET /api/dashboard/gaps`
-
-弱点排行。
-
-请求(query):`?sort=error_rate|attempt_count|last_score&limit=50`
-
-响应:
-
-```json
-{
-  "items": [
-    {
-      "folder_path": ["Java", "集合"],
-      "heading_path": ["HashMap"],
-      "attempt_count": 4,
-      "error_count":   3,
-      "error_rate":    0.75,
-      "last_score":    52.0,
-      "last_attempt_at": "2026-05-06T...",
-      "next_review_at": "2026-05-09"
-    }
-  ]
-}
-```
-
-## 5.2 `GET /api/dashboard/today`
-
-"今日复习"队列(按 `next_review_at <= today` 升序)。
-
-响应:
-
-```json
-{
-  "items": [
-    {
-      "folder_path": ["Java", "集合"],
-      "heading_path": ["HashMap"],
-      "last_score": 52.0,
-      "next_review_at": "2026-05-08",
-      "days_overdue": 0
-    }
-  ]
-}
-```
-
-## 5.3 `POST /api/quiz/sessions/from-review`(**SSE**)
-
-从今日复习队列拉一个节点开 session。**M3 端点**;后端把 heading_path 末段当 query,转走 §4.1 主题类 pipeline。
-
-请求:
-
-```json
-{
-  "folder_path": ["Java", "集合"],
-  "heading_path": ["HashMap"],
-  "question_count": 5
-}
-```
-
-后端等价于调用 `POST /api/quiz/sessions` `{query: "HashMap", mode: "topic", question_count: 5}`,但 session 落库时额外标 `trigger='sr_review'` + `gap_folder_path` / `gap_heading_path`(用于 dashboard 关联回该 gap)。
-
-SSE 序列同 §4.1(M2 主题类完整流程)。
+不再实现 `GET /api/dashboard/gaps`、`GET /api/dashboard/today`、`POST /api/quiz/sessions/from-review`。后续不做长期弱点表、SR 今日复习队列或 dashboard;练习入口只来自用户 topic query 或 JD Intelligence 报告里的 quiz topic 候选。
 
 # 6. JD 分析 API(M2.5)
 
@@ -1014,10 +928,17 @@ data: {"phase": "frequency_recompute"}
 event: progress
 data: {"phase": "learning_path_gen"}
 
+event: progress
+data: {"phase": "note_matching"}
+
+event: progress
+data: {"phase": "quiz_topic_generating"}
+
 event: result
 data: {
   "analysis_id": 7,
   "requirement_count": 28,
+  "quiz_topic_count": 12,
   "url": "/api/jd-analyses/7"
 }
 
@@ -1061,125 +982,30 @@ data: {"ok": true}
     }
   ],
   "learning_path_md": "## 你的学习路径...",
+  "quiz_topic_candidates": [
+    {
+      "topic": "JVM 内存模型与 GC 调优",
+      "priority": "high",
+      "source_req_ids": ["req_2"],
+      "frequency": 0.92,
+      "note_match_status": "partial"
+    }
+  ],
+  "note_match_summary": [
+    {"req_id": "req_2", "status": "partial", "matched_note_ids": [12, 18]}
+  ],
   "total_cost_cny": 0.42,
   "cache_hit_rate": 0.31
 }
 ```
 
-# 7. 简历诊断 API(M3)
+# 7. 已砍掉的简历 API
 
-## 7.1 `POST /api/resumes`
+不再实现 `/api/resumes`、`/api/resume-analyses` 或任何简历诊断 / 改写端点。JD Intelligence 报告只输出岗位要求地图、学习路径和 quiz topic 候选,不读取或生成简历内容。
 
-上传简历。
+# 8. 杂项
 
-**markdown 方式**:
-```json
-{
-  "source": "markdown_paste",
-  "title": "我的 Java 简历 v3",
-  "content_md": "# 张三\n\n..."
-}
-```
-
-**PDF 方式**(multipart):
-- `source`: `"pdf_upload"`
-- `title`: 字符串
-- `file`: PDF 文件(≤ 7MB)
-
-后端走 Qwen 多模态对 PDF 各页 OCR 拼接成 markdown,再 chunker。
-
-响应 201:
-```json
-{
-  "id": 5,
-  "title": "我的 Java 简历 v3",
-  "source": "markdown_paste",
-  "parsed_chunks": [
-    {"position": "§1", "type": "header", "content": "..."},
-    {"position": "§2", "type": "summary", "content": "..."},
-    ...
-  ],
-  "created_at": "..."
-}
-```
-
-## 7.2 `GET /api/resumes` / `GET /api/resumes/{id}` / `DELETE /api/resumes/{id}`
-
-CRUD,同笔记 / JD 风格,不展开。
-
-## 7.3 `POST /api/resume-analyses`(**SSE**)
-
-诊断。
-
-请求:
-```json
-{
-  "jd_analysis_id": 7,
-  "resume_id": 5
-}
-```
-
-SSE 事件:
-
-```
-event: started
-data: {"resource_id": 12, "jd_count": 100, "resume_chunk_count": 8}
-
-event: progress
-data: {"phase": "loading_inputs"}
-
-event: progress
-data: {"phase": "diagnosing", "current": 5, "total": 28}
-
-event: progress
-data: {"phase": "anchor_validation"}
-
-event: result
-data: {
-  "analysis_id": 12,
-  "anchored_count": 18,
-  "unanchored_count": 6,
-  "coverage": {"strong": 8, "weak": 10, "missing": 6},
-  "url": "/api/resume-analyses/12"
-}
-
-event: done
-data: {"ok": true}
-```
-
-`anchor_validation` 阶段:service 层校验每条 suggestion 的 req_id + resume_position;不齐 → 标 unanchored。
-
-## 7.4 `GET /api/resume-analyses/{id}`
-
-诊断详情:
-
-```json
-{
-  "id": 12,
-  "jd_analysis_id": 7,
-  "resume_id": 5,
-  "status": "done",
-  "anchored_count": 18,
-  "unanchored_count": 6,
-  "coverage_summary": {"strong": 8, "weak": 10, "missing": 6},
-  "suggestions": [
-    {
-      "req_id": "req_1",
-      "req_text": "Redis 集群 + 分布式锁",
-      "req_frequency": 0.75,
-      "resume_position": "§3",
-      "coverage": "weak",
-      "diagnosis": "...",
-      "suggestion_topic": "...",
-      "tag": "anchored"
-    }
-  ]
-}
-```
-
-# 9. 杂项
-
-## 9.1 `GET /v1/health`
+## 8.1 `GET /v1/health`
 
 ```json
 {
@@ -1192,12 +1018,12 @@ data: {"ok": true}
 
 部署 healthcheck 暂留 `/v1/health`;新业务端点统一挂 `/api`。`/v1/docs` 和 `/v1/openapi.json` 也沿用 FastAPI 开发入口。
 
-# 10. 已锁定的关键决策
+# 9. 已锁定的关键决策
 
 | 项 | 决策 | 备注 |
 |----|------|------|
 | 路径前缀 | `/api/`(无版本号) | 单用户本地部署,无多版本兼容需求 |
-| 认证 | 无 | localhost only,M4+ SaaS 化再加 |
+| 认证 | 无 | localhost only;SaaS 不进入当前路线 |
 | 时间戳 | ISO-8601 UTC | 前端用 dayjs 转本地展示 |
 | ID 类型 | BIGINT,JSON 数字传 | 跟 DB BIGSERIAL 对齐,JS Number 53 位足够 |
 | 分页 | cursor(`?cursor=<id>&limit=N`)| 不用 offset(深度分页性能差) |
@@ -1213,11 +1039,11 @@ data: {"ok": true}
 | 题型比例 | 后端按 chunks 内容自动决定(B);前端不传 type_mix | 推荐逻辑见 5-AGENT_DESIGN;后端在 `progress.type_mix_decided` 事件回推决策 |
 | 答题草稿保存 | 边打边存(typing 防抖 1s 后 PUT) | 开放题答题长,断电一字不丢 > 省 PUT 请求 |
 | recall 文件语义 | 存档下载,不是评分展示 | 评分 evidence 走 SSE;recall 给用户存进 Obsidian / 语雀留档 |
-| 出题入口 | `POST /api/quiz/sessions` 入参 `{query, mode, question_count}`(M3 加 `jd_ids`)| 不再用 `node_folder_path` / `node_heading_path`;笔记面板不触发出题 |
-| query 模式三态 | `topic`(M2 主题类)/ `job`(M3 岗位类三源)/ `auto`(M3 SR 自选)| M2 仅 topic;`job`/`auto` M2 阶段返 `mode_not_implemented` |
+| 出题入口 | `POST /api/quiz/sessions` 入参 `{query, mode, question_count}` | 不再用 `node_folder_path` / `node_heading_path`;笔记面板不触发出题 |
+| query 模式 | 只支持 `topic` | `job` 岗位类三源和 `auto` SR 自选已砍掉 |
 | 0 命中守门 | retrieval 命中 chunks < 阈值 → SSE error `no_chunks_for_query` + done(false),不兜底放宽 | 阈值见 PRD Q-10 |
 | retrieval pipeline 事件 | 出题 SSE 推 5 段独立 phase(`query_rewriting` / `hybrid_searching` / `reranking` / `parent_doc_expanding` / `generating`)| 前端可显示进度;Langfuse trace 同步可见 |
-| 简历存储 | 单条记录(全库一行 resumes),无"简历库"端点 | 一个人就一份简历;PUT 覆盖语义,不做"切换简历"端点 |
+| 简历 API | 全部砍掉 | 不上传、不诊断、不改写、不参与出题 |
 
 ---
 

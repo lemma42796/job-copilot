@@ -1,8 +1,8 @@
 ---
 title: ROADMAP - JobCopilot v2
 owner: lemma42796
-last_updated: 2026-05-16
-purpose: 6 个里程碑 + 退出标准 + 下一刀
+last_updated: 2026-05-17
+purpose: 已完成面试陪练基础 + 后续唯一 JD Intelligence Agent 主线
 ---
 
 # 节奏总览
@@ -11,12 +11,11 @@ purpose: 6 个里程碑 + 退出标准 + 下一刀
 M0    仓库改造 + 文档重写                                                    ✅
 M1    笔记入库 + chunker + 树形导航 + Langfuse 起步                          ✅
 M2    聊天框主题类 query → 全库 RAG → 出题 + Judge 三层评分 + Judge tool use ✅
-M2.1  InterviewCoachAgent: Agentic RAG 面试状态机 + 工具调用 + 多轮纠偏分支 ← 当前
-M2.5  JD 累积上传 + 一键分析 + 学习路径(独立有价值)
-M3    弱点跟踪 + SR(空 query 系统自选)+ 岗位类出题(三源融合)+ 简历诊断
+M2.1  InterviewCoachAgent: Agentic RAG 面试状态机 + 工具调用 + 多轮纠偏分支 ✅
+M2.5  JD Intelligence Agent: 自动读 JD → 岗位要求地图 → 学习路径 → quiz topics ← 当前
 ```
 
-不估工时,只讲依赖顺序与最佳实践。每个 M 完成 → DoD 跑通 → 提交 commit + 推 GitHub release tag。
+不估工时,只讲依赖顺序与最佳实践。M2.5 之后不再规划 SR / 弱点 dashboard / 岗位类三源出题 / 简历诊断;所有后续生产力都收束到 JD Intelligence Agent。
 
 ---
 
@@ -32,7 +31,7 @@ M3    弱点跟踪 + SR(空 query 系统自选)+ 岗位类出题(三源融合)+ 
 - [ ] docs/{2-TECH_DESIGN, 3-DATA_MODEL, 4-API_SPEC, 5-AGENT_DESIGN, 6-EVAL_PLAN, 8-ENGINEERING}.md 重写
 - [ ] 旧 v1 代码砍除:apps/api/agents/{jd_parser, profile_parser, match_analyst, resume_planner, resume_drafter, resume_reviewer}/、对应 service / router / model / scripts、apps/web 旧页面
 - [ ] 保留可复用模块:llm/(client / cache / providers / cache_key)、agents/embedder、services/{tokenize, chunk_service(改造)}、evals/{kappa, judge}.py、alembic 0014/0015
-- [ ] 新建 v2 模块骨架:agents/{quiz_generator, answer_judge}/、services/{notes_service, quiz_service, answer_service}/、models/{note, question, session, answer, knowledge_gap}.py
+- [ ] 新建 v2 模块骨架:agents/{quiz_generator, answer_judge}/、services/{notes_service, quiz_service, answer_service}/、models/{note, question, session, answer}.py
 - [ ] alembic 新 migration:建 v2 表 + 砍 v1 表
 - [ ] tag `v0.1-jobcopilot-v1` 锁 v1 末态(git history 留档)
 
@@ -63,7 +62,7 @@ M3    弱点跟踪 + SR(空 query 系统自选)+ 岗位类出题(三源融合)+ 
 
 ## 范围
 
-**产品入口大变**:出题不再走"笔记面板点节点",改走聊天框输 query。M2 只做**主题类 query**(例:"考考我多线程"),岗位类 / 空 query 挂账 M3。笔记面板降级,只剩查看 / 编辑 / 导航树,**不再触发出题**。
+**产品入口大变**:出题不再走"笔记面板点节点",改走聊天框输 query。M2 只做**主题类 query**(例:"考考我多线程");岗位类三源出题 / 空 query 系统自选已砍掉。笔记面板降级,只剩查看 / 编辑 / 导航树,**不再触发出题**。
 
 - **聊天框出题入口**:用户输入 topic query → 系统跨笔记 RAG → 出题(单一数据源 = 笔记库)
 - **Retrieval pipeline(RAG 主战场)**:
@@ -121,14 +120,14 @@ M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",
   - `judge_answer`:复用 AnswerJudge + lookup tool
   - `decide_next_action`:按 evidence 决定下一步
   - `generate_remediation_prompt`:提示哪里答不好,并生成针对当前题的补答引导
-  - `summarize_session`:输出题 / 答 / 评 / reference / 弱点摘要
+  - `summarize_session`:输出题 / 答 / 评 / reference / 本场缺口摘要
   - `finish_session`:落库 + SSE done
 - **Tools**:
   - `search_notes(query)`:笔记库检索
   - `lookup_claim_in_notes(claim)`:Judge 标 fabricated 前验证
   - `get_source_chunks(question_id)`:展开题目引用
   - `record_session_summary(session_id)`:写 session 沉淀
-  - `update_knowledge_gap(...)`:M3 接入,本阶段先留接口不做 SR 排期
+  - `write_quiz_topic_candidates(...)`:仅接收 JD Intelligence 报告产出的 topic 候选,不写长期弱点 / SR 队列
 - **分支策略**:
   - `coverage_score < 60` → 提示漏掉的 reference point,引导用户补答
   - `fabricated_ratio > 0.3` → 指出缺证据 / 冲突声明,追问依据来源,提示用户回到笔记证据
@@ -157,94 +156,41 @@ M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",
 - [ ] 用户中途退出后重新进入,能从 `wait_user_answer` 状态恢复
 - [ ] Langfuse trace 能按 session_id 看到完整状态机节点和每个工具调用
 - [ ] `evals/suites/interview_coach/` 至少 10 条流程型样本,覆盖不纠偏 / coverage 纠偏 / fabricated 纠偏 / depth 纠偏 / 多轮无提升退出 / 中途恢复 / 长上下文压缩
-- [ ] README / 简历可表述为"Agentic RAG 面试教练",并能现场演示一轮多轮纠偏
+- [ ] README / 项目介绍可表述为"Agentic RAG 面试教练",并能现场演示一轮多轮纠偏
 
-# M2.5:JD 累积上传 + 一键分析 + 学习路径
+# M2.5:JD Intelligence Agent
 
 ## 范围
 
 - **JD 单条上传**:文本粘贴 / 截图(Qwen 多模态 OCR)→ jd_parser **立即解析**(thinking off)→ 落库 jds 表(累积型,跨时间留)
-- **我的 JD 库**:列表 / 按 title 筛选 / 单条删除;LLM 自动从 JD 抽 title(Q-04 倾向方案)+ 用户可改
-- **一键分析**:用户选范围(全部 / 最近 N 条 / 某 title),触发聚合
+- **我的 JD 库**:列表 / 按 title 筛选 / 单条删除;LLM 自动从 JD 抽 title + 用户可改
+- **JDAnalysisAgent harness**:用户选范围(全部 / 最近 N 条 / 某 title),系统自动完成:
+  - `load_jds`:读取已选 JD 与解析快照
+  - `ocr_if_needed`:截图 JD 走 Qwen 多模态 OCR
+  - `parse_jd`:缺 parsed_payload 时补解析
+  - `aggregate_requirements`:按职责 / 硬技能 / 软技能 / 业务方向分桶
+  - `dedupe_requirements`:LLM 同义合并 + Python 频次重算
+  - `match_notes`:可选,用笔记库标题 / heading / chunks 粗匹配已有材料
+  - `generate_learning_path`:输出可执行 markdown
+  - `write_report`:保存 `jd_analyses` 快照,可回看对比
   - **单次上限 200 条 JD**,超过提示用户拆分
   - 内部走 hierarchical map-reduce:
     - Map 已在上传时完成(parsed_payload 持久化)
     - Reduce:每 batch 500-600 raw skill,LLM 单次聚合 → N 个 partial result
     - 二次合并:LLM 跨 batch 同义词去重
     - 频次 Python 重算(canonical 在多少条 JD 里至少出现一次)
-- **学习路径生成**:聚合输出 → LLM 直接出 markdown(不依赖笔记库)
-- **历史报告**:jd_analyses 表存每次分析快照,可对比
+- **产出**:岗位要求地图、高频技能 / 职责 / 软技能、学习路径 markdown、quiz topic 候选、证据 JD 列表、历史报告
 
 ## 退出标准(DoD)
 
 - [ ] 上传 50+ 条同岗位 JD(混合文本 + 截图),全部立即解析入库;截图 OCR 准确率(关键字段)≥ 90%
 - [ ] "我的 JD 库" 列表能筛选 / 删除;LLM 自动抽 title 准确率 ≥ 80%(主观判断)
 - [ ] 一键分析跑通 100 条 JD:hierarchical reduce 5 batch + 二次合并 + 频次重算,P95 ≤ 60s
-- [ ] 学习路径 markdown 输出可读、按频次降序、覆盖至少 80% 高频要求
+- [ ] 学习路径 markdown 输出可读、按频次降序、覆盖至少 80% 高频要求,并给出 quiz topic 候选
+- [ ] 报告能让用户少做手工整理:至少包含要求频次、证据 JD、学习优先级和已有笔记粗匹配状态
 - [ ] `evals/suites/jd_aggregator/` 数据集:30 条人工标 ground truth(聚合后的 canonical 列表 + 频次),同义合并准确率 ≥ 0.85
 - [ ] 200 条 JD 一键分析总成本 ≤ ¥1.0,LLM cache 命中率 ≥ 50%(重跑场景)
 - [ ] Langfuse 按 jd_analysis_id 过滤能看完整 map-reduce trace
-
-# M3:弱点跟踪 + SR + 岗位类出题(三源融合)+ 简历诊断
-
-## 范围
-
-### 笔记复习增强(SR + dashboard + 空 query 系统自选)
-
-- **knowledge_gap 表**:`(folder_path, heading_path, error_count, last_score, next_review_at)`,每次 session 评分后 upsert
-- **SR 简化算法**:
-  - score ≥ 80 → next_review_at = today + min(prev_interval × 2, 60d)
-  - 60-79 → next_review_at = today + prev_interval
-  - < 60 → next_review_at = today + 1d
-- **dashboard UI**:首页显示 "今日复习" + 知识点弱点排行 + 历史 session 列表
-- **空 query → 系统自选**:用户在聊天框输入"来模拟面试吧" / 留空 → SR 调度从 knowledge_gap 弱点排行选 1 个 heading_path 末段当 query → 走 M2 主题类 RAG 流程出题(复用 M2 pipeline,仅 query 来源从用户改成系统)
-- **InterviewCoachAgent 扩展**:复用 M2.1 状态机,把 `update_knowledge_gap` 接到真实 SR 队列;空 query 时由 SR 选题后进入同一编排
-
-### 岗位类 query 出题(三源融合检索)
-
-用户在聊天框输"模拟一面 Java 后端" / "应聘字节后端实习" 这类岗位类 query → 系统拼**三源**出题:**笔记 + 那一份简历 + 用户选定的 JD 子集**(从 M2.5 jds 表选)。这是 RAG 主战场升级形态:多源、多类型、多 query。
-
-- **简历单条记录**(不是"简历库"):全库就一条 resumes 行(本地单用户工具)。简历不按岗位定制 — "一个人就一份简历",岗位类 query 拼的就是这一份简历 + 选定的 JD 子集
-- **岗位类 query 解析**:LLM 从 query 抽 (job_title, target_companies?, JD 候选范围?);用户也可在 UI 显式选 JD 库子集(全部 / 最近 N 条 / 某 title)
-- **三源检索 pipeline**:
-  - **路 1 笔记库 RAG**:query → query rewriting → hybrid search + rerank + parent-doc(复用 M2 pipeline)→ 命中 chunks
-  - **路 2 简历内容**:那一份简历全文(简历短,直接喂 LLM,不进 hybrid search 索引)+ 重点段落(项目 / 技能写了什么)— **重点考用户简历上写的东西**(直击"自己不会的也往简历上写,问到答不出"问题)
-  - **路 3 JD 子集聚合**:用户选定的 JD 候选 → 从 jds 表读 parsed_payload(M2.5 已 map 完成)→ 抽**职责 + 要求两方面**(LESSONS:"有的人只看要求不看职责,职责上的东西没复习就挂了"),按频次聚合
-- **三源结果合并**:三路 chunks / 内容片段并入 quiz_generator,prompt 明确告诉 LLM:"基于这份简历(用户写了什么)+ 这些 JD(岗位要什么)+ 这些笔记(用户复习了什么)出 N 道题,优先考'简历写了但 JD 也要'的交集 + '简历没写但 JD 强要求'的缺口"
-- **题型扩展**:岗位类多出"项目深挖题"(基于简历项目段落,问技术选型 / 难点 / 量化数据 — 模拟面试官追问简历)
-
-### 简历诊断(求职流)
-
-- **简历上传**:markdown 直接 / PDF 走 Qwen 多模态 OCR 转 markdown;**全库就一条 resumes 行**,新上传覆盖旧的(留 history 表存历次诊断快照),无"多份简历切换"概念
-- **简历段落 chunker**:按段落切(基础经历 / 技能 / 项目 / 教育 等),resume_chunks 入库供岗位类 query 路 2 复用;**不进 hybrid search 索引**(简历短,直接全文喂 LLM)
-- **ResumeAdvisor agent**(thinking on):输入(JD 分析报告 + 简历)→ 输出诊断
-  - 两方锚点严格:每条建议必须有 `req_id` + `resume_position`(可空,空标 unanchored)
-  - **永不输出改写文案** — 只说"该补什么主题",不替用户编经验
-  - LLM 凭 JD 通用要求 + 简历段落做覆盖度判断 + 诊断陈述
-- **诊断结果展示**:每条 JD 通用要求一行,coverage(strong/weak/missing)+ 简历位置 + 建议主题;anchored 主色 / unanchored 灰色弱化
-
-## 退出标准(DoD)
-
-### 笔记复习增强
-
-- [ ] dogfood 1 个月,每周 3+ session,弱点排行收敛(同一知识点 3 次后正确率 +30pp)
-- [ ] 空 query → SR 自选跑通:聊天框输"来模拟面试吧" → 系统从弱点排行选主题 → 出题,Langfuse trace 能看到 SR 选中的 heading_path
-- [ ] M2.1 纠偏分支接入 SR:答漏 trade-off → 系统提示缺口并引导补答 → 用户补齐 / 跳过 → 更新对应 knowledge_gap
-- [ ] dashboard 数据准确(SR 推送的题确实是到期的)
-
-### 岗位类 query 出题
-
-- [ ] 输入"模拟一面 Java 后端" → 三源检索全过(笔记路 hybrid 命中 + 简历段落注入 + JD 子集职责/要求两方面均覆盖)→ 出 5 题
-- [ ] 出题质量主观:5 题里至少 2 题"直击简历写了但用户答不出"(LESSONS §"自己不会的也往简历上写"反向验证)
-- [ ] Langfuse trace 能看到三源各自命中(三路并列 + 合并节点)
-
-### 简历诊断
-
-- [ ] 上传简历(markdown 或 PDF)→ 段落切片 + 入库 ≤ 5s
-- [ ] 选 JD 分析报告 + 简历 → 触发诊断,P95 ≤ 30s
-- [ ] anchored 比例 ≥ 70%(诊断输出里两方齐的建议占比)
-- [ ] dogfood 自查:LLM 没有出现一条"替写文案"(发现就当 prompt 漏洞修)
-- [ ] `evals/suites/resume_advisor/` 数据集:15 条人工标(JD 报告 + 简历)对照,anchored ratio + 主观诊断准确率两个维度
 
 ---
 
@@ -253,19 +199,19 @@ M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",
 | 功能 | 原因 |
 |------|------|
 | 浏览器扩展 | 注意力分散,跟核心闭环正交 |
-| 多用户 / SaaS | M0-3 单用户 dogfood,M4+ 再考虑 |
+| 多用户 / SaaS | 当前只做单用户 dogfood,不进入后续主线 |
 | 系统设计题 | Judge 评分主观度爆炸,不靠谱 |
 | 代码题 | 需要执行环境,工程量爆炸 |
 | 选择题 | active recall 弱,产品价值低 |
 | 语音输入 | STT + Whisper 工程量大,文本足够 |
-| PDF / 图片导入 | OCR 链路长,markdown 已够 |
+| 笔记 PDF / 图片导入 | OCR 链路长,markdown 已够;JD 截图 OCR 是 M2.5 主线的一部分 |
 | Notion / 飞书 / Obsidian / 语雀 sync | 三方笔记应用各自做得比本产品好;不竞争 |
-| 笔记 PDF / 图片导入 | OCR 链路长,markdown 已够(简历 PDF 是要做的) |
-| 替用户写简历改写文案 | 直接撞 v1 失败模式;系统只做诊断,真实经验用户自己写 |
-| 按岗位定制多份简历(简历库)| 一个人就一份简历;岗位类 query 拼"那一份简历 + 用户选定 JD 子集"已足够,多份切换增加产品复杂度无价值 |
+| 弱点跟踪 / SR / dashboard / 空 query 系统自选 | 不再追;生产力主线收束到 JD Intelligence |
+| 岗位类三源出题 / 项目深挖题 | 不再追;JD 分析只产出 quiz topic 候选 |
+| 简历上传 / 简历诊断 / 简历改写 / 简历库 | 全部砍掉;避免回到 v1 失败模式 |
 | 笔记面板节点点击触发出题 | 出题入口改为聊天框 query;笔记面板降级为查看 / 编辑 / 导航树,不再是出题入口 |
 | 投递追踪(v1 残留)| 已确认产品价值站不住,全砍 |
-| 跨 batch 跨时间增量聚合 JD | M3+ 才考虑;MVP 单次上限 200 条够用 |
+| 跨 batch 跨时间增量聚合 JD | 单次上限 200 条够用;后续先不做 |
 
 ---
 

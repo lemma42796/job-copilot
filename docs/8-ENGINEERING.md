@@ -1,7 +1,7 @@
 ---
 title: ENGINEERING - JobCopilot v2(仓库结构 / 工具链 / CI / 迁移 / 本地开发 / 部署)
 owner: lemma42796
-last_updated: 2026-05-11
+last_updated: 2026-05-17
 purpose: 锁工程基线 — 一个新协作者按本文从零跑通项目,知道本地验证入口、手动 CI、迁移、部署与协作约束
 ---
 
@@ -30,14 +30,14 @@ JobCopilot/
 │       ├── package.json
 │       └── src/api.ts                # CI type-sync workflow 防漂移(详见 §6.4)
 ├── evals/                            # 评测套件(数据集 / 报告目录;详见 6-EVAL_PLAN)
-│   ├── suites/                       # M0 后重建:hybrid_search / quiz_generator / answer_judge / jd_aggregator / resume_advisor
+│   ├── suites/                       # M0 后重建:hybrid_search / quiz_generator / answer_judge / interview_coach / jd_aggregator
 │   ├── reports/                      # 跑完写这里(.gitignore)
 │   └── README.md                     # eval 怎么跑 + DASHSCOPE_API_KEY_EVAL 哪儿来
 ├── docker/                           # docker compose 配套镜像 / 反代 / 数据库初始化
 │   ├── api.Dockerfile                # python:3.12-slim + uv + standalone venv
 │   ├── web.Dockerfile                # node:22 多阶段 + Next standalone output
 │   ├── postgres/init.sql             # 创 pgvector + tsvector 扩展
-│   └── caddy/Caddyfile               # 反代(M0 已落,M3+ 加 HTTPS)
+│   └── caddy/Caddyfile               # 本地反代占位;HTTPS 不进入当前路线
 ├── docker-compose.yml                # postgres / api / web / caddy(+ langfuse / langfuse-db M0 加)
 ├── docs/                             # 文档 SSoT(0-9 + STATUS + LESSONS)
 ├── scripts/                          # 一次性运维脚本(目前空,按需放)
@@ -168,7 +168,7 @@ DASHSCOPE_API_KEY_EVAL=sk-...
 
 ## 5.2 commit 风格
 
-- **每个 commit 一件事 + 编译过 + 测过**(M3 期间出过 commit 1 build broken,commit 2 修 build 的丑事 — v2 不再出)
+- **每个 commit 一件事 + 编译过 + 测过**(v1 期间出过 commit 1 build broken,commit 2 修 build 的丑事 — v2 不再出)
 - **小步多 commit**(里程碑展开成切片,切片展开成 commit),不攒大 commit
 - **绝不加 Co-Author**
 - **不写"Generated with Claude Code" / "Generated with Codex" 注脚**
@@ -224,7 +224,7 @@ PR 必填:
 ## 6.3 test-web.yml — 前端 build
 
 - `pnpm --filter @jobcopilot/web build`(NEXT_TELEMETRY_DISABLED=1)
-- 不跑 e2e — playwright 留到 M3 dashboard 联调时再起 workflow
+- 不跑 e2e — 当前项目按用户手动验收,不新增 dashboard/e2e 路线
 
 ## 6.4 type-sync.yml — OpenAPI 漂移防线
 
@@ -244,7 +244,7 @@ PR 必填:
 
 保持手动触发。理由:dataset 不稳定 + 跑一次烧钱 + 评测 kappa 没达标前数字本身不可信。
 
-- 6 个 suite(hybrid_search / quiz_generator / answer_judge / interview_coach / jd_aggregator / resume_advisor)各自 1 个 job
+- 5 个 suite(hybrid_search / quiz_generator / answer_judge / interview_coach / jd_aggregator)各自 1 个 job
 - 用 `DASHSCOPE_API_KEY_EVAL` GH secret(跟主 key 分账,跑炸了不影响 dev)
 - 报告 `evals/reports/<suite>/latest.json` 上传 artifact,留存 14 天
 
@@ -276,7 +276,7 @@ def upgrade():
     # 砍 v1 表(整批)
     op.drop_table("matches")
     op.drop_table("resume_versions")
-    op.drop_table("resumes")          # v1 resumes(简历草稿用),v2 resumes 表语义不同 → 重建
+    op.drop_table("resumes")          # v1 resumes(简历草稿用),v2 不再建简历链路
     op.drop_table("profile_chunks")
     op.drop_table("profiles")
     op.drop_table("jds")              # v1 jds 表语义跟 v2 不同 → 重建
@@ -289,11 +289,8 @@ def upgrade():
     op.create_table("questions", ...)
     op.create_table("quiz_sessions", ...)
     op.create_table("session_answers", ...)
-    op.create_table("knowledge_gaps", ...)
     op.create_table("jds", ...)               # v2 形态(parsed_payload + source 等)
     op.create_table("jd_analyses", ...)
-    op.create_table("resumes", ...)           # v2 形态(parsed_chunks JSONB)
-    op.create_table("resume_analyses", ...)
     # 沿用 v1 表(0006 / 0014 / 0015)不动:prompt_versions / llm_calls / llm_response_cache + char_ngrams 函数
 
 def downgrade():
@@ -358,7 +355,7 @@ pnpm dev:web                                                                    
 | postgres(业务)| 5432 | ✅(本地连 client) |
 | api | 8000 | ✅ |
 | web | 3000 | ✅ |
-| caddy | 80 | ✅(M3+ 加 HTTPS 后用)|
+| caddy | 80 | ✅(本地反代占位;HTTPS 不进入当前路线)|
 | langfuse | 3001 → 容器 3000 | ✅ |
 | langfuse-db | 5433(防跟业务 5432 撞) | ❌(只内部用) |
 
@@ -407,7 +404,7 @@ langfuse:
 
 - `postgres-data` volume → 业务 PG 数据
 - `langfuse_data` volume → langfuse PG 数据(独立,跟业务 PG 隔离)
-- `caddy-data / caddy-config` volume → caddy 证书 / 配置(M3 HTTPS 时用)
+- `caddy-data / caddy-config` volume → caddy 反代配置
 
 `docker compose down`(不带 `-v`)保留数据;`down -v` 一并删 volume(慎用,通常只在 LESSONS §7.3 自救时)。
 
@@ -426,7 +423,7 @@ langfuse:
 | **单测** | pytest(`tests/unit/**`)| pure function / service 不连 DB / agent prompt render 校验 / pydantic schema | 手动 test-api |
 | **集成测** | pytest + testcontainers(`tests/integration/**`,标 `@pytest.mark.integration`)| 真 PG + 真 alembic upgrade + service 完整路径(routers / services / models)| 手动 test-api |
 | **评测** | pnpm eval(`evals/suites/**`)| 真 LLM call + dataset.jsonl + Cohen's kappa | 手动 eval |
-| **e2e** | playwright(M3 起)| 浏览器跑用户路径(笔记上传 → 出题 → 答题 → 评分)| manual M3 后 |
+| **e2e** | 不新增 | 用户手动验收关键路径 | 不设 workflow |
 
 测试覆盖率门槛:`pyproject.toml` `fail_under = 70`,触发 `--cov-fail-under=70`。**不追求 90+** — 单测覆盖率假高有,LLM call 路径(agents/)放 70 比较诚实(走集成测 + 评测兜底)。
 
@@ -446,12 +443,12 @@ langfuse:
 
 - 改 prompt 必须 bump 版本号:`<agent>_v<X.Y.Z>.j2`(`answer_judge_v1.0.0.j2`)
 - 旧版**保留**(便于回退 + ablation 跑老 prompt 对比新 prompt)
-- 每类 bug 进 `evals/suites/<agent>/dataset.jsonl` 防回归(JDParser v1 历史 26 类 bug → 26 条 fixture,M0 后扩到 v2 6 个 suite)
+- 每类 bug 进 `evals/suites/<agent>/dataset.jsonl` 防回归(JDParser v1 历史 26 类 bug → 26 条 fixture,M0 后扩到 v2 5 个 suite)
 - prompt 改完由用户手动跑对应 eval workflow / 本地 eval 命令,报告快照存 `evals/reports/<suite>/latest.json`
 
 ## 10.3 LLM-as-Judge 可靠性(6-EVAL 详)
 
-- v2 评委是 LLM、被评者是人类答题文本或人类简历,不存在 LLM 评 LLM 自评关系;模型统一用 qwen3.6-flash,可靠性靠人工标注 + kappa 守门
+- v2 评委是 LLM、被评者是人类答题文本,不存在 LLM 评 LLM 自评关系;模型统一用 qwen3.6-flash,可靠性靠人工标注 + kappa 守门
 - 每季度 50 条人工复核 → Cohen's kappa(`evals/kappa.py`),`κ ≥ 0.7` 才放心用
 - κ < 0.7 触发 Judge prompt 改版 + 历史结果重跑(标"Judge v1.0.x 评的,可信度待验证")
 
@@ -539,7 +536,7 @@ async def submit_session(session_id: int):
 
 - **trace 异步发送**(SDK 内置队列 + 后台 flush),不阻塞主路径;Langfuse 服务挂了不影响产品
 - **dev 不走 trace**(`LANGFUSE_PUBLIC_KEY` 留空时 SDK 进 noop 模式) — debug 时不污染主 project
-- **Langfuse Project 分**:`jobcopilot-dev` / `jobcopilot-eval`(评测专用,数据流跟 dev 隔离)/ `jobcopilot-prod`(M4+ 才有)
+- **Langfuse Project 分**:`jobcopilot-dev` / `jobcopilot-eval`(评测专用,数据流跟 dev 隔离)
 
 # 12. 文档 / 沉淀纪律
 
