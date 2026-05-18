@@ -1,7 +1,7 @@
 ---
 title: AGENT DESIGN - JobCopilot v2(QueryRewriter + QuizGenerator + AnswerJudge + InterviewCoachAgent + JDAnalysisAgent)
 owner: lemma42796
-last_updated: 2026-05-17
+last_updated: 2026-05-18
 purpose: 锁核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / Agentic RAG 编排 / 模型路由 / 版本号策略
 ---
 
@@ -677,6 +677,12 @@ USER 模板:`JD 原文(可能含格式符 / OCR 残留):\n{raw_text}\n`
 - title 兜底:LLM 没抽到或 "" → 取 raw_text 前 50 字符 + "(未明确岗位)"
 - 落 jds 表(parsed_payload + parse_model + cost)
 
+实现状态(2026-05-18):
+
+- `jd_parser` 已接真实 LLM 调用:`Tier.CHEAP`,temperature `0.3`,response schema `JdParseOutput`
+- `POST /api/jds` 当前只支持文本粘贴;截图 OCR 预留在后续切片
+- `/jds` 前端已能手动粘贴 JD、解析入库、展示 parsed payload、修改 title、软删
+
 # 6. JdAggregator(多 JD 一键分析,M2.5)
 
 对累积型 JD 库做 **hierarchical map-reduce**(map 已在上传时完成,这里只跑 reduce + 二次合并 + Python 重算频次)。
@@ -812,6 +818,8 @@ class JDAnalysisOutput:
 | `match_notes(requirements)` | canonical requirements | note heading / chunk 粗匹配 | 可选,失败不阻塞报告 |
 | `generate_learning_path(requirements)` | 排序后的 canonical requirements | markdown + quiz topics | 禁止编具体课程 / 资源 |
 | `write_report(output)` | 结构化结果 | `jd_analyses` 快照 | 写失败整体失败,防报告丢失 |
+
+实现状态(2026-05-18):`load_jds` 的 filter 解析、`jd_analyses` placeholder 创建、报告列表 / 详情查询和 SSE 骨架已落地;`aggregate_requirements → dedupe_requirements → recompute_frequency → match_notes → generate_learning_path → write_report` 仍是下一切片。
 
 ## 7.3 编排原则
 

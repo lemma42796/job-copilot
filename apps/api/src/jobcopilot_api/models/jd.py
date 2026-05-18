@@ -1,4 +1,4 @@
-"""Jd ORM — DATA_MODEL §5.7. 累积型 JD 库(M2.5)。
+"""Jd ORM — DATA_MODEL §5.8. 累积型 JD 库(M2.5)。
 
 类比笔记:用户陆续上传,长期留存。上传即解析(jd_parser),parsed_payload
 JSONB 持久化复用,后续一键分析免重 LLM。截图场景:source='image_upload',

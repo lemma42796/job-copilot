@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-17
+last_updated: 2026-05-18
 purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指向其他文档。
 ---
 
@@ -23,6 +23,11 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 最新状态:
 
+- **M2.5 第一刀代码已落地**:JD 文本粘贴 → `jd_parser` LLM 立即解析 → `jds.parsed_payload` 入库 → `/jds` 前端列表 / 详情 / title 修改 / 软删已接通;后端新增 `/api/jds*` router,前端 sidebar 新增"JD 库"入口。
+- **本轮新增迁移 `0024_jd_analysis_report_fields`**:`jd_analyses` 增加 `quiz_topic_candidates` 与 `note_match_summary`;`/api/jd-analyses` 目前是 harness 占位,能解析 filter 并创建报告快照,但会明确返回 `jd_analysis_not_ready`,真正 aggregator / 学习路径后续接。
+- **本轮手动 dogfood 已跑通**:用户在 `/jds` 粘贴一条生成 JD 后确认"解析完了",说明前端提交、LLM 解析、入库、详情展示闭环可用。本轮未按项目约束跑自动化测试 / typecheck / build / Playwright。
+- **JD 截图考古结论已确认**:当前工作区和 git 历史没有 JD 截图原图;旧 commit `6825e6b` 只保留 `evals/suites/jd_extract/dataset.jsonl` 的 OCR 文本样本,原图当时在 gitignored `evals/raw/` 下且明确 never commit。后续如需截图链路,只能用新截图或从本地备份找原图。
+- **本轮服务状态**:Docker Postgres 已启动并跑过 `alembic upgrade head` 到 `0024`;本机 API `http://localhost:8000` 与 Next Web `http://localhost:3000` 已启动,`/jds` 可手动验。
 - **M2.1 已由用户确认收口**:收口 tag 为 `v0.5-m2.1-end`;下一阶段切到 M2.5。
 - **后续路线已收束**:M2.5 之后不再规划 SR / 弱点 dashboard / 岗位类三源出题 / 简历诊断 / 简历上传等分支;唯一生产力主线改为 `JDAnalysisAgent` 自动编排 OCR / 解析 / 聚合 / 去重 / 频次重算 / 笔记粗匹配 / 学习路径 / 报告保存。
 - **本轮 pivot 文档已同步**:`docs/1-PRD.md` / `docs/2-TECH_DESIGN.md` / `docs/3-DATA_MODEL.md` / `docs/4-API_SPEC.md` / `docs/5-AGENT_DESIGN.md` / `docs/6-EVAL_PLAN.md` / `docs/7-ROADMAP.md` / `docs/8-ENGINEERING.md` / `docs/9-LESSONS.md` 均已从旧后续路线改为 JD Intelligence Agent;新会话从本文档和 Roadmap 接续即可。
@@ -112,7 +117,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 | M1 | 笔记入库 + chunker + 树形导航 + Langfuse 起步 | ✅ `v0.3-m1-end` |
 | M2 | 主题 query → 全库 RAG → 出题 + Judge 三层评分 | ✅ 待 tag `v0.4-m2-end` |
 | M2.1 | `InterviewCoachAgent`:Agentic RAG 面试状态机 + 多轮纠偏分支 | ✅ `v0.5-m2.1-end` |
-| M2.5 | JD Intelligence Agent:自动读 JD → 岗位要求地图 → 学习路径 → quiz topics | ⏳ 当前 |
+| M2.5 | JD Intelligence Agent:自动读 JD → 岗位要求地图 → 学习路径 → quiz topics | ⏳ 当前:文本 JD 解析入库闭环已落地 |
 | M3 | 弱点跟踪 + SR + 岗位类三源出题 + 简历诊断 | 🪓 已砍,不再规划 |
 
 # 当前已落地
@@ -140,17 +145,19 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **eval 脚本资源收尾已补强**:`infra.langfuse` 避免无 key/noop 场景构造 Langfuse SDK client;DashScope client 有 Langfuse key 才走 `langfuse.openai`;smoke cleanup 不再为关闭而懒加载 embedder / llm singleton。
 - **百炼价格 / rerank 限制已记录**:`qwen3.6-flash` 控制台价格、Responses 工具价、`qwen3-rerank` 500 docs / token 上限 / `gte-rerank-v2` 下线提醒已写入代码注释与常量;rerank 请求本地截断到 500 docs;当前 reranker document format 为 `content + weak_source_context`。
 - **CI 策略调整**:所有 GitHub workflow 改为手动触发,避免 push 自动跑测试和邮件通知。
+- **M2.5 JD 文本上传解析闭环已落地**:`jd_parser` prompt / agent 接真实 LLM(`Tier.CHEAP`,temperature 0.3);`POST /api/jds` 文本粘贴立即解析入库;`GET/PATCH/DELETE /api/jds` 支持列表、详情、title 修改、软删;`/jds` 页面支持样例粘贴、解析入库、title 筛选、详情展示、删除。
+- **M2.5 JDAnalysis harness 骨架已落地**:`JdAnalysisCreateIn` 支持 `all/title/ids/recent` filter,单次上限 200;当前 `POST /api/jd-analyses` 只创建 placeholder 后返回 `jd_analysis_not_ready`,为下一刀接 `jd_aggregator` / note match / learning path 预留。
 
 # 下一刀
 
 等待用户指示再开工。推荐下一刀:
 
-1. **M2.5 第一刀:JDAnalysisAgent 骨架 + JD 单条上传解析入库**。先接文本粘贴 JD → `jd_parser` 立即解析 → 落 `jds` 表,并预留 `load_jds / parse_jd / aggregate_requirements / dedupe_requirements / generate_learning_path / write_report` 的 harness 节点。
+1. **M2.5 第二刀:接 JD 聚合报告最小闭环**。把当前 `/api/jd-analyses` placeholder 接到 `jd_aggregator`:读取已选 `jds.parsed_payload` → 聚合 responsibilities / hard_skills / soft_skills → Python 重算 frequency → 写 `aggregated_requirements / learning_path_md / quiz_topic_candidates / note_match_summary` → 前端在 `/jds` 增加"一键分析"入口与报告详情。
 
 备选:
 
-- 若继续 M2.5 产品闭环,下一步接截图 JD OCR(Qwen 多模态)和自动 title 抽取 / 用户可改。
-- 若继续 M2.5 聚合能力,先实现用户选范围(全部 / 最近 N 条 / 某 title)的一键分析入口,再接 hierarchical reduce。
+- 若继续 M2.5 输入能力,下一步接截图 JD OCR(Qwen 多模态);注意旧 BOSS 原图没有进仓库,只能用新截图或本地备份。
+- 若继续 M2.5 前端体验,先在 `/jds` 加分析 filter(全部 / 最近 N 条 / title / 勾选 ids)与历史报告列表,后端仍可先显示 not ready。
 - 若继续验收,手动完成一场 `/quiz` 后点"生成总结",确认 `test-notes/llm-notes/_recall/<session_id>.md` 生成,且 `GET /api/quiz/sessions/<id>/recall` 返回同一份 markdown。
 - 若继续验收,刷新 `/quiz?session=13` 应看到初答评分 89.67 与补答评分 100 两条 LLM 反馈都保留;刷新 `/quiz?session=14` 应看到已评分总分 95 与整场总结。
 - 若继续手动验自动分流,在 `/quiz` 一题评分后输入“为什么 HashMap 的数组大小必须是 2 的幂次?”应按追问处理;输入“我补充一下...”或大段技术陈述应按补答重评。
@@ -183,6 +190,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **[来自 M1] 评测指标挂到能力首次真实消费的里程碑**:例如 hybrid recall 挂 M2,不挂 M1 service 就绪阶段。
 - **[来自 M2] 聊天框 query 是唯一出题入口**:不要回退到节点点击出题。
 - **[来自 M2.5] 后续功能收束到 JD Intelligence Agent**:不再做 SR、弱点 dashboard、岗位类三源出题、简历上传 / 诊断 / 改写;生产力来自 LLM 被 harness 自动编排工具完成 JD 分析任务。
+- **[来自 M2.5] JD 截图原图不进仓库也不入库**:历史 BOSS 截图只留下 OCR 文本样本;新截图链路同样只持久化 OCR 后 raw_text,原图视为版权敏感临时输入。
 - **[来自 M2] Context Cache 不是会话记忆**:请求仍需带必要上下文;cache 只优化重复公共前缀的 provider 侧计算 / 计费。
 - **[来自 M2] Context Cache 当前默认关闭**:一次性答题流不依赖 5 分钟 TTL;等 M2.1 多轮面试讨论再开启显式 cache。
 - **[来自 M2] 本地开发优先 Docker Postgres + 本机 API**:api 容器需额外处理 `DASHSCOPE_API_KEY` 映射,日常避免走全 compose。

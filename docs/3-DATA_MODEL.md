@@ -1,7 +1,7 @@
 ---
 title: DATA MODEL - JobCopilot v2(笔记 / 题 / 答 / JD schema)
 owner: lemma42796
-last_updated: 2026-05-17
+last_updated: 2026-05-18
 purpose: 锁所有表 schema、字段语义、JSONB 子结构、索引、迁移路径
 ---
 
@@ -405,7 +405,8 @@ CREATE INDEX ix_jds_title
 设计要点:
 
 - **上传即解析**:POST /api/jds 立即调 jd_parser → parsed_payload 落库,**不延迟分析时机**;后续一键分析直接用 parsed_payload(免重复 LLM)
-- **截图场景**:`source='image_upload'`;raw_text 字段存的是 **Qwen 多模态 OCR 后的文本**(截图本身不存 — 太占空间;若需要再截图功能,后续加 file_id 引用)
+- **文本第一刀已落地**:当前 `/api/jds` 只接受 `source='text_paste'` + `raw_text`,上传即解析并写 `parsed_payload`;`source='image_upload'` 是后续截图 OCR 预留值。
+- **截图场景**:`source='image_upload'`;raw_text 字段存的是 **Qwen 多模态 OCR 后的文本**。截图本身不存、不进 git;历史 BOSS 截图原图当时就在 `evals/raw/` gitignore 下,当前仓库只可从旧 commit 恢复 OCR 文本样本。
 - **没有 user_id**:沿用 §3.1 单用户 MVP 设计;M4+ SaaS 化时统一 ALTER ADD COLUMN
 - **title 可空**:LLM 抽 title 失败或用户清空时,nullable
 
@@ -450,6 +451,7 @@ CREATE INDEX ix_jd_analyses_started ON jd_analyses (started_at DESC);
 - **没有 deleted_at**:报告生成后不可改;真要删,直接物理删除整行(用户主动操作)
 - **status 状态机**:in_progress → done / failed;in_progress 状态下 aggregated_requirements / learning_path_md 可为 NULL
 - **cache_hit_rate 字段**:dogfood 时反复重跑同一批 JD 的命中率,cost 优化指标
+- **M2.5 第一刀实现状态**:当前只落 `jd_analyses` 表和 filter / placeholder SSE 骨架;真正 `aggregated_requirements / learning_path_md / quiz_topic_candidates / note_match_summary` 由下一刀 `jd_aggregator` 写入。
 
 ## 5.10 已砍掉:`resumes` / `resume_analyses`
 

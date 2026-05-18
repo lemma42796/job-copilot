@@ -15,4 +15,18 @@ from jobcopilot_api.schemas.agents.jd_aggregator import Requirement
 def recompute_frequency(
     canonicals: list[Requirement], total_jds: int
 ) -> list[Requirement]:
-    raise NotImplementedError("M2.5")
+    if total_jds <= 0:
+        return []
+
+    normalized: list[Requirement] = []
+    for req in canonicals:
+        supporting_ids = sorted(set(req.supporting_jd_ids))
+        normalized.append(
+            req.model_copy(
+                update={
+                    "supporting_jd_ids": supporting_ids,
+                    "frequency": round(len(supporting_ids) / total_jds, 3),
+                }
+            )
+        )
+    return sorted(normalized, key=lambda item: (-item.frequency, item.id))

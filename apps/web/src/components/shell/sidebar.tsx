@@ -1,6 +1,6 @@
 'use client';
 
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { BriefcaseBusiness, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import type { Route } from 'next';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -15,6 +15,17 @@ type NavGroup = { key: string; title?: string; items: NavItem[] };
 const NAV: NavGroup[] = [
   { key: 'home', items: [{ href: '/', label: '首页', icon: <HomeIcon />, match: 'exact' }] },
   { key: 'quiz', items: [{ href: '/quiz', label: '练习', icon: <QuizIcon />, match: 'prefix' }] },
+  {
+    key: 'jds',
+    items: [
+      {
+        href: '/jds',
+        label: 'JD 库',
+        icon: <BriefcaseBusiness className="size-4" />,
+        match: 'prefix',
+      },
+    ],
+  },
   { key: 'notes', items: [{ href: '/notes', label: '笔记', icon: <NotesIcon />, match: 'prefix' }] },
 ];
 

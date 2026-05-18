@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 工程踩坑录(Lessons Learned)
 owner: lemma42796
-last_updated: 2026-05-17
+last_updated: 2026-05-18
 purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因 + 解决方案,按主题分 9 类。每条字段统一为「症状 / 根因 / 修法 / 沉淀」,链接详细切片归档,作为面向外部读者(招聘 / 协作者 / 博客读者)的索引视图。
 ---
 
@@ -188,6 +188,13 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 
 - **沉淀**:不论改多小,prompt 文件名 `vX.Y.Z.j2` 必须 bump,旧版保留(便于回退 + ablation)
 - **教训**:prompt 是产品代码,版本控制纪律必须严格
+
+## 5.9 JD 截图原图是临时输入,不要当可恢复项目资产
+
+- **症状**:M2.5 续作时以为"以前有 JD 截图",但当前工作区和 git history 都找不到原始图片。
+- **根因**:旧 commit `6825e6b` 的提交信息写了 "3 boss screenshots",实际提交的是 `evals/suites/jd_extract/dataset.jsonl` OCR 后文本样本;原图当时放在 `evals/raw/`,被 `.gitignore` 明确标为 "Raw screenshots — never commit"(版权敏感)。
+- **修法**:把旧 OCR 文本样本视为可恢复 fixture,不要再假设原图在仓库里。M2.5 新截图链路同样只持久化 OCR 后 `raw_text`,原图作为临时输入处理。
+- **沉淀**:版权敏感截图 / 招聘原件不能靠 git 留档;若后续需要可重复评测,必须保存脱敏 OCR 文本或合成截图 fixture,不要保存真实平台原图。
 
 ---
 

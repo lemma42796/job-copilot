@@ -1,7 +1,7 @@
 ---
 title: API SPEC - JobCopilot v2(REST + SSE 端点契约)
 owner: lemma42796
-last_updated: 2026-05-17
+last_updated: 2026-05-18
 purpose: 锁前后端接口契约;每个端点的 path / method / 请求 / 响应 / SSE 事件序列
 ---
 
@@ -807,11 +807,9 @@ data: {"ok": true}
 
 ## 6.1 `POST /api/jds`
 
-单条上传 JD(文本或截图二选一),后端**立即** jd_parser 解析并落库。
+单条上传 JD。**当前实现只支持文本粘贴**;后端立即调用 `jd_parser` 解析并落库。截图 OCR 是后续切片,不会在本端点存原图。
 
-请求(multipart/form-data 或 application/json,二选一):
-
-**文本方式**(`Content-Type: application/json`):
+请求(`Content-Type: application/json`):
 ```json
 {
   "source": "text_paste",
@@ -819,9 +817,10 @@ data: {"ok": true}
 }
 ```
 
-**截图方式**(`Content-Type: multipart/form-data`):
-- field `source`: `"image_upload"`
-- field `image`: 图片文件(≤ 7MB,JPEG/PNG/WEBP/HEIC)
+约束:
+
+- `source` 当前必须是 `text_paste`;传 `image_upload` 会返回 `VALIDATION_ERROR`
+- `raw_text` 长度 `1..10000` 字符,后端会 `strip()`
 
 响应 201:
 ```json
@@ -829,6 +828,7 @@ data: {"ok": true}
   "id": 123,
   "source": "text_paste",
   "title": "Java 后端工程师",
+  "raw_text": "岗位:Java 后端工程师\n职责:1. 负责...",
   "parsed_payload": {
     "title": "Java 后端工程师",
     "responsibilities": [...],
@@ -837,13 +837,18 @@ data: {"ok": true}
     "experience_years": "3-5",
     "education": "本科及以上"
   },
+  "parse_model": "qwen3.6-flash",
+  "parse_prompt_version": "v1.0",
+  "parse_tokens_in": 1200,
+  "parse_tokens_out": 260,
+  "parse_cost_cny": "0.001234",
   "created_at": "2026-05-08T03:14:00Z"
 }
 ```
 
-错误:`400 invalid_image_format` / `413 image_too_large` / `500 ocr_failed` / `500 jd_parse_failed`(retry 2 次仍失败)
+错误:`422 VALIDATION_ERROR` / `500 jd_parse_failed`
 
-**截图流程**:multipart 上传 → 服务端 base64 编码 → Qwen 多模态调用(prompt:"请提取这张 JD 截图里的完整文本,只返回文本不加解释")→ 拿到 raw_text → 走文本方式同流程入 jd_parser。
+**后续截图流程**:multipart 上传 → 服务端 base64 编码 → Qwen 多模态调用(prompt:"请提取这张 JD 截图里的完整文本,只返回文本不加解释")→ 拿到 raw_text → 复用文本方式入 jd_parser。原图不入库、不进 git;只持久化 OCR 后文本。
 
 ## 6.2 `GET /api/jds`
 
@@ -887,7 +892,7 @@ data: {"ok": true}
 
 ## 6.6 `POST /api/jd-analyses`(**SSE**)
 
-一键分析。**单次上限 200 条 JD**(超过 422)。
+一键分析。**单次上限 200 条 JD**(超过 422)。当前实现是 harness 骨架:会先解析 filter 并创建 `jd_analyses` placeholder,随后 SSE 明确返回 `jd_analysis_not_ready`;真正 map-reduce 聚合、学习路径和 note match 在下一切片接入。
 
 请求:
 ```json
@@ -910,6 +915,19 @@ SSE 事件:
 event: started
 data: {"job_id": "...", "resource_id": 7, "jd_count": 100}
 
+event: progress
+data: {"phase": "loading_parsed", "jd_count": 100}
+
+event: error
+data: {"code": "jd_analysis_not_ready", "detail": "JDAnalysisAgent harness 已建立,聚合节点将在后续切片接入"}
+
+event: done
+data: {"ok": false}
+```
+
+目标完成态事件序列:
+
+```
 event: progress
 data: {"phase": "loading_parsed", "jd_count": 100}
 
@@ -952,6 +970,7 @@ data: {"ok": true}
 |------|----|
 | `jd_count_exceeds_limit` | filter 命中 > 200 条,SSE 起手前 422 |
 | `jd_count_zero` | filter 命中 0 条 |
+| `jd_analysis_not_ready` | 当前 harness 已建,聚合节点还未接入 |
 | `aggregator_call_failed` | LLM 聚合调用失败(已重试) |
 
 ## 6.7 `GET /api/jd-analyses`

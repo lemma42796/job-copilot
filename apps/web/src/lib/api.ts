@@ -132,6 +132,115 @@ export async function deleteJd(id: number): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// JD Intelligence(M2.5 — JD 库 + 上传即解析)
+// ---------------------------------------------------------------------------
+//
+// schema 暂时手写,后续 pnpm gen:api 之后可以替换为
+// components['schemas']['JdOut'] 等生成版本。
+
+export type JdLibrarySource = 'text_paste' | 'image_upload';
+
+export type JdLibraryCreateInput = {
+  source?: JdLibrarySource;
+  raw_text: string;
+};
+
+export type JdLibraryPatchInput = {
+  title?: string | null;
+};
+
+export type JdParsedPayload = {
+  title?: string;
+  responsibilities?: string[];
+  hard_skills?: string[];
+  soft_skills?: string[];
+  experience_years?: string | null;
+  education?: string | null;
+  extras?: Record<string, unknown>;
+};
+
+export type JdLibraryItem = {
+  id: number;
+  source: JdLibrarySource;
+  title: string;
+  raw_text: string;
+  parsed_payload: JdParsedPayload & Record<string, unknown>;
+  parse_model?: string | null;
+  parse_prompt_version?: string | null;
+  parse_tokens_in?: number | null;
+  parse_tokens_out?: number | null;
+  parse_cost_cny?: string | number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type JdLibraryListItem = {
+  id: number;
+  title: string;
+  source: JdLibrarySource;
+  raw_text_preview: string;
+  hard_skills_count: number;
+  created_at: string;
+};
+
+export type JdLibraryListResponse = {
+  items: JdLibraryListItem[];
+  next_cursor: number | null;
+  has_more: boolean;
+};
+
+export async function createJdLibraryItem(
+  input: JdLibraryCreateInput,
+): Promise<JdLibraryItem> {
+  return jsonFetch<JdLibraryItem>('/api/jds', {
+    method: 'POST',
+    body: JSON.stringify({
+      source: input.source ?? 'text_paste',
+      raw_text: input.raw_text,
+    }),
+  });
+}
+
+export async function listJdLibrary(
+  opts: {
+    title?: string;
+    cursor?: number | null;
+    limit?: number;
+    signal?: AbortSignal;
+  } = {},
+): Promise<JdLibraryListResponse> {
+  const params = new URLSearchParams();
+  if (opts.title) params.set('title', opts.title);
+  if (opts.cursor) params.set('cursor', String(opts.cursor));
+  if (opts.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return jsonFetch<JdLibraryListResponse>(`/api/jds${qs ? `?${qs}` : ''}`, {
+    signal: opts.signal,
+  });
+}
+
+export async function getJdLibraryItem(
+  id: number,
+  signal?: AbortSignal,
+): Promise<JdLibraryItem> {
+  return jsonFetch<JdLibraryItem>(`/api/jds/${id}`, { signal });
+}
+
+export async function patchJdLibraryItem(
+  id: number,
+  input: JdLibraryPatchInput,
+): Promise<JdLibraryItem> {
+  return jsonFetch<JdLibraryItem>(`/api/jds/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteJdLibraryItem(id: number): Promise<void> {
+  await jsonFetch<void>(`/api/jds/${id}`, { method: 'DELETE' });
+}
+
+// ---------------------------------------------------------------------------
 // Files
 // ---------------------------------------------------------------------------
 

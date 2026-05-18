@@ -1,4 +1,4 @@
-"""JdAnalysis ORM — DATA_MODEL §5.8. 一键分析快照(M2.5)。
+"""JdAnalysis ORM — DATA_MODEL §5.9. 一键分析快照(M2.5)。
 
 每次"一键分析"产出一行,jd_ids 数组锁定本次范围。**快照不更新** — 报告
 生成后不可改;用户后续删除某条 JD 不影响历史报告(jd_ids 里 id 可能 dangling,
@@ -35,6 +35,16 @@ class JdAnalysis(Base, IDMixin):
         postgresql.JSONB
     )
     learning_path_md: Mapped[str | None] = mapped_column(Text())
+    quiz_topic_candidates: Mapped[list[dict[str, Any]]] = mapped_column(
+        postgresql.JSONB,
+        nullable=False,
+        server_default=text("'[]'::jsonb"),
+    )
+    note_match_summary: Mapped[list[dict[str, Any]]] = mapped_column(
+        postgresql.JSONB,
+        nullable=False,
+        server_default=text("'[]'::jsonb"),
+    )
 
     total_tokens_in: Mapped[int | None] = mapped_column(Integer)
     total_tokens_out: Mapped[int | None] = mapped_column(Integer)
