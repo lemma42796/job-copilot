@@ -4,12 +4,13 @@
 - POST /api/jds:文本入库 → 立即调 jd_parser agent → 落 parsed_payload
 - GET/PATCH/DELETE /api/jds:JD 库基础管理
 
-一键分析的 filter 解析和报告表查询也先落骨架;真正 map-reduce 聚合留到
-后续切片接 `jd_aggregator`。
+一键分析走固定 harness:filter 解析 → 加载 parsed_payload → jd_aggregator
+同义合并 + Python 重算频次 → 笔记粗匹配 → 写 jd_analyses 报告。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator
@@ -17,14 +18,23 @@ from datetime import datetime, timezone
 from typing import Any
 
 import sqlalchemy as sa
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from jobcopilot_api.agents.jd_aggregator import agent as jd_aggregator_agent
 from jobcopilot_api.agents.jd_parser import agent as jd_parser_agent
 from jobcopilot_api.agents.jd_parser.prompts import PROMPT_VERSION as JD_PARSE_VERSION
 from jobcopilot_api.errors import JobCopilotError, NotFoundError, ValidationError
 from jobcopilot_api.llm.errors import LLMError
 from jobcopilot_api.models.jd import Jd
 from jobcopilot_api.models.jd_analysis import JdAnalysis
+from jobcopilot_api.models.note import Note
+from jobcopilot_api.models.note_chunk import NoteChunk
+from jobcopilot_api.schemas.agents.jd_aggregator import (
+    JdAggregateInput,
+    ParsedJdForAggregation,
+    Requirement,
+)
 from jobcopilot_api.schemas.agents.jd_parser import JdParseInput, JdParseOutput
 from jobcopilot_api.schemas.jd import (
     AggregatedRequirement,
@@ -64,6 +74,12 @@ class JdCountExceedsLimitError(JobCopilotError):
     status_code = 422
     code = "jd_count_exceeds_limit"
     title = "JD 数量超过单次分析上限"
+
+
+class JdAggregatorCallFailedError(JobCopilotError):
+    status_code = 502
+    code = "aggregator_call_failed"
+    title = "JD 聚合失败"
 
 
 async def upload_jd(session: AsyncSession, payload: JdCreateIn) -> JdOut:
@@ -169,39 +185,102 @@ async def start_analysis_sse(
     analysis_id: int,
     jd_count: int,
 ) -> AsyncIterator[dict[str, Any]]:
-    """M2.5 harness SSE 骨架。
+    """M2.5 一键分析 SSE。
 
     placeholder 已在返回 EventSourceResponse 前创建,所以 filter 错误仍能按
-    REST 语义返回 422。真正的 aggregate/dedupe/frequency/learning_path 后续
-    切片接入,当前明确返回 error,避免用户误以为报告已经生成。
+    REST 语义返回 422。这里开始执行真实聚合并把报告写回 `jd_analyses`。
     """
 
-    yield _ev(
-        "started",
-        {
-            "job_id": f"jd-analysis-{uuid.uuid4().hex}",
-            "resource_id": analysis_id,
-            "jd_count": jd_count,
-        },
-    )
-    yield _ev("progress", {"phase": "loading_parsed", "jd_count": jd_count})
+    queue: asyncio.Queue[dict[str, str] | None] = asyncio.Queue()
 
-    async with sessionmaker() as session:
-        analysis = await session.get(JdAnalysis, analysis_id)
-        if analysis is not None:
-            analysis.status = "failed"
-            analysis.failed_at = datetime.now(timezone.utc)
-            analysis.failure_reason = "jd_aggregator_not_ready"
-            await session.commit()
+    async def emit(event: str, data: dict[str, Any]) -> None:
+        await queue.put(_ev(event, data))
 
-    yield _ev(
-        "error",
-        {
-            "code": "jd_analysis_not_ready",
-            "detail": "JDAnalysisAgent harness 已建立,聚合节点将在后续切片接入",
-        },
-    )
-    yield _ev("done", {"ok": False})
+    async def worker() -> None:
+        try:
+            await emit(
+                "started",
+                {
+                    "job_id": f"jd-analysis-{uuid.uuid4().hex}",
+                    "resource_id": analysis_id,
+                    "jd_count": jd_count,
+                },
+            )
+            await emit("progress", {"phase": "loading_parsed", "jd_count": jd_count})
+            parsed_jds = await _load_parsed_jds(sessionmaker, analysis_id)
+
+            aggregate = await jd_aggregator_agent.run(
+                JdAggregateInput(parsed_jds=parsed_jds),
+                on_progress=lambda data: emit("progress", data),
+            )
+
+            await emit("progress", {"phase": "note_matching"})
+            async with sessionmaker() as session:
+                note_match_summary = await _safe_match_notes(
+                    session, aggregate.aggregated_requirements
+                )
+                await emit("progress", {"phase": "quiz_topic_generating"})
+                quiz_topics = _build_quiz_topic_candidates(
+                    aggregate.aggregated_requirements,
+                    note_match_summary,
+                )
+                analysis = await session.get(JdAnalysis, analysis_id)
+                if analysis is None:
+                    raise NotFoundError(f"jd_analysis {analysis_id} 不存在")
+                analysis.status = "done"
+                analysis.aggregated_requirements = [
+                    req.model_dump(mode="json")
+                    for req in aggregate.aggregated_requirements
+                ]
+                analysis.learning_path_md = aggregate.learning_path_md
+                analysis.quiz_topic_candidates = quiz_topics
+                analysis.note_match_summary = note_match_summary
+                analysis.total_tokens_in = aggregate.total_tokens_in
+                analysis.total_tokens_out = aggregate.total_tokens_out
+                analysis.total_cost_cny = aggregate.total_cost_cny
+                analysis.cache_hit_rate = aggregate.cache_hit_rate
+                analysis.completed_at = datetime.now(timezone.utc)
+                analysis.failed_at = None
+                analysis.failure_reason = None
+                await session.commit()
+
+            await emit(
+                "result",
+                {
+                    "analysis_id": analysis_id,
+                    "requirement_count": len(aggregate.aggregated_requirements),
+                    "quiz_topic_count": len(quiz_topics),
+                    "url": f"/api/jd-analyses/{analysis_id}",
+                },
+            )
+            await emit("done", {"ok": True})
+        except LLMError as exc:
+            wrapped = JdAggregatorCallFailedError(exc.detail)
+            await _mark_analysis_failed(sessionmaker, analysis_id, wrapped.detail)
+            await emit("error", _error_payload(wrapped))
+            await emit("done", {"ok": False})
+        except JobCopilotError as exc:
+            await _mark_analysis_failed(sessionmaker, analysis_id, exc.detail)
+            await emit("error", _error_payload(exc))
+            await emit("done", {"ok": False})
+        except Exception as exc:
+            wrapped = JdAggregatorCallFailedError(str(exc))
+            await _mark_analysis_failed(sessionmaker, analysis_id, wrapped.detail)
+            await emit("error", _error_payload(wrapped))
+            await emit("done", {"ok": False})
+        finally:
+            await queue.put(None)
+
+    task = asyncio.create_task(worker())
+    try:
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield event
+    finally:
+        if not task.done():
+            task.cancel()
 
 
 async def list_analyses(
@@ -229,6 +308,204 @@ async def get_analysis(session: AsyncSession, analysis_id: int) -> JdAnalysisOut
     if analysis is None:
         raise NotFoundError(f"jd_analysis {analysis_id} 不存在")
     return _analysis_to_out(analysis)
+
+
+async def _load_parsed_jds(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    analysis_id: int,
+) -> list[ParsedJdForAggregation]:
+    async with sessionmaker() as session:
+        analysis = await session.get(JdAnalysis, analysis_id)
+        if analysis is None:
+            raise NotFoundError(f"jd_analysis {analysis_id} 不存在")
+        rows = (
+            (
+                await session.execute(
+                    sa.select(Jd).where(Jd.id.in_(list(analysis.jd_ids)))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_id = {jd.id: jd for jd in rows}
+        parsed_jds: list[ParsedJdForAggregation] = []
+        for jd_id in analysis.jd_ids:
+            jd = by_id.get(jd_id)
+            if jd is None:
+                continue
+            try:
+                parsed = JdParseOutput.model_validate(jd.parsed_payload)
+            except PydanticValidationError:
+                continue
+            parsed_jds.append(ParsedJdForAggregation(jd_id=jd.id, parsed=parsed))
+        if not parsed_jds:
+            raise JdCountZeroError("没有可用于聚合的 parsed_payload")
+        return parsed_jds
+
+
+async def _safe_match_notes(
+    session: AsyncSession,
+    requirements: list[Requirement],
+) -> list[dict[str, Any]]:
+    try:
+        return await _match_notes(session, requirements)
+    except Exception:
+        await session.rollback()
+        return [
+            {
+                "req_id": req.id,
+                "canonical_text": req.canonical_text,
+                "status": "unknown",
+                "matched_note_ids": [],
+            }
+            for req in requirements
+        ]
+
+
+async def _match_notes(
+    session: AsyncSession,
+    requirements: list[Requirement],
+) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
+    for req in requirements:
+        canonical_ids = await _find_matching_note_ids(session, [req.canonical_text])
+        all_ids = canonical_ids
+        if not all_ids:
+            all_ids = await _find_matching_note_ids(session, _note_match_phrases(req))
+        status = "missing"
+        if canonical_ids:
+            status = "covered"
+        elif all_ids:
+            status = "partial"
+        summary.append(
+            {
+                "req_id": req.id,
+                "canonical_text": req.canonical_text,
+                "status": status,
+                "matched_note_ids": all_ids,
+            }
+        )
+    return summary
+
+
+async def _find_matching_note_ids(
+    session: AsyncSession,
+    phrases: list[str],
+) -> list[int]:
+    cleaned = _clean_match_phrases(phrases)
+    if not cleaned:
+        return []
+    note_clauses = []
+    chunk_clauses = []
+    for phrase in cleaned:
+        pattern = f"%{phrase}%"
+        note_clauses.append(Note.title.ilike(pattern))
+        chunk_clauses.append(NoteChunk.content.ilike(pattern))
+
+    note_ids: set[int] = set()
+    note_rows = (
+        await session.execute(
+            sa.select(Note.id)
+            .where(Note.deleted_at.is_(None))
+            .where(sa.or_(*note_clauses))
+            .limit(5)
+        )
+    ).scalars()
+    note_ids.update(int(row) for row in note_rows)
+
+    chunk_rows = (
+        await session.execute(
+            sa.select(NoteChunk.note_id).where(sa.or_(*chunk_clauses)).limit(5)
+        )
+    ).scalars()
+    note_ids.update(int(row) for row in chunk_rows)
+    return sorted(note_ids)[:5]
+
+
+def _note_match_phrases(req: Requirement) -> list[str]:
+    return _clean_match_phrases([req.canonical_text, *req.raw_phrases])
+
+
+def _clean_match_phrases(phrases: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for phrase in phrases:
+        normalized = " ".join(phrase.split()).strip()
+        if len(normalized) < 2 or len(normalized) > 80:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(normalized)
+        if len(result) >= 8:
+            break
+    return result
+
+
+def _build_quiz_topic_candidates(
+    requirements: list[Requirement],
+    note_match_summary: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    status_by_req = {
+        str(item.get("req_id")): str(item.get("status") or "unknown")
+        for item in note_match_summary
+    }
+    topics: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    preferred = [req for req in requirements if req.category in {"硬技能", "职责"}]
+    fallback = [req for req in requirements if req.category == "软技能"]
+    for req in [*preferred, *fallback]:
+        topic = _topic_text(req)
+        key = topic.casefold()
+        if not topic or key in seen:
+            continue
+        seen.add(key)
+        topics.append(
+            {
+                "topic": topic,
+                "priority": _topic_priority(req.frequency),
+                "source_req_ids": [req.id],
+                "frequency": req.frequency,
+                "note_match_status": status_by_req.get(req.id, "unknown"),
+                "category": req.category,
+            }
+        )
+        if len(topics) >= 12:
+            break
+    return topics
+
+
+def _topic_text(req: Requirement) -> str:
+    text = req.canonical_text.strip()
+    return text[:120]
+
+
+def _topic_priority(frequency: float) -> str:
+    if frequency >= 0.8:
+        return "high"
+    if frequency >= 0.5:
+        return "medium"
+    return "low"
+
+
+async def _mark_analysis_failed(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    analysis_id: int,
+    reason: str,
+) -> None:
+    async with sessionmaker() as session:
+        analysis = await session.get(JdAnalysis, analysis_id)
+        if analysis is None:
+            return
+        analysis.status = "failed"
+        analysis.failed_at = datetime.now(timezone.utc)
+        analysis.failure_reason = reason
+        await session.commit()
+
+
+def _error_payload(exc: JobCopilotError) -> dict[str, Any]:
+    return {"code": exc.code, "detail": exc.detail}
 
 
 async def _get_active_or_404(session: AsyncSession, jd_id: int) -> Jd:

@@ -189,6 +189,90 @@ export type JdLibraryListResponse = {
   has_more: boolean;
 };
 
+export type JdAnalysisFilter =
+  | { type: 'all'; value?: null; ids?: null; n?: null }
+  | { type: 'title'; value: string; ids?: null; n?: null }
+  | { type: 'ids'; ids: number[]; value?: null; n?: null }
+  | { type: 'recent'; n: number; value?: null; ids?: null };
+
+export type JdAnalysisCreateInput = {
+  filter: JdAnalysisFilter;
+  filter_description?: string | null;
+};
+
+export type AggregatedRequirement = {
+  id: string;
+  canonical_text: string;
+  category: string;
+  frequency: number;
+  raw_phrases: string[];
+  supporting_jd_ids: number[];
+};
+
+export type JdQuizTopicCandidate = {
+  topic: string;
+  priority: 'high' | 'medium' | 'low' | string;
+  source_req_ids: string[];
+  frequency: number;
+  note_match_status: 'covered' | 'partial' | 'missing' | 'unknown' | string;
+  category?: string;
+};
+
+export type JdNoteMatchSummaryItem = {
+  req_id: string;
+  canonical_text?: string;
+  status: 'covered' | 'partial' | 'missing' | 'unknown' | string;
+  matched_note_ids: number[];
+};
+
+export type JdAnalysisListItem = {
+  id: number;
+  jd_count: number;
+  filter_description?: string | null;
+  status: string;
+  requirement_count: number;
+  quiz_topic_count: number;
+  started_at: string;
+  completed_at?: string | null;
+  failed_at?: string | null;
+};
+
+export type JdAnalysisListResponse = {
+  items: JdAnalysisListItem[];
+  next_cursor: number | null;
+  has_more: boolean;
+};
+
+export type JdAnalysisReport = {
+  id: number;
+  jd_ids: number[];
+  jd_count: number;
+  filter_description?: string | null;
+  status: string;
+  aggregated_requirements: AggregatedRequirement[];
+  learning_path_md?: string | null;
+  quiz_topic_candidates: JdQuizTopicCandidate[];
+  note_match_summary: JdNoteMatchSummaryItem[];
+  total_tokens_in?: number | null;
+  total_tokens_out?: number | null;
+  total_cost_cny?: string | number | null;
+  cache_hit_rate?: string | number | null;
+  started_at: string;
+  completed_at?: string | null;
+  failed_at?: string | null;
+  failure_reason?: string | null;
+};
+
+export type JdAnalysisSseFrame =
+  | SseFrame<'started', { job_id: string; resource_id: number; jd_count: number }>
+  | SseFrame<'progress', { phase: string; jd_count?: number; batch?: number; total?: number }>
+  | SseFrame<
+      'result',
+      { analysis_id: number; requirement_count: number; quiz_topic_count: number; url: string }
+    >
+  | SseFrame<'error', { code: string; detail: string }>
+  | SseFrame<'done', { ok: boolean }>;
+
 export async function createJdLibraryItem(
   input: JdLibraryCreateInput,
 ): Promise<JdLibraryItem> {
@@ -238,6 +322,38 @@ export async function patchJdLibraryItem(
 
 export async function deleteJdLibraryItem(id: number): Promise<void> {
   await jsonFetch<void>(`/api/jds/${id}`, { method: 'DELETE' });
+}
+
+export function createJdAnalysis(
+  input: JdAnalysisCreateInput,
+): AsyncGenerator<JdAnalysisSseFrame> {
+  return streamSse<JdAnalysisSseFrame>(`${API_BASE_URL}/api/jd-analyses`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-User-Id': USER_ID,
+    },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function listJdAnalyses(
+  opts: { cursor?: number | null; limit?: number; signal?: AbortSignal } = {},
+): Promise<JdAnalysisListResponse> {
+  const params = new URLSearchParams();
+  if (opts.cursor) params.set('cursor', String(opts.cursor));
+  if (opts.limit) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return jsonFetch<JdAnalysisListResponse>(`/api/jd-analyses${qs ? `?${qs}` : ''}`, {
+    signal: opts.signal,
+  });
+}
+
+export async function getJdAnalysis(
+  id: number,
+  signal?: AbortSignal,
+): Promise<JdAnalysisReport> {
+  return jsonFetch<JdAnalysisReport>(`/api/jd-analyses/${id}`, { signal });
 }
 
 // ---------------------------------------------------------------------------

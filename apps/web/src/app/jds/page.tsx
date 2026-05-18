@@ -2,10 +2,15 @@
 
 import {
   AlertCircle,
+  BarChart3,
   BriefcaseBusiness,
   CheckCircle2,
+  ClipboardList,
+  ExternalLink,
   FileText,
+  ListChecks,
   Loader2,
+  PlayCircle,
   RefreshCw,
   Save,
   Search,
@@ -20,14 +25,22 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import {
   ApiError,
+  createJdAnalysis,
   createJdLibraryItem,
   deleteJdLibraryItem,
+  getJdAnalysis,
   getJdLibraryItem,
+  listJdAnalyses,
   listJdLibrary,
   patchJdLibraryItem,
+  type AggregatedRequirement,
+  type JdAnalysisFilter,
+  type JdAnalysisListItem,
+  type JdAnalysisReport,
   type JdLibraryItem,
   type JdLibraryListItem,
   type JdParsedPayload,
+  type JdQuizTopicCandidate,
 } from '@/lib/api';
 import { formatRelative } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -37,6 +50,10 @@ type AsyncState =
   | { kind: 'loading' }
   | { kind: 'success'; message?: string }
   | { kind: 'error'; message: string };
+
+type ActiveView = 'jd' | 'analysis';
+type AnalysisScope = 'all' | 'recent' | 'title' | 'selected';
+type AnalysisInput = { filter: JdAnalysisFilter; description: string };
 
 const SAMPLE_JD = `岗位：Java 后端工程师
 职责：
@@ -63,6 +80,16 @@ export default function JdsPage() {
   const [editingTitle, setEditingTitle] = useState('');
   const [titleState, setTitleState] = useState<AsyncState>({ kind: 'idle' });
   const [deleteState, setDeleteState] = useState<AsyncState>({ kind: 'idle' });
+  const [activeView, setActiveView] = useState<ActiveView>('jd');
+  const [analysisScope, setAnalysisScope] = useState<AnalysisScope>('all');
+  const [recentCount, setRecentCount] = useState(50);
+  const [analysisItems, setAnalysisItems] = useState<JdAnalysisListItem[]>([]);
+  const [selectedAnalysisId, setSelectedAnalysisId] = useState<number | null>(null);
+  const [selectedAnalysis, setSelectedAnalysis] = useState<JdAnalysisReport | null>(null);
+  const [analysisListState, setAnalysisListState] = useState<AsyncState>({ kind: 'idle' });
+  const [analysisDetailState, setAnalysisDetailState] = useState<AsyncState>({ kind: 'idle' });
+  const [analysisRunState, setAnalysisRunState] = useState<AsyncState>({ kind: 'idle' });
+  const [analysisProgress, setAnalysisProgress] = useState<string[]>([]);
 
   const loadList = useCallback(
     async (cursor: number | null = null, append = false) => {
@@ -92,9 +119,24 @@ export default function JdsPage() {
     [appliedTitle],
   );
 
+  const loadAnalyses = useCallback(async () => {
+    setAnalysisListState({ kind: 'loading' });
+    try {
+      const data = await listJdAnalyses({ limit: 20 });
+      setAnalysisItems(data.items);
+      setAnalysisListState({ kind: 'idle' });
+    } catch (err) {
+      setAnalysisListState({ kind: 'error', message: errorMessage(err) });
+    }
+  }, []);
+
   useEffect(() => {
     void loadList();
   }, [loadList]);
+
+  useEffect(() => {
+    void loadAnalyses();
+  }, [loadAnalyses]);
 
   useEffect(() => {
     if (selectedId == null) {
@@ -119,6 +161,28 @@ export default function JdsPage() {
     return () => controller.abort();
   }, [selectedId]);
 
+  useEffect(() => {
+    if (selectedAnalysisId == null) {
+      setSelectedAnalysis(null);
+      setAnalysisDetailState({ kind: 'idle' });
+      return;
+    }
+
+    const controller = new AbortController();
+    setSelectedAnalysis(null);
+    setAnalysisDetailState({ kind: 'loading' });
+    getJdAnalysis(selectedAnalysisId, controller.signal)
+      .then((detail) => {
+        setSelectedAnalysis(detail);
+        setAnalysisDetailState({ kind: 'idle' });
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setAnalysisDetailState({ kind: 'error', message: errorMessage(err) });
+      });
+    return () => controller.abort();
+  }, [selectedAnalysisId]);
+
   const parsedPayload = selectedDetail?.parsed_payload;
   const stats = useMemo(() => buildStats(parsedPayload), [parsedPayload]);
 
@@ -141,6 +205,7 @@ export default function JdsPage() {
       setRawText('');
       setSubmitState({ kind: 'success', message: `已解析：${created.title}` });
       setSelectedId(created.id);
+      setActiveView('jd');
       setSelectedDetail(created);
       setEditingTitle(created.title);
       setItems((current) => [
@@ -187,10 +252,79 @@ export default function JdsPage() {
       const remaining = items.filter((item) => item.id !== selectedDetail.id);
       setItems(remaining);
       setSelectedId(remaining[0]?.id ?? null);
+      setActiveView('jd');
       setSelectedDetail(null);
       setDeleteState({ kind: 'idle' });
     } catch (err) {
       setDeleteState({ kind: 'error', message: errorMessage(err) });
+    }
+  };
+
+  const buildAnalysisInput = (): AnalysisInput | null => {
+    if (analysisScope === 'all') {
+      return { filter: { type: 'all' }, description: '全部 JD' };
+    }
+    if (analysisScope === 'recent') {
+      const n = Math.max(1, Math.min(200, Math.floor(recentCount || 1)));
+      return { filter: { type: 'recent', n }, description: `最近 ${n} 条 JD` };
+    }
+    if (analysisScope === 'title') {
+      const value = (appliedTitle || titleFilter).trim();
+      if (!value) {
+        setAnalysisRunState({ kind: 'error', message: '先输入 title 筛选词' });
+        return null;
+      }
+      return { filter: { type: 'title', value }, description: `title: ${value}` };
+    }
+    if (selectedId == null) {
+      setAnalysisRunState({ kind: 'error', message: '先选中一条 JD' });
+      return null;
+    }
+    return {
+      filter: { type: 'ids', ids: [selectedId] },
+      description: selectedDetail?.title ? `单条: ${selectedDetail.title}` : `单条 JD #${selectedId}`,
+    };
+  };
+
+  const appendAnalysisProgress = (message: string) => {
+    setAnalysisProgress((current) => [...current.slice(-7), message]);
+  };
+
+  const runAnalysis = async () => {
+    const input = buildAnalysisInput();
+    if (!input) return;
+    setAnalysisRunState({ kind: 'loading' });
+    setAnalysisProgress([]);
+    let resultAnalysisId: number | null = null;
+    try {
+      for await (const frame of createJdAnalysis({
+        filter: input.filter,
+        filter_description: input.description,
+      })) {
+        if (frame.event === 'started') {
+          appendAnalysisProgress(`报告 #${frame.data.resource_id} 已创建`);
+        } else if (frame.event === 'progress') {
+          appendAnalysisProgress(formatAnalysisPhase(frame.data));
+        } else if (frame.event === 'result') {
+          resultAnalysisId = frame.data.analysis_id;
+          appendAnalysisProgress(
+            `${frame.data.requirement_count} 个要求 / ${frame.data.quiz_topic_count} 个 topic`,
+          );
+        } else if (frame.event === 'error') {
+          throw new Error(frame.data.detail || frame.data.code);
+        } else if (frame.event === 'done' && !frame.data.ok) {
+          throw new Error('分析未完成');
+        }
+      }
+      setAnalysisRunState({ kind: 'success', message: '分析完成' });
+      await loadAnalyses();
+      if (resultAnalysisId != null) {
+        setSelectedAnalysisId(resultAnalysisId);
+        setActiveView('analysis');
+      }
+    } catch (err) {
+      setAnalysisRunState({ kind: 'error', message: errorMessage(err) });
+      await loadAnalyses();
     }
   };
 
@@ -210,7 +344,7 @@ export default function JdsPage() {
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(360px,460px)_minmax(0,1fr)]">
         <section className="min-h-0 overflow-y-auto border-b border-border bg-surface p-4 lg:border-r lg:border-b-0">
           <div className="rounded-lg border border-border bg-background p-4">
             <div className="flex items-center justify-between gap-3">
@@ -232,7 +366,7 @@ export default function JdsPage() {
               value={rawText}
               onChange={(event) => setRawText(event.target.value)}
               placeholder="岗位：Java 后端工程师..."
-              className="mt-4 min-h-[360px] resize-none rounded-lg bg-surface leading-relaxed"
+              className="mt-4 min-h-[180px] resize-y rounded-lg bg-surface leading-relaxed"
             />
             <div className="mt-3 flex items-center justify-between gap-3">
               <span
@@ -262,11 +396,73 @@ export default function JdsPage() {
             </div>
             <StateLine state={submitState} className="mt-3" />
           </div>
-        </section>
 
-        <section className="grid min-h-0 grid-cols-1 overflow-hidden xl:grid-cols-[360px_minmax(0,1fr)]">
-          <div className="flex min-h-0 flex-col border-b border-border bg-background xl:border-r xl:border-b-0">
-            <div className="shrink-0 border-b border-border p-4">
+          <div className="mt-4 rounded-lg border border-border bg-background p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base font-semibold">一键分析</h2>
+                <p className="text-[13px] text-muted">聚合岗位要求</p>
+              </div>
+              <Button
+                type="button"
+                onClick={runAnalysis}
+                disabled={analysisRunState.kind === 'loading'}
+              >
+                {analysisRunState.kind === 'loading' ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <PlayCircle className="size-4" />
+                )}
+                开始
+              </Button>
+            </div>
+
+            <div className="mt-4 grid gap-2">
+              <label className="text-xs font-medium text-muted" htmlFor="analysis-scope">
+                范围
+              </label>
+              <select
+                id="analysis-scope"
+                value={analysisScope}
+                onChange={(event) => setAnalysisScope(event.target.value as AnalysisScope)}
+                className="h-9 rounded-lg border border-input bg-surface px-3 text-sm outline-none"
+              >
+                <option value="all">全部 JD</option>
+                <option value="recent">最近 N 条</option>
+                <option value="title">title 筛选</option>
+                <option value="selected">当前选中</option>
+              </select>
+              {analysisScope === 'recent' ? (
+                <Input
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={recentCount}
+                  onChange={(event) => setRecentCount(Number(event.target.value))}
+                  className="h-9 rounded-lg bg-surface"
+                />
+              ) : null}
+            </div>
+
+            <StateLine state={analysisRunState} className="mt-3" />
+            {analysisProgress.length ? (
+              <ul className="mt-3 space-y-1 text-xs text-muted">
+                {analysisProgress.map((item, index) => (
+                  <li key={`${item}-${index}`} className="flex items-center gap-2">
+                    <CheckCircle2 className="size-3" />
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+
+          <div className="mt-4 rounded-lg border border-border bg-background">
+            <div className="border-b border-border p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h2 className="text-base font-semibold">JD 列表</h2>
+                <span className="text-xs text-muted">{items.length} 条</span>
+              </div>
               <div className="flex gap-2">
                 <Input
                   value={titleFilter}
@@ -299,7 +495,7 @@ export default function JdsPage() {
               <StateLine state={listState} className="mt-2" />
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto p-2">
+            <div className="max-h-[340px] overflow-y-auto p-2">
               {items.length === 0 && listState.kind !== 'loading' ? (
                 <div className="px-3 py-10 text-center text-sm text-muted">暂无 JD</div>
               ) : null}
@@ -308,10 +504,13 @@ export default function JdsPage() {
                   <li key={item.id}>
                     <button
                       type="button"
-                      onClick={() => setSelectedId(item.id)}
+                      onClick={() => {
+                        setSelectedId(item.id);
+                        setActiveView('jd');
+                      }}
                       className={cn(
                         'w-full rounded-lg px-3 py-3 text-left transition-colors',
-                        selectedId === item.id
+                        activeView === 'jd' && selectedId === item.id
                           ? 'bg-[var(--color-selection)] text-[var(--color-selection-fg)]'
                           : 'hover:bg-black/[0.04]',
                       )}
@@ -338,7 +537,7 @@ export default function JdsPage() {
             </div>
 
             {hasMore ? (
-              <div className="shrink-0 border-t border-border p-3">
+              <div className="border-t border-border p-3">
                 <Button
                   type="button"
                   variant="outline"
@@ -355,27 +554,108 @@ export default function JdsPage() {
             ) : null}
           </div>
 
-          <div className="min-h-0 overflow-y-auto bg-surface">
-            {detailState.kind === 'loading' ? (
+          <div className="mt-4 rounded-lg border border-border bg-background p-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                <ClipboardList className="size-4" />
+                历史报告
+              </div>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                title="刷新报告"
+                onClick={() => void loadAnalyses()}
+              >
+                <RefreshCw className="size-4" />
+              </Button>
+            </div>
+            <StateLine state={analysisListState} className="mt-2" />
+            <div className="mt-2 max-h-[260px] space-y-1 overflow-y-auto">
+              {analysisItems.length === 0 && analysisListState.kind !== 'loading' ? (
+                <div className="py-4 text-center text-sm text-muted">暂无报告</div>
+              ) : null}
+              {analysisItems.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedAnalysisId(item.id);
+                    setActiveView('analysis');
+                  }}
+                  className={cn(
+                    'w-full rounded-lg px-3 py-2 text-left transition-colors',
+                    activeView === 'analysis' && selectedAnalysisId === item.id
+                      ? 'bg-[var(--color-selection)] text-[var(--color-selection-fg)]'
+                      : 'hover:bg-black/[0.04]',
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2 text-sm">
+                    <span>报告 #{item.id}</span>
+                    <StatusPill status={item.status} />
+                  </div>
+                  <div className="mt-1 truncate text-xs text-muted">
+                    {item.filter_description ?? '未命名范围'} · {item.jd_count} 条 JD
+                  </div>
+                  <div className="mt-1 text-[11px] text-muted">
+                    {item.requirement_count} 要求 / {item.quiz_topic_count} topics
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="min-h-0 overflow-y-auto bg-surface">
+            {activeView === 'analysis' && analysisDetailState.kind === 'loading' ? (
               <div className="flex h-full min-h-[320px] items-center justify-center text-sm text-muted">
                 <Loader2 className="mr-2 size-4 animate-spin" />
                 加载中
               </div>
             ) : null}
 
-            {detailState.kind === 'error' ? (
+            {activeView === 'analysis' && analysisDetailState.kind === 'error' ? (
+              <div className="p-6">
+                <StateLine state={analysisDetailState} />
+              </div>
+            ) : null}
+
+            {activeView === 'analysis' &&
+            !selectedAnalysis &&
+            analysisDetailState.kind !== 'loading' &&
+            analysisDetailState.kind !== 'error' ? (
+              <div className="flex h-full min-h-[320px] items-center justify-center text-sm text-muted">
+                选择一份报告
+              </div>
+            ) : null}
+
+            {activeView === 'analysis' && selectedAnalysis ? (
+              <AnalysisReportView report={selectedAnalysis} />
+            ) : null}
+
+            {activeView === 'jd' && detailState.kind === 'loading' ? (
+              <div className="flex h-full min-h-[320px] items-center justify-center text-sm text-muted">
+                <Loader2 className="mr-2 size-4 animate-spin" />
+                加载中
+              </div>
+            ) : null}
+
+            {activeView === 'jd' && detailState.kind === 'error' ? (
               <div className="p-6">
                 <StateLine state={detailState} />
               </div>
             ) : null}
 
-            {!selectedDetail && detailState.kind !== 'loading' && detailState.kind !== 'error' ? (
+            {activeView === 'jd' &&
+            !selectedDetail &&
+            detailState.kind !== 'loading' &&
+            detailState.kind !== 'error' ? (
               <div className="flex h-full min-h-[320px] items-center justify-center text-sm text-muted">
                 选择一条 JD
               </div>
             ) : null}
 
-            {selectedDetail ? (
+            {activeView === 'jd' && selectedDetail ? (
               <div className="space-y-4 p-5">
                 <div className="rounded-lg border border-border bg-background p-4">
                   <div className="flex flex-wrap items-center gap-2">
@@ -456,7 +736,6 @@ export default function JdsPage() {
                 </div>
               </div>
             ) : null}
-          </div>
         </section>
       </div>
     </div>
@@ -495,6 +774,154 @@ function StateLine({ state, className }: { state: AsyncState; className?: string
     >
       <AlertCircle className="size-3" />
       {state.message}
+    </div>
+  );
+}
+
+function StatusPill({ status }: { status: string }) {
+  const label =
+    status === 'done' ? '完成' : status === 'failed' ? '失败' : status === 'in_progress' ? '进行中' : status;
+  const tone =
+    status === 'done'
+      ? 'border-[var(--color-success-border)] text-[var(--color-success-fg)]'
+      : status === 'failed'
+        ? 'border-[var(--color-danger)] text-[var(--color-danger)]'
+        : 'border-border text-muted';
+  return (
+    <span className={cn('rounded-md border px-2 py-0.5 text-[11px]', tone)}>
+      {label}
+    </span>
+  );
+}
+
+function AnalysisReportView({ report }: { report: JdAnalysisReport }) {
+  const topRequirements = report.aggregated_requirements.slice(0, 40);
+  return (
+    <div className="space-y-4 p-5">
+      <div className="rounded-lg border border-border bg-background p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-[13px] font-medium text-muted">
+              <BarChart3 className="size-4" />
+              JD 分析报告
+            </div>
+            <h2 className="mt-1 truncate text-xl font-semibold">报告 #{report.id}</h2>
+            <div className="mt-2 text-sm text-muted">{report.filter_description ?? '未命名范围'}</div>
+          </div>
+          <StatusPill status={report.status} />
+        </div>
+        {report.failure_reason ? (
+          <div className="mt-3 rounded-lg border border-[var(--color-danger)] px-3 py-2 text-sm text-[var(--color-danger)]">
+            {report.failure_reason}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Metric label="JD 数" value={report.jd_count} />
+        <Metric label="要求数" value={report.aggregated_requirements.length} />
+        <Metric label="Topics" value={report.quiz_topic_candidates.length} />
+        <Metric label="成本" value={`${report.total_cost_cny ?? 0} CNY`} />
+      </div>
+
+      <section className="rounded-lg border border-border bg-background p-4">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="flex items-center gap-2 text-sm font-semibold">
+            <ListChecks className="size-4" />
+            岗位要求地图
+          </h3>
+          <span className="text-xs text-muted">Top {topRequirements.length}</span>
+        </div>
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full min-w-[680px] text-left text-sm">
+            <thead className="border-b border-border text-xs text-muted">
+              <tr>
+                <th className="py-2 pr-3 font-medium">要求</th>
+                <th className="py-2 pr-3 font-medium">类别</th>
+                <th className="py-2 pr-3 font-medium">频次</th>
+                <th className="py-2 pr-3 font-medium">证据 JD</th>
+                <th className="py-2 font-medium">原文短语</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {topRequirements.map((req) => (
+                <RequirementRow key={req.id} req={req} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="rounded-lg border border-border bg-background p-4">
+        <h3 className="text-sm font-semibold">学习路径</h3>
+        <pre className="mt-3 max-h-[520px] overflow-auto whitespace-pre-wrap rounded-lg bg-surface p-3 text-[13px] leading-relaxed text-foreground">
+          {report.learning_path_md || '暂无'}
+        </pre>
+      </section>
+
+      <section className="rounded-lg border border-border bg-background p-4">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold">Quiz Topics</h3>
+          <span className="text-xs text-muted">{report.quiz_topic_candidates.length}</span>
+        </div>
+        <div className="mt-3 grid gap-2">
+          {report.quiz_topic_candidates.length ? (
+            report.quiz_topic_candidates.map((topic, index) => (
+              <QuizTopicItem key={`${topic.topic}-${index}`} topic={topic} />
+            ))
+          ) : (
+            <div className="text-sm text-muted">暂无</div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="rounded-lg border border-border bg-background p-3">
+      <div className="text-xs text-muted">{label}</div>
+      <div className="mt-1 truncate text-xl font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function RequirementRow({ req }: { req: AggregatedRequirement }) {
+  return (
+    <tr className="align-top">
+      <td className="max-w-[260px] py-2 pr-3 font-medium">{req.canonical_text}</td>
+      <td className="py-2 pr-3 text-muted">{req.category}</td>
+      <td className="py-2 pr-3">{formatPercent(req.frequency)}</td>
+      <td className="py-2 pr-3 text-muted">
+        {req.supporting_jd_ids.slice(0, 8).map((id) => `#${id}`).join(' ')}
+        {req.supporting_jd_ids.length > 8 ? ' ...' : ''}
+      </td>
+      <td className="max-w-[280px] py-2 text-muted">
+        {req.raw_phrases.slice(0, 3).join(' / ')}
+      </td>
+    </tr>
+  );
+}
+
+function QuizTopicItem({ topic }: { topic: JdQuizTopicCandidate }) {
+  return (
+    <div className="rounded-lg border border-border bg-surface px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium">{topic.topic}</div>
+          <div className="mt-1 text-xs text-muted">
+            {topic.priority} · {formatPercent(topic.frequency)} · {topic.note_match_status}
+          </div>
+        </div>
+        <a
+          href={`/quiz?topic=${encodeURIComponent(topic.topic)}`}
+          className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs hover:bg-black/[0.04]"
+        >
+          <ExternalLink className="size-3" />
+          练习
+        </a>
+      </div>
     </div>
   );
 }
@@ -559,6 +986,27 @@ function formatUnknown(value: unknown): string {
   if (Array.isArray(value)) return value.map(formatUnknown).filter(Boolean).join('、');
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
+}
+
+function formatAnalysisPhase(data: { phase: string; batch?: number; total?: number }) {
+  const labels: Record<string, string> = {
+    loading_parsed: '读取 JD 快照',
+    reducing_batch: '合并要求',
+    merging: '二次合并',
+    frequency_recompute: '重算频次',
+    learning_path_gen: '生成学习路径',
+    note_matching: '匹配笔记',
+    quiz_topic_generating: '生成 topic',
+  };
+  const base = labels[data.phase] ?? data.phase;
+  if (data.phase === 'reducing_batch' && data.batch && data.total) {
+    return `${base} ${data.batch}/${data.total}`;
+  }
+  return base;
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(value * 100)}%`;
 }
 
 function errorMessage(err: unknown): string {

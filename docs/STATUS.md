@@ -23,65 +23,15 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 最新状态:
 
-- **M2.5 第一刀代码已落地**:JD 文本粘贴 → `jd_parser` LLM 立即解析 → `jds.parsed_payload` 入库 → `/jds` 前端列表 / 详情 / title 修改 / 软删已接通;后端新增 `/api/jds*` router,前端 sidebar 新增"JD 库"入口。
-- **本轮新增迁移 `0024_jd_analysis_report_fields`**:`jd_analyses` 增加 `quiz_topic_candidates` 与 `note_match_summary`;`/api/jd-analyses` 目前是 harness 占位,能解析 filter 并创建报告快照,但会明确返回 `jd_analysis_not_ready`,真正 aggregator / 学习路径后续接。
-- **本轮手动 dogfood 已跑通**:用户在 `/jds` 粘贴一条生成 JD 后确认"解析完了",说明前端提交、LLM 解析、入库、详情展示闭环可用。本轮未按项目约束跑自动化测试 / typecheck / build / Playwright。
+- **M2.5 第二刀代码已落地**:`/api/jd-analyses` 不再是 placeholder。现在会解析 `all/title/ids/recent` filter → 创建 `jd_analyses(in_progress)` → 读取 `jds.parsed_payload` → 调 `jd_aggregator` 做 batch reduce / merge / Python 频次重算 / 学习路径 → 做笔记粗匹配 → 生成 quiz topic 候选 → 写报告 `done`;失败会标 `failed` 并 SSE 返回 `error + done(false)`。
+- **`/jds` 前端已接一键分析与报告查看**:左侧工作台包含上传、分析范围、JD 列表、历史报告;右侧只展示当前 JD 详情或分析报告,已从原先拥挤三列改成两列。报告详情展示岗位要求地图、学习路径、quiz topics,topic 可跳到 `/quiz?topic=...`。
+- **本轮人工路径已走到报告可见**:用户浏览器里已看到 `报告 #1`、要求数 / topics / 成本与岗位要求地图;后续"Failed to fetch / 暂无报告"不应再作为当前事实,若复现优先查 API/Web dev server 是否仍在和 `NEXT_PUBLIC_API_BASE_URL`。
+- **JD 文本入库闭环仍有效**:JD 文本粘贴 → `jd_parser` LLM 立即解析 → `jds.parsed_payload` 入库 → `/jds` 列表 / 详情 / title 修改 / 软删已接通;截图 OCR 仍未接。
 - **JD 截图考古结论已确认**:当前工作区和 git 历史没有 JD 截图原图;旧 commit `6825e6b` 只保留 `evals/suites/jd_extract/dataset.jsonl` 的 OCR 文本样本,原图当时在 gitignored `evals/raw/` 下且明确 never commit。后续如需截图链路,只能用新截图或从本地备份找原图。
-- **本轮服务状态**:Docker Postgres 已启动并跑过 `alembic upgrade head` 到 `0024`;本机 API `http://localhost:8000` 与 Next Web `http://localhost:3000` 已启动,`/jds` 可手动验。
+- **本轮未跑自动化闸门**:按项目约束,未主动跑 pytest / mypy / ruff / pnpm typecheck / pnpm build / Playwright;只根据用户手动浏览器反馈和 Next dev 热更新收敛代码。新会话不要假设 API/Web dev server 仍在,需要时重新启动本机 API `:8000` 与 Next Web `:3000`。
 - **M2.1 已由用户确认收口**:收口 tag 为 `v0.5-m2.1-end`;下一阶段切到 M2.5。
 - **后续路线已收束**:M2.5 之后不再规划 SR / 弱点 dashboard / 岗位类三源出题 / 简历诊断 / 简历上传等分支;唯一生产力主线改为 `JDAnalysisAgent` 自动编排 OCR / 解析 / 聚合 / 去重 / 频次重算 / 笔记粗匹配 / 学习路径 / 报告保存。
 - **本轮 pivot 文档已同步**:`docs/1-PRD.md` / `docs/2-TECH_DESIGN.md` / `docs/3-DATA_MODEL.md` / `docs/4-API_SPEC.md` / `docs/5-AGENT_DESIGN.md` / `docs/6-EVAL_PLAN.md` / `docs/7-ROADMAP.md` / `docs/8-ENGINEERING.md` / `docs/9-LESSONS.md` 均已从旧后续路线改为 JD Intelligence Agent;新会话从本文档和 Roadmap 接续即可。
-- 本轮已接 `record_session_summary`:新增 `recall_service`, `finish_session` 会把 `agent_state.final_summary.markdown` 原子写入本地笔记根目录 `_recall/{session_id}.md`,DB 仍保存逻辑路径 `notes/_recall/{session_id}.md`;`GET /api/quiz/sessions/{id}/recall` 优先读落地文件,旧 session 文件缺失时回退 `agent_state.final_summary.markdown`。
-- 本轮新增 `JOBCOPILOT_NOTES_FS_ROOT`:用于配置逻辑 `notes/` 对应的本地 filesystem root;留空时 dev 环境优先用 `test-notes/llm-notes`,否则用项目下 `notes/`。已把 fallback `notes/` 加入 `.gitignore`,避免本地沉淀误入仓库。
-- 本轮同步正式文档:`docs/4-API_SPEC.md` / `docs/5-AGENT_DESIGN.md` / `docs/6-EVAL_PLAN.md` 已记录 `turn_type=auto` 实际分流、`judge_score_history` 无提升退出、`context_compacted / prior_turn_summary / token_budget`、flow smoke 10/10 口径,并把 `record_session_summary` 标为已接。
-- 本轮 `record_session_summary` 改动已提交并推送到 `origin/main`:`7d46bc4 feat: persist interview session recall markdown`。
-- 本轮未跑自动化测试 / typecheck / build / Playwright,也按用户指示跳过 `record_session_summary` 人工验收;文件写入闭环仍待用户后续手动确认。
-- 本轮新增 `apps/api/scripts/eval_interview_coach.py` 离线 runner:读取 `evals/suites/interview_coach/dataset.flow_smoke.jsonl`,stub Judge evidence,复用 `interview_service._decide_next_action`,输出 branch accuracy / remediation target / cumulative rejudge / loop exit / context pack / hallucination guard / recovery 指标;不连 DB、不调 LLM、不评 Judge label 质量。
-- 本轮按用户指令跑过 `uv run python apps/api/scripts/eval_interview_coach.py`:最新报告 `evals/reports/interview-coach-flow-smoke-20260517-132154.md`,10/10 通过,`branch_accuracy / remediation_target_accuracy / cumulative_rejudge / loop_exit / context_pack_pass / hallucination_guard / recovery_pass` 全部 1.000。
-- 本轮补 M2.1 `loop exit policy`:每轮 decision 把 `judge_score_history` 写入 `session_answers.remediation_state`;第 3 轮起若最近两轮总分提升都低于 5 且缺口不变,不再继续 `remediate`,而是以 `exit_reason=no_meaningful_improvement` 收住当前题。
-- 本轮补 deterministic context compaction / token budget 退出:第 3 轮起生成 `prior_turn_summary`,记录 `context_compacted` 事件;达到预算退出条件且仍需纠偏时以 `exit_reason=token_budget` 收住。v0 不调 LLM,只总结轮次数、分数变化与未解决缺口。
-- 本轮 `/quiz` 单输入框自动分流已接入:`AnswerTurnSubmitIn.turn_type` 默认 `auto`;后端按规则判 `initial / remediation / coach_question`。前端移除单独“问教练”按钮,统一发送 `auto`,SSE `started.turn_type` 返回实际分流,进度流显示“按答案处理 / 按追问处理”。
-- 本轮未跑 typecheck / build / Playwright;只按用户指令跑了离线 `eval_interview_coach` runner。
-- 本轮新增 `summarize_session / finish_session` 闭环:`POST /api/quiz/sessions/{id}/finish` SSE 不重新 Judge,基于每题最新评分、`answer_turns`、Judge gaps 与 `remediation_state` 生成 `final_summary / question_summaries / summary_context_pack`,写回 `quiz_sessions.agent_state`,追加 `session_summarized / session_finished` 事件,并把 session 标为 `submitted`。
-- 本轮新增 session 沉淀读取:`GET /api/quiz/sessions/{id}` 返回 `summary`;`GET /api/quiz/sessions/{id}/recall` 返回 session 沉淀 markdown。当前已从 DB summary 回退升级为优先读 `_recall/{id}.md` 文件。
-- 本轮 dogfood 已验收 finish session:按用户指令用本机 API + Next Web 查看 `/quiz?session=14`,`Langfuse Prompt 版本管理` 1 题初答后 Judge 给 Coverage 90 / Fidelity 100 / Depth 100 / Total 95,按钮切到"生成总结",点击后 session #14 变为"已评分",页面展示总分、做得好、反复缺口、复习建议和 `notes/_recall/14.md`。
-- 本轮新增 `evals/suites/interview_coach/` 最小流程型 fixture:`dataset.flow_smoke.jsonl` 10 条覆盖不纠偏、coverage 纠偏、fabricated 纠偏、depth 纠偏、多轮无提升退出、中途恢复、长上下文压缩和 finish summary;runner 已接入并跑通。
-- 本轮收尾已把必要交接上下文同步到正式文档:`docs/4-API_SPEC.md` 记录 `/finish` SSE 与 summary/recall 文件语义,`docs/5-AGENT_DESIGN.md` 记录已落地节点和 `record_session_summary`,`docs/6-EVAL_PLAN.md` 记录 `dataset.flow_smoke.jsonl` 与 runner 输出。
-- 本轮 M2.1 单题面试流继续推进:补答与追问教练已拆语义。`initial/remediation` 会追加到累计 `user_answer` 并重新跑 AnswerJudge;`coach_question` 走独立 `coach_chat` 解释链路,不改答案、不重评、不推进题目状态。
-- 本轮新增 `CoachChat` 非评分 agent:`coach_question` 输入上一轮 `coach_message/remediation_prompt/unresolved_gaps/累计答案/final_context_chunks`,只返回解释型 `coach_message`;追问与回复落 `session_events` 并通过 `coach_turns` 回放。
-- 本轮新增公共 `answer_judge_service`:统一承载 Judge context 构造、DB chunk id ↔ prompt-local `[N]` 映射、AnswerJudge hard timeout、输出校验、Python 算分、评分落库。`answer_service` 与 `interview_service` 不再互相借用 `answer_service._*` 私有 helper。
-- 本轮多轮聊天消息语义已调整:每一轮 LLM 评分反馈都从 `session_events` 组装为 `judge_turns`,前端按“用户初答 → 初答评分 → 用户补答 → 补答评分 → 追问 → 教练解释”渲染,不再只展示最新一条 `coach_message`。
-- 本轮本地 dogfood:按用户指令启动 Docker Postgres + 本机 API + Next Web,补跑 `alembic upgrade head` 从 `0020` 到 `0023`;`/quiz` 主题 `Langfuse Prompt 版本管理` session #13 初答 89.67,补答后 Coverage/Fidelity/Depth/Total 全部 100,验证补答重评链路有效。
-- 本轮未跑自动化测试 / typecheck / build / Playwright;只做了人工流程观察与数据库结果查看。当前服务在收尾前会停止 API/Web dev server,Postgres 保留。
-- 本地 dogfood 笔记库仍为 `test-notes/llm-notes` **119 篇 / 532,999 字符**;Docker Postgres 对齐 active notes 119 / chunks 2,090 / embedded 2,090 / pending 0。
-- `evals/suites/hybrid_search/` smoke 资产已进入 chunk-level 口径:15 篇 fixture + 12 条全库 chunk/anchor 标签;`direct_evidence_chunk_ids` 只放可直接回答 query 的 chunk。
-- `eval_hybrid_search_note_smoke.py` 已支持 live report + `.trace.jsonl` + `--score-trace` 离线重算;只改标签 / 打分口径时复用 trace,不重复调用 query rewrite / rerank。
-- 评测指标分母已澄清并落代码:`candidate_recall@15 / selected_recall@10 / mrr@10 / final_context_recall` 对有 direct evidence 的非 0 命中样本做 macro average;expected zero-hit 排除,unexpected zero-hit 的 final recall 记 0。top50 继续保留为诊断窗口 / rerank input,不再作为正式 candidate 指标名。
-- 0 命中分支已保存 `candidate_chunk_ids`:即使 `predicted_zero_hit=true`,也能检查系统是否召回了 1-2 个正确证据但未达出题阈值。
-- 新标签基线已按用户指令跑过:`evals/reports/hybrid-search-note-smoke-20260514-063244.md` + `.trace.jsonl`;12 cases 通过 6/12,`candidate_recall@50` 95.00%,`rerank_recall@10` 73.33%,`mrr@10` 70.83%,`final_context_recall` 73.33%,`final_context_precision` 6.63%,zero-hit 0/2,成本 ¥0.195307。
-- reranker metadata 已完成一轮 A/B:content-only 基线 `20260514-063244` 为 6/12、`rerank_recall@10` 73.33%;metadata 前置 `20260514-084642` 为 7/12、67.50%,不是净提升;当前保留代码为 direct-evidence instruct + `content + weak_source_context` 后置格式。
-- 当前保留版 smoke `hybrid-search-note-smoke-20260514-092218.md`:8/12,`candidate_recall@50` 95.00%,`rerank_recall@10` 69.17%,`mrr@10` 59.58%,`final_context_recall` 72.50%,zero-hit 0/2,成本 ¥0.251666;比前置 metadata 稳,但不是最终达标方案。
-- 本地 intent × chunk-type 降权已试跑但**未保留**:初版 `20260514-111912` 8/12、`rerank_recall@10` 63.33%;修正 hard-negative 误判后 `20260514-112042` 8/12、65.83%,hard-negative intrusion 从 4/12 降到 3/12、MRR 到 75.33%,但 direct evidence 覆盖下降,已回滚到弱 source context 方案。
-- smoke 脚本新增诊断/A-B 开关:`--rerank-mode provider|provider_blend|none`、`--rerank-input-top-k`、`--selected-top-k`、`--parent-doc-mode on|off`、`--query-embedding-cache-policy cache-only|live-on-miss`;trace/report 保存 `hybrid_rank → provider_rank → post_rank`、`rank_delta`、`rerank_score`、`final_score`、`governance_score`、`governance_flags`。
-- 纯 hybrid、无 parent-doc 曲线已跑:top20/30/40 均 7/12,`selected_recall@K` 72.50%/85.00%/91.67%,`final_context_precision` 13.00%/10.33%/8.50%,hard-negative 5/12,zero-hit 0/2。
-- provider rerank、无 parent-doc 曲线已跑:top20/30/40 为 6/12、6/12、5/12,`selected_recall@K` 84.17%/89.17%/95.00%,`final_context_precision` 15.50%/11.33%/9.00%,hard-negative 6/12、6/12、7/12,成本仍约 ¥0.251666。
-- 粗排→精排窄口径已跑:`10→5` 为 8/12、recall 56.67%、precision 30.00%、成本 ¥0.020096;`20→10` 为 8/12、61.67%、21.00%、¥0.040543;`30→20` 为 7/12、81.67%、15.00%、¥0.059062。
-- 当前判断:hybrid **召回强但排序不够好**。有些 direct evidence 落在 hybrid 30 名后,所以生产路径不能把 rerank input 收到 15;top50 仍要喂给 provider rerank。provider 只能当 challenger source,不能独占最终成员资格。
-- 粗排诊断代码已补强:smoke trace/report 记录 per-query vector / lexical / hybrid rank、跨 query RRF contribution、query vote、hard-negative/relevant 支持情况,并保留 q0 原话加权的 labeled-only 模拟。
-- Query Understanding v2 已接入代码:query_rewriter 输出 `intent / core_entities / must_keep_terms / weighted_queries`;用户原话 q0 固定 `weight=2.0`,改写 query 按 role 限权;`project_fact / boundary_question` 缺少保护词或 `zero_hit_candidate` 时保守只用原 query。
-- M2.1 RAG 第一刀 `source/type governance` 已保留:只在 `project_fact / boundary_question` 等 protected intent 下轻量调整候选来源权重。粗排 top10 从 `54.17% → 64.17%`,MRR `31.52% → 45.33%`,precision `17.00% → 20.00%`,hard-negative 仍 `1/12`。
-- 宽版 `protected_anchor_search` 已判定为负收益并回滚/收窄:它把 `candidate_recall@50 92.50% → 96.67%`,但 top10 从 `64.17%` 掉到 `60.83%`;根因是 anchor 补召回太宽,会把泛相关项目事实挤进紧窗口。
-- 当前保留的强锚点补召回是窄路由:状态恢复 query 只在 `JobCopilot + SSE/断线 + 恢复/重连` 语义同时出现时触发;provider failure query 只在 `provider/API + timeout + 429/rate-limit/retry-after` 同时出现时触发。二者都是精确失败样本修复,不是全局宽召回。
-- zero-hit 守门已从"候选数量"升级为"核心证据覆盖":`assess_query_support` 会检查 query 的强技术锚点是否被 top10 候选覆盖。Rust borrow checker / Kubernetes Operator 这类库内无证据 query 已能判 0 命中。
-- 对比型 query governance 已保留:`Outbox 和 MQ 有什么区别?` 这类 query 会识别两侧概念,优先抬含双方且有近距离 contrast 信号的直接证据,压只覆盖 MQ 一侧的泛相关内容。最终粗排 top10 report `20260515-163721`:12/12,`selected_recall@10 86.67%`,`MRR 67.00%`,`precision 29.00%`,hard-negative `0/12`,zero-hit `2/2`。
-- Provider 精排 top100→top10 已跑并判定不能裸用:`20260515-164421` 为 10/12,`selected_recall@10 69.17%`,`MRR 59.76%`,`precision 22.00%`,hard-negative `2/12`;问题不是 timeout/429,而是 reranker 忽略 source/type 与 contrast governance,会把已被粗排压下去的 hard-negative / 泛相关内容重新抬进 top10。
-- post-rerank governance/blend 已接入生产路径:`粗排 top50 → qwen3-rerank top50 → coarse/provider/governance blend → dynamic clean-context selection(3-10) → QuizGenerator evidence verifier`。粗排 top10 是 floor,top50 里的高置信 provider challenger 可以进最终上下文,低置信候选不为凑满 top10 被塞给下游;parent-doc 默认永久关闭,只保留作手动 A/B 诊断。
-- `provider_blend` 稳定生产口径已跑:`evals/reports/hybrid-search-note-smoke-20260516-095536.md` 为 12/12,`candidate_recall@15 91.67%`,`selected_recall@10 95.00%`,`final_context_recall 95.00%`,`final_context_precision 40.00%`,hard-negative `0/12`,zero-hit `2/2`,parent-doc off,query embedding cache-only。
-- selected topK=8 已判定为负收益并回滚:`evals/reports/hybrid-search-note-smoke-20260516-100624.md` precision `40.00% → 41.75%`,但 `selected_recall@10 / final_context_recall 95.00% → 90.00%`,说明最终材料包不能只追求更短,要守住 direct evidence。
-- query embedding cache 已接入 `search_service`:粗排每个 expanded query 先查 `llm_response_cache(feature=query_embedding)`,cache key 包含 `normalized_query + model + embed_version + dimensions`。smoke/eval 默认 `cache-only`,cache miss 直接失败,避免重复跑时继续请求 `text-embedding-v4`;产品链路默认仍允许 miss 后实时计算。
-- 已补 `docs/6-EVAL_PLAN.md` 第 7 节:trace schema、离线 rescore 跑法、macro average 口径、0 命中 candidate 保存语义。
-- 已补 `docs/9-LESSONS.md` §3.4:CLI 评测脚本不要在 Langfuse noop 模式下频繁构造 SDK client。
-- 本轮代码侧已缓解 smoke 脚本收尾卡住:无 Langfuse key 时不构造 Langfuse SDK / `langfuse.openai` client;评测脚本 cleanup 只关闭已存在的 embedder / llm singleton 并 shutdown Langfuse singleton。后续多次 smoke 已正常结束并写出 report / trace。
 - **M2 已由用户确认完成**:聊天框主题 query → 全库 RAG → 出题 → 答题 → Judge 三层评分 → session 恢复已跑通。
 - Context Cache 已验证 provider-side 命中,但因 5 分钟 TTL 不适合当前一次性答题流,已默认关闭显式 `cache_control`;后续多轮讨论面试题时再打开。
 - 本轮 QuizGenerator 引用 schema 已收口:prompt/schema 从 `v1.1` bump 到 `v1.2`;LLM 只输出 `reference_answer` 的 `[N]` 和 `reference_points[].evidence_chunk_ids`,后端派生 `reference_chunk_ids / source_chunk_ids` 并映射真实 `note_chunks.id`。
@@ -117,7 +67,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 | M1 | 笔记入库 + chunker + 树形导航 + Langfuse 起步 | ✅ `v0.3-m1-end` |
 | M2 | 主题 query → 全库 RAG → 出题 + Judge 三层评分 | ✅ 待 tag `v0.4-m2-end` |
 | M2.1 | `InterviewCoachAgent`:Agentic RAG 面试状态机 + 多轮纠偏分支 | ✅ `v0.5-m2.1-end` |
-| M2.5 | JD Intelligence Agent:自动读 JD → 岗位要求地图 → 学习路径 → quiz topics | ⏳ 当前:文本 JD 解析入库闭环已落地 |
+| M2.5 | JD Intelligence Agent:自动读 JD → 岗位要求地图 → 学习路径 → quiz topics | ⏳ 当前:文本 JD 入库 + 一键分析报告 MVP 已落地;OCR / eval / 规模化 dogfood 待接 |
 | M3 | 弱点跟踪 + SR + 岗位类三源出题 + 简历诊断 | 🪓 已砍,不再规划 |
 
 # 当前已落地
@@ -146,18 +96,19 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **百炼价格 / rerank 限制已记录**:`qwen3.6-flash` 控制台价格、Responses 工具价、`qwen3-rerank` 500 docs / token 上限 / `gte-rerank-v2` 下线提醒已写入代码注释与常量;rerank 请求本地截断到 500 docs;当前 reranker document format 为 `content + weak_source_context`。
 - **CI 策略调整**:所有 GitHub workflow 改为手动触发,避免 push 自动跑测试和邮件通知。
 - **M2.5 JD 文本上传解析闭环已落地**:`jd_parser` prompt / agent 接真实 LLM(`Tier.CHEAP`,temperature 0.3);`POST /api/jds` 文本粘贴立即解析入库;`GET/PATCH/DELETE /api/jds` 支持列表、详情、title 修改、软删;`/jds` 页面支持样例粘贴、解析入库、title 筛选、详情展示、删除。
-- **M2.5 JDAnalysis harness 骨架已落地**:`JdAnalysisCreateIn` 支持 `all/title/ids/recent` filter,单次上限 200;当前 `POST /api/jd-analyses` 只创建 placeholder 后返回 `jd_analysis_not_ready`,为下一刀接 `jd_aggregator` / note match / learning path 预留。
+- **M2.5 JDAnalysis 报告 MVP 已落地**:`JdAnalysisCreateIn` 支持 `all/title/ids/recent` filter,单次上限 200;`POST /api/jd-analyses` SSE 已接真实 `jd_aggregator`、笔记粗匹配、quiz topic 候选和报告写入;`GET /api/jd-analyses*` 与 `/jds` 报告详情已能回看岗位要求地图 / 学习路径 / topics。
 
 # 下一刀
 
 等待用户指示再开工。推荐下一刀:
 
-1. **M2.5 第二刀:接 JD 聚合报告最小闭环**。把当前 `/api/jd-analyses` placeholder 接到 `jd_aggregator`:读取已选 `jds.parsed_payload` → 聚合 responsibilities / hard_skills / soft_skills → Python 重算 frequency → 写 `aggregated_requirements / learning_path_md / quiz_topic_candidates / note_match_summary` → 前端在 `/jds` 增加"一键分析"入口与报告详情。
+1. **M2.5 第三刀:报告质量 hardening + dogfood 闭环**。用多条同岗位 JD 手动跑 2-3 份报告,重点看 canonical 合并质量、frequency 是否符合直觉、note match 是否误报、quiz topic 是否可直接进入 `/quiz`;再决定是先补 `jd_aggregator` eval runner,还是先接截图 OCR。
 
 备选:
 
 - 若继续 M2.5 输入能力,下一步接截图 JD OCR(Qwen 多模态);注意旧 BOSS 原图没有进仓库,只能用新截图或本地备份。
-- 若继续 M2.5 前端体验,先在 `/jds` 加分析 filter(全部 / 最近 N 条 / title / 勾选 ids)与历史报告列表,后端仍可先显示 not ready。
+- 若继续 M2.5 评测,补 `evals/suites/jd_aggregator/` + runner,先守同义合并 F1、frequency MAE、结构合规率。
+- 若继续 M2.5 前端体验,优化报告详情的 requirement drilldown、按 category / priority 筛选、topic 批量进入 `/quiz`;当前两列布局已经替代旧三列。
 - 若继续验收,手动完成一场 `/quiz` 后点"生成总结",确认 `test-notes/llm-notes/_recall/<session_id>.md` 生成,且 `GET /api/quiz/sessions/<id>/recall` 返回同一份 markdown。
 - 若继续验收,刷新 `/quiz?session=13` 应看到初答评分 89.67 与补答评分 100 两条 LLM 反馈都保留;刷新 `/quiz?session=14` 应看到已评分总分 95 与整场总结。
 - 若继续手动验自动分流,在 `/quiz` 一题评分后输入“为什么 HashMap 的数组大小必须是 2 的幂次?”应按追问处理;输入“我补充一下...”或大段技术陈述应按补答重评。

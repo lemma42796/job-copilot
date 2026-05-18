@@ -12,7 +12,7 @@ M0    仓库改造 + 文档重写                                               
 M1    笔记入库 + chunker + 树形导航 + Langfuse 起步                          ✅
 M2    聊天框主题类 query → 全库 RAG → 出题 + Judge 三层评分 + Judge tool use ✅
 M2.1  InterviewCoachAgent: Agentic RAG 面试状态机 + 工具调用 + 多轮纠偏分支 ✅
-M2.5  JD Intelligence Agent: 自动读 JD → 岗位要求地图 → 学习路径 → quiz topics ← 当前
+M2.5  JD Intelligence Agent: 自动读 JD → 岗位要求地图 → 学习路径 → quiz topics ← 当前(报告 MVP 已落地,OCR / eval / 规模化 dogfood 待接)
 ```
 
 不估工时,只讲依赖顺序与最佳实践。M2.5 之后不再规划 SR / 弱点 dashboard / 岗位类三源出题 / 简历诊断;所有后续生产力都收束到 JD Intelligence Agent。
@@ -183,11 +183,11 @@ M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",
 
 ## 退出标准(DoD)
 
-- [ ] 上传 50+ 条同岗位 JD(混合文本 + 截图),全部立即解析入库;截图 OCR 准确率(关键字段)≥ 90%。当前第一刀已完成**单条文本粘贴解析入库**。
-- [ ] "我的 JD 库" 列表能筛选 / 删除;LLM 自动抽 title 准确率 ≥ 80%(主观判断)。当前第一刀已完成列表、title 筛选、详情、title 修改、软删。
-- [ ] 一键分析跑通 100 条 JD:hierarchical reduce 5 batch + 二次合并 + 频次重算,P95 ≤ 60s
-- [ ] 学习路径 markdown 输出可读、按频次降序、覆盖至少 80% 高频要求,并给出 quiz topic 候选
-- [ ] 报告能让用户少做手工整理:至少包含要求频次、证据 JD、学习优先级和已有笔记粗匹配状态
+- [ ] 上传 50+ 条同岗位 JD(混合文本 + 截图),全部立即解析入库;截图 OCR 准确率(关键字段)≥ 90%。当前已完成**文本粘贴解析入库**,截图 OCR 未接。
+- [ ] "我的 JD 库" 列表能筛选 / 删除;LLM 自动抽 title 准确率 ≥ 80%(主观判断)。当前已完成列表、title 筛选、详情、title 修改、软删,准确率还未正式抽样。
+- [ ] 一键分析跑通 100 条 JD:hierarchical reduce + 二次合并 + 频次重算,P95 ≤ 60s。当前已接真实 `/api/jd-analyses` SSE、`jd_aggregator`、报告写入和前端报告详情,但未做 100 条规模化验收。
+- [ ] 学习路径 markdown 输出可读、按频次降序、覆盖至少 80% 高频要求,并给出 quiz topic 候选。当前已生成学习路径和最多 12 个 topic 候选,质量需 dogfood / eval 验证。
+- [ ] 报告能让用户少做手工整理:至少包含要求频次、证据 JD、学习优先级和已有笔记粗匹配状态。当前报告 MVP 已含这些字段,前端两列布局已优化,仍需多报告验证信息密度。
 - [ ] `evals/suites/jd_aggregator/` 数据集:30 条人工标 ground truth(聚合后的 canonical 列表 + 频次),同义合并准确率 ≥ 0.85
 - [ ] 200 条 JD 一键分析总成本 ≤ ¥1.0,LLM cache 命中率 ≥ 50%(重跑场景)
 - [ ] Langfuse 按 jd_analysis_id 过滤能看完整 map-reduce trace

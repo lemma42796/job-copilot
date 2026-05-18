@@ -451,7 +451,7 @@ CREATE INDEX ix_jd_analyses_started ON jd_analyses (started_at DESC);
 - **没有 deleted_at**:报告生成后不可改;真要删,直接物理删除整行(用户主动操作)
 - **status 状态机**:in_progress → done / failed;in_progress 状态下 aggregated_requirements / learning_path_md 可为 NULL
 - **cache_hit_rate 字段**:dogfood 时反复重跑同一批 JD 的命中率,cost 优化指标
-- **M2.5 第一刀实现状态**:当前只落 `jd_analyses` 表和 filter / placeholder SSE 骨架;真正 `aggregated_requirements / learning_path_md / quiz_topic_candidates / note_match_summary` 由下一刀 `jd_aggregator` 写入。
+- **M2.5 第二刀实现状态**:当前 `POST /api/jd-analyses` 已接真实 `jd_aggregator` 和报告写入。成功报告会填充 `aggregated_requirements / learning_path_md / quiz_topic_candidates / note_match_summary`、token / cost audit 与 `completed_at`;失败报告写 `status='failed' / failed_at / failure_reason`。
 
 ## 5.10 已砍掉:`resumes` / `resume_analyses`
 
@@ -605,7 +605,7 @@ label 取值:`supported`(chunk 直接支持)/ `inferred`(合理外推但 chunk �
 - `canonical_text`:LLM 同义合并后的 canonical 表达(从 raw_phrases 选最佳代表 + 适当规范化)
 - `frequency`:**Python 重算**(不信 LLM 算术)— `len(supporting_jd_ids) / jd_count`
 - `supporting_jd_ids`:这条 canonical 在多少条 JD 的 raw_phrases 里命中过(同义匹配由 LLM 在二次 reduce 时建立);**Python 端按这个数组重算 frequency**(SSoT)
-- `category`:`硬技能` / `软技能` / `经验` / `学历` 四类
+- `category`:`职责` / `硬技能` / `软技能` / `经验` / `学历` 五类
 
 ## 6.8 `jd_analyses.learning_path_md`(学习路径 markdown)
 

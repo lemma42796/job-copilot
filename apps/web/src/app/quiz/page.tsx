@@ -976,6 +976,14 @@ export default function QuizPage() {
     return () => controller.abort();
   }, [loadSession]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('session')) return;
+    const topic = params.get('topic');
+    if (topic?.trim()) setQuery(topic.trim());
+  }, []);
+
   const saveAllAnswers = useCallback(async () => {
     if (sessionId === null) return;
     for (const q of questions) {

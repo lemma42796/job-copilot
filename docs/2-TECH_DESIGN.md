@@ -108,8 +108,7 @@ apps/api/src/jobcopilot_api/
 │   ├── quiz_service.py             # 出题编排(调 quiz_generator agent + 落库)
 │   ├── interview_service.py        # M2.1:InterviewCoachAgent session 编排 / checkpoint / SSE
 │   ├── answer_service.py           # 答题落库 + 算分 + finalize session
-│   ├── jd_service.py               # M2.5:JD 上传(立即调 jd_parser)+ 一键分析编排(map-reduce + Python 重算频次)
-│   └── jd_report_service.py        # M2.5:报告持久化 + quiz topic 候选
+│   └── jd_service.py               # M2.5:JD 上传(立即调 jd_parser)+ 一键分析编排(map-reduce + note match + quiz topic + 报告写入)
 ├── agents/                         # LLM 调用层
 │   ├── embedder/                   # 沿用 v1
 │   ├── quiz_generator/
@@ -374,7 +373,7 @@ FE 选范围 + 点"一键分析" → POST /api/jd-analyses {filter} (SSE)
 
   → 抽 raw_skills(平均 30/条 → ≤6000 项)
   → 分 batch(每 batch 600 项)
-  → for batch in batches: (并发)
+  → for batch in batches: (当前逐批执行;后续可在 provider 限流明确后再并发)
       emit progress{phase=reducing_batch, batch=N/total}
       agents/jd_aggregator.batch_reduce(batch)  → partial canonical list
 
@@ -387,8 +386,15 @@ FE 选范围 + 点"一键分析" → POST /api/jd-analyses {filter} (SSE)
   → emit progress{phase=learning_path_gen}
       agents/jd_aggregator.gen_learning_path(unified)  → markdown
 
-  → UPDATE jd_analyses SET status=done, aggregated_requirements, learning_path_md, total_cost_cny
-  → emit result{analysis_id, requirement_count}
+  → emit progress{phase=note_matching}
+      services/jd_service._match_notes(requirements)  → title / chunk ilike 粗匹配
+
+  → emit progress{phase=quiz_topic_generating}
+      services/jd_service._build_quiz_topic_candidates(requirements, note_match_summary)
+
+  → UPDATE jd_analyses SET status=done, aggregated_requirements, learning_path_md,
+      quiz_topic_candidates, note_match_summary, total_cost_cny, completed_at
+  → emit result{analysis_id, requirement_count, quiz_topic_count}
   → emit done(ok=true)
 ```
 

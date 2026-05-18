@@ -698,12 +698,16 @@ class JdAggregateInput:
 class JdAggregateOutput:
     aggregated_requirements: list[Requirement]
     learning_path_md: str
+    total_tokens_in: int
+    total_tokens_out: int
+    total_cost_cny: Decimal
+    cache_hit_rate: Decimal | None
 
 @dataclass
 class Requirement:
     id: str                            # "req_1"
     canonical_text: str
-    category: Literal["硬技能","软技能","经验","学历"]
+    category: Literal["职责","硬技能","软技能","经验","学历"]
     raw_phrases: list[str]             # 同义词原文
     supporting_jd_ids: list[int]       # 哪几条 JD 的 raw 列表里命中过(同义匹配建立)
     frequency: float                   # Python 重算 = len(supporting_jd_ids) / len(parsed_jds)
@@ -819,7 +823,7 @@ class JDAnalysisOutput:
 | `generate_learning_path(requirements)` | 排序后的 canonical requirements | markdown + quiz topics | 禁止编具体课程 / 资源 |
 | `write_report(output)` | 结构化结果 | `jd_analyses` 快照 | 写失败整体失败,防报告丢失 |
 
-实现状态(2026-05-18):`load_jds` 的 filter 解析、`jd_analyses` placeholder 创建、报告列表 / 详情查询和 SSE 骨架已落地;`aggregate_requirements → dedupe_requirements → recompute_frequency → match_notes → generate_learning_path → write_report` 仍是下一切片。
+实现状态(2026-05-18):`load_jds` 的 filter 解析、`jd_analyses(in_progress)` 创建、报告列表 / 详情查询和 SSE 已落地;`aggregate_requirements → dedupe_requirements → recompute_frequency → match_notes → generate_learning_path → write_report` 已接成最小闭环。当前 `match_notes` 是标题 / chunk `ilike` 粗匹配,失败降级为 `unknown`;quiz topic 由高频 `硬技能 / 职责` requirement 派生,最多 12 个。
 
 ## 7.3 编排原则
 

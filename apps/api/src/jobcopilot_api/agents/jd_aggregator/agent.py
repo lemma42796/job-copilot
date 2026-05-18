@@ -5,22 +5,339 @@
 2. 二次 reduce / merge(LLM)
 3. Python 重算频次(frequency.py)
 4. 学习路径生成(LLM,temperature 0.5)
-
-总 LLM 调用 ≈ 12,P95 ≤ 60s。
 """
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from decimal import Decimal
+from typing import Any
+
+from jobcopilot_api.agents.jd_aggregator.frequency import recompute_frequency
+from jobcopilot_api.agents.jd_aggregator.prompts import (
+    PROMPT_NAME_BATCH,
+    PROMPT_NAME_MERGE,
+    PROMPT_NAME_PATH,
+    SYSTEM_BATCH,
+    SYSTEM_LEARNING_PATH,
+    SYSTEM_MERGE,
+    render_user_batch,
+    render_user_learning_path,
+    render_user_merge,
+)
+from jobcopilot_api.infra.llm import get_llm_client
+from jobcopilot_api.llm.client import LLMClient, LLMResult
+from jobcopilot_api.llm.tiers import Tier
 from jobcopilot_api.schemas.agents.jd_aggregator import (
     JdAggregateInput,
     JdAggregateOutput,
+    JdLearningPathOutput,
+    JdRequirementReduceOutput,
+    ParsedJdForAggregation,
+    RawRequirementItem,
+    Requirement,
+    RequirementCategory,
+    RequirementCandidate,
 )
 
-PROMPT_NAME_BATCH = "jd_aggregator_batch"
-PROMPT_NAME_MERGE = "jd_aggregator_merge"
-PROMPT_NAME_PATH = "jd_aggregator_learning_path"
-PROMPT_VERSION = "v1.0"
+RAW_REQUIREMENT_BATCH_SIZE = 600
+LEARNING_PATH_REQUIREMENT_LIMIT = 80
+REDUCE_TEMPERATURE = 0.3
+LEARNING_PATH_TEMPERATURE = 0.5
+
+ProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
-async def run(inp: JdAggregateInput) -> JdAggregateOutput:
-    raise NotImplementedError("M2.5")
+class _CallStats:
+    def __init__(self) -> None:
+        self.tokens_in = 0
+        self.tokens_out = 0
+        self.cached_tokens = 0
+        self.cost_cny = Decimal("0")
+
+    def add(self, result: LLMResult) -> None:
+        self.tokens_in += result.tokens_in
+        self.tokens_out += result.tokens_out
+        self.cached_tokens += result.cached_tokens
+        self.cost_cny += result.cost_cny
+
+    def cache_hit_rate(self) -> Decimal | None:
+        if self.tokens_in <= 0:
+            return None
+        return (Decimal(self.cached_tokens) / Decimal(self.tokens_in)).quantize(
+            Decimal("0.001")
+        )
+
+
+async def run(
+    inp: JdAggregateInput,
+    *,
+    llm: LLMClient | None = None,
+    on_progress: ProgressCallback | None = None,
+) -> JdAggregateOutput:
+    client = llm or get_llm_client()
+    stats = _CallStats()
+    jd_ids = {item.jd_id for item in inp.parsed_jds}
+    raw_items = _extract_raw_items(inp.parsed_jds)
+    if not raw_items:
+        return JdAggregateOutput(
+            aggregated_requirements=[],
+            learning_path_md="## 你的学习路径\n\n本次 JD 没有可聚合的结构化要求。",
+        )
+
+    batches = _batch(raw_items, RAW_REQUIREMENT_BATCH_SIZE)
+    partials: list[RequirementCandidate] = []
+    for index, items in enumerate(batches, start=1):
+        if on_progress is not None:
+            await on_progress(
+                {"phase": "reducing_batch", "batch": index, "total": len(batches)}
+            )
+        result = await client.complete(
+            feature=PROMPT_NAME_BATCH,
+            tier=Tier.CHEAP,
+            system=SYSTEM_BATCH,
+            user=render_user_batch(
+                batch_index=index,
+                total_batches=len(batches),
+                items=items,
+            ),
+            response_schema=JdRequirementReduceOutput,
+            temperature=REDUCE_TEMPERATURE,
+        )
+        stats.add(result)
+        reduce_output = _expect_parsed(result, JdRequirementReduceOutput)
+        partials.extend(_normalize_candidates(reduce_output.requirements, jd_ids))
+
+    if not partials:
+        partials = _exact_candidates(raw_items)
+
+    if len(partials) > 1:
+        if on_progress is not None:
+            await on_progress({"phase": "merging"})
+        merge_result = await client.complete(
+            feature=PROMPT_NAME_MERGE,
+            tier=Tier.CHEAP,
+            system=SYSTEM_MERGE,
+            user=render_user_merge(partials),
+            response_schema=JdRequirementReduceOutput,
+            temperature=REDUCE_TEMPERATURE,
+        )
+        stats.add(merge_result)
+        merge_output = _expect_parsed(merge_result, JdRequirementReduceOutput)
+        merged = _normalize_candidates(merge_output.requirements, jd_ids)
+        if merged:
+            partials = merged
+
+    if on_progress is not None:
+        await on_progress({"phase": "frequency_recompute"})
+    requirements = _finalize_requirements(partials, total_jds=len(inp.parsed_jds))
+
+    if on_progress is not None:
+        await on_progress({"phase": "learning_path_gen"})
+    path_result = await client.complete(
+        feature=PROMPT_NAME_PATH,
+        tier=Tier.CHEAP,
+        system=SYSTEM_LEARNING_PATH,
+        user=render_user_learning_path(
+            requirements=requirements[:LEARNING_PATH_REQUIREMENT_LIMIT],
+            jd_count=len(inp.parsed_jds),
+        ),
+        response_schema=JdLearningPathOutput,
+        temperature=LEARNING_PATH_TEMPERATURE,
+    )
+    stats.add(path_result)
+    path_output = _expect_parsed(path_result, JdLearningPathOutput)
+    learning_path_md = path_output.learning_path_md.strip() or _fallback_learning_path(
+        requirements
+    )
+
+    return JdAggregateOutput(
+        aggregated_requirements=requirements,
+        learning_path_md=learning_path_md,
+        total_tokens_in=stats.tokens_in,
+        total_tokens_out=stats.tokens_out,
+        total_cost_cny=stats.cost_cny,
+        cache_hit_rate=stats.cache_hit_rate(),
+    )
+
+
+def _extract_raw_items(
+    parsed_jds: list[ParsedJdForAggregation],
+) -> list[RawRequirementItem]:
+    items: list[RawRequirementItem] = []
+    for jd in parsed_jds:
+        seen: set[tuple[str, str]] = set()
+        parsed = jd.parsed
+        _extend_items(items, seen, jd.jd_id, "职责", parsed.responsibilities)
+        _extend_items(items, seen, jd.jd_id, "硬技能", parsed.hard_skills)
+        _extend_items(items, seen, jd.jd_id, "软技能", parsed.soft_skills)
+        if parsed.experience_years:
+            _extend_items(items, seen, jd.jd_id, "经验", [parsed.experience_years])
+        if parsed.education:
+            _extend_items(items, seen, jd.jd_id, "学历", [parsed.education])
+    return items
+
+
+def _extend_items(
+    items: list[RawRequirementItem],
+    seen: set[tuple[str, str]],
+    jd_id: int,
+    category: RequirementCategory,
+    values: list[str],
+) -> None:
+    for value in values:
+        text = " ".join(value.split())
+        key = (category, text)
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            RawRequirementItem(
+                jd_id=jd_id,
+                category=category,
+                text=text,
+            )
+        )
+
+
+def _batch(
+    items: list[RawRequirementItem],
+    size: int,
+) -> list[list[RawRequirementItem]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def _expect_parsed(result: LLMResult, schema: type[Any]) -> Any:
+    if isinstance(result.parsed, schema):
+        return result.parsed
+    raise ValueError(f"{result.feature} did not return {schema.__name__}")
+
+
+def _normalize_candidates(
+    candidates: list[RequirementCandidate],
+    allowed_jd_ids: set[int],
+) -> list[RequirementCandidate]:
+    normalized: list[RequirementCandidate] = []
+    for candidate in candidates:
+        text = _clean_text(candidate.canonical_text)
+        supporting_ids = sorted(
+            {jd_id for jd_id in candidate.supporting_jd_ids if jd_id in allowed_jd_ids}
+        )
+        if not text or not supporting_ids:
+            continue
+        raw_phrases = _dedupe(
+            [_clean_text(item) for item in [*candidate.raw_phrases, text]]
+        )
+        normalized.append(
+            candidate.model_copy(
+                update={
+                    "canonical_text": text,
+                    "raw_phrases": raw_phrases,
+                    "supporting_jd_ids": supporting_ids,
+                }
+            )
+        )
+    return normalized
+
+
+def _exact_candidates(items: list[RawRequirementItem]) -> list[RequirementCandidate]:
+    grouped: dict[tuple[RequirementCategory, str], set[int]] = {}
+    raw_phrases: dict[tuple[RequirementCategory, str], set[str]] = {}
+    for item in items:
+        text = _clean_text(item.text)
+        if not text:
+            continue
+        key = (item.category, text.casefold())
+        grouped.setdefault(key, set()).add(item.jd_id)
+        raw_phrases.setdefault(key, set()).add(text)
+    candidates: list[RequirementCandidate] = []
+    for (category, normalized_text), jd_ids in grouped.items():
+        phrases = raw_phrases[(category, normalized_text)]
+        candidates.append(
+            RequirementCandidate(
+                canonical_text=sorted(phrases)[0],
+                category=category,
+                raw_phrases=sorted(phrases),
+                supporting_jd_ids=sorted(jd_ids),
+            )
+        )
+    return candidates
+
+
+def _finalize_requirements(
+    candidates: list[RequirementCandidate],
+    *,
+    total_jds: int,
+) -> list[Requirement]:
+    merged: dict[tuple[str, str], RequirementCandidate] = {}
+    for candidate in candidates:
+        key = (candidate.category, candidate.canonical_text.casefold())
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = candidate
+            continue
+        merged[key] = existing.model_copy(
+            update={
+                "raw_phrases": _dedupe(
+                    [*existing.raw_phrases, *candidate.raw_phrases]
+                ),
+                "supporting_jd_ids": sorted(
+                    set(existing.supporting_jd_ids) | set(candidate.supporting_jd_ids)
+                ),
+            }
+        )
+
+    requirements = [
+        Requirement(
+            id=f"tmp_{index}",
+            canonical_text=candidate.canonical_text,
+            category=candidate.category,
+            raw_phrases=candidate.raw_phrases,
+            supporting_jd_ids=candidate.supporting_jd_ids,
+            frequency=0,
+        )
+        for index, candidate in enumerate(merged.values(), start=1)
+    ]
+    recomputed = recompute_frequency(requirements, total_jds)
+    ordered = sorted(
+        recomputed,
+        key=lambda req: (
+            -req.frequency,
+            _category_order(req.category),
+            req.canonical_text.casefold(),
+        ),
+    )
+    return [
+        req.model_copy(update={"id": f"req_{index}"})
+        for index, req in enumerate(ordered, start=1)
+    ]
+
+
+def _category_order(category: str) -> int:
+    order = {"硬技能": 0, "职责": 1, "经验": 2, "软技能": 3, "学历": 4}
+    return order.get(category, 99)
+
+
+def _clean_text(value: str) -> str:
+    return " ".join(value.split()).strip()
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _clean_text(value)
+        key = text.casefold()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _fallback_learning_path(requirements: list[Requirement]) -> str:
+    lines = ["## 你的学习路径", ""]
+    for req in requirements[:20]:
+        pct = int(round(req.frequency * 100))
+        lines.append(f"- {req.canonical_text}({pct}%)")
+    return "\n".join(lines)

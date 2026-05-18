@@ -266,7 +266,7 @@ LLM 不是聊天装饰,而是被 harness 驱动的生产力执行器:自动 OCR 
 - **Q-01** macOS 风具体调色(亮 / 暗双模,毛玻璃 / 圆角具体度数)— M1 启动 Web UI 前再确认
 - **Q-02**(已废弃 — 不做语雀同步)
 - **Q-03** session 中途换题 / 跳过 / 重答 的 UX — M2 启动前决策
-- **Q-04** JD title 标签:用户手填 vs LLM 自动从 JD 抽 — M2.5 启动前决策(我倾向 LLM 自动抽 + 用户可改)
+- **Q-04 [已定 2026-05-18]** JD title 标签:LLM 上传时自动从 JD 抽,用户可在 `/jds` 详情页手动改
 - **Q-05**(已废弃 — 简历功能全部砍掉)
 - **Q-06**(已废弃 — 简历诊断全部砍掉)
 - **Q-07 [已定 2026-05-09]** Reranker 走百炼 `qwen3-rerank`(`/compatible-api/v1/reranks`,¥0.0005/千 token,500 doc 上限);本地 `bge-reranker-v2-m3` 作 fallback,M2 不做,有真问题再加 adapter。**坑见 memory `reference_aliyun_dashscope_rerank.md`**:接口路径跟其他 rerank 模型不通用;langfuse.openai 不自动 instrument(同 embedder 要手动包 generation);relevance_score 不可跨请求比较

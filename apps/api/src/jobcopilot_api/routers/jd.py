@@ -97,7 +97,7 @@ async def delete_jd(jd_id: int, session: SessionDep) -> None:
 
 @router.post(
     "/jd-analyses",
-    summary="JD 一键分析(SSE,M2.5 harness 骨架)",
+    summary="JD 一键分析(SSE)",
 )
 async def create_jd_analysis(payload: JdAnalysisCreateIn) -> EventSourceResponse:
     sessionmaker = get_sessionmaker()

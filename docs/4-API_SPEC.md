@@ -892,7 +892,7 @@ data: {"ok": true}
 
 ## 6.6 `POST /api/jd-analyses`(**SSE**)
 
-一键分析。**单次上限 200 条 JD**(超过 422)。当前实现是 harness 骨架:会先解析 filter 并创建 `jd_analyses` placeholder,随后 SSE 明确返回 `jd_analysis_not_ready`;真正 map-reduce 聚合、学习路径和 note match 在下一切片接入。
+一键分析。**单次上限 200 条 JD**(超过 422)。当前实现已接真实固定 harness:解析 filter 并创建 `jd_analyses(in_progress)` 后,通过 SSE 推进 `load parsed_jds → jd_aggregator batch reduce / merge → Python frequency recompute → learning path → note match → quiz topics → write report`。成功时报告状态写 `done`;任一阶段失败时状态写 `failed` 并保存 `failure_reason`。
 
 请求:
 ```json
@@ -915,19 +915,6 @@ SSE 事件:
 event: started
 data: {"job_id": "...", "resource_id": 7, "jd_count": 100}
 
-event: progress
-data: {"phase": "loading_parsed", "jd_count": 100}
-
-event: error
-data: {"code": "jd_analysis_not_ready", "detail": "JDAnalysisAgent harness 已建立,聚合节点将在后续切片接入"}
-
-event: done
-data: {"ok": false}
-```
-
-目标完成态事件序列:
-
-```
 event: progress
 data: {"phase": "loading_parsed", "jd_count": 100}
 
@@ -964,14 +951,23 @@ event: done
 data: {"ok": true}
 ```
 
+失败态事件:
+
+```
+event: error
+data: {"code": "aggregator_call_failed", "detail": "..."}
+
+event: done
+data: {"ok": false}
+```
+
 错误码:
 
 | code | 说明 |
 |------|----|
 | `jd_count_exceeds_limit` | filter 命中 > 200 条,SSE 起手前 422 |
 | `jd_count_zero` | filter 命中 0 条 |
-| `jd_analysis_not_ready` | 当前 harness 已建,聚合节点还未接入 |
-| `aggregator_call_failed` | LLM 聚合调用失败(已重试) |
+| `aggregator_call_failed` | LLM 聚合 / 学习路径或后处理失败 |
 
 ## 6.7 `GET /api/jd-analyses`
 
