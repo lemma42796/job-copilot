@@ -27,6 +27,8 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **`/jds` 前端已接一键分析与报告查看**:左侧工作台包含上传、分析范围、JD 列表、历史报告;右侧只展示当前 JD 详情或分析报告,已从原先拥挤三列改成两列。报告详情展示岗位要求地图、学习路径、quiz topics,topic 可跳到 `/quiz?topic=...`。
 - **本轮人工路径已走到报告可见**:用户浏览器里已看到 `报告 #1`、要求数 / topics / 成本与岗位要求地图;后续"Failed to fetch / 暂无报告"不应再作为当前事实,若复现优先查 API/Web dev server 是否仍在和 `NEXT_PUBLIC_API_BASE_URL`。
 - **JD 文本入库闭环仍有效**:JD 文本粘贴 → `jd_parser` LLM 立即解析 → `jds.parsed_payload` 入库 → `/jds` 列表 / 详情 / title 修改 / 软删已接通;截图 OCR 仍未接。
+- **本轮产品决策已锁定**:M2.5 不再补自动化测试 / eval runner。后续质量判断走用户手动 dogfood:看报告是否少做手工整理、要求合并是否合理、频次是否符合直觉、topic 能否直接进入 `/quiz`。
+- **本轮 RAG 边界已锁定**:真实规模最多约 50 条同质 JD,JD 分析本体不做 RAG 化;一键分析继续走"已选 parsed JD → LLM 同义合并 → Python 频次重算 → 学习路径 / topic"。RAG 只在 topic 进入 `/quiz` 后发生;`match_notes` 仅保留笔记覆盖度粗匹配,未来可轻量语义检索,但不是当前主线。
 - **JD 截图考古结论已确认**:当前工作区和 git 历史没有 JD 截图原图;旧 commit `6825e6b` 只保留 `evals/suites/jd_extract/dataset.jsonl` 的 OCR 文本样本,原图当时在 gitignored `evals/raw/` 下且明确 never commit。后续如需截图链路,只能用新截图或从本地备份找原图。
 - **本轮未跑自动化闸门**:按项目约束,未主动跑 pytest / mypy / ruff / pnpm typecheck / pnpm build / Playwright;只根据用户手动浏览器反馈和 Next dev 热更新收敛代码。新会话不要假设 API/Web dev server 仍在,需要时重新启动本机 API `:8000` 与 Next Web `:3000`。
 - **M2.1 已由用户确认收口**:收口 tag 为 `v0.5-m2.1-end`;下一阶段切到 M2.5。
@@ -67,7 +69,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 | M1 | 笔记入库 + chunker + 树形导航 + Langfuse 起步 | ✅ `v0.3-m1-end` |
 | M2 | 主题 query → 全库 RAG → 出题 + Judge 三层评分 | ✅ 待 tag `v0.4-m2-end` |
 | M2.1 | `InterviewCoachAgent`:Agentic RAG 面试状态机 + 多轮纠偏分支 | ✅ `v0.5-m2.1-end` |
-| M2.5 | JD Intelligence Agent:自动读 JD → 岗位要求地图 → 学习路径 → quiz topics | ⏳ 当前:文本 JD 入库 + 一键分析报告 MVP 已落地;OCR / eval / 规模化 dogfood 待接 |
+| M2.5 | JD Intelligence Agent:自动读 JD → 岗位要求地图 → 学习路径 → quiz topics | ⏳ 当前:文本 JD 入库 + 一键分析报告 MVP 已落地;报告 hardening / OCR / 手动 dogfood 待接 |
 | M3 | 弱点跟踪 + SR + 岗位类三源出题 + 简历诊断 | 🪓 已砍,不再规划 |
 
 # 当前已落地
@@ -102,12 +104,11 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **M2.5 第三刀:报告质量 hardening + dogfood 闭环**。用多条同岗位 JD 手动跑 2-3 份报告,重点看 canonical 合并质量、frequency 是否符合直觉、note match 是否误报、quiz topic 是否可直接进入 `/quiz`;再决定是先补 `jd_aggregator` eval runner,还是先接截图 OCR。
+1. **M2.5 第三刀:报告质量 hardening + 手动 dogfood 闭环**。用同岗位 JD 手动跑 2-3 份报告,重点看 canonical 合并质量、frequency 是否符合直觉、note match 是否误报、quiz topic 是否可直接进入 `/quiz`;不补 `jd_aggregator` eval runner,先把报告本身做得能用。
 
 备选:
 
 - 若继续 M2.5 输入能力,下一步接截图 JD OCR(Qwen 多模态);注意旧 BOSS 原图没有进仓库,只能用新截图或本地备份。
-- 若继续 M2.5 评测,补 `evals/suites/jd_aggregator/` + runner,先守同义合并 F1、frequency MAE、结构合规率。
 - 若继续 M2.5 前端体验,优化报告详情的 requirement drilldown、按 category / priority 筛选、topic 批量进入 `/quiz`;当前两列布局已经替代旧三列。
 - 若继续验收,手动完成一场 `/quiz` 后点"生成总结",确认 `test-notes/llm-notes/_recall/<session_id>.md` 生成,且 `GET /api/quiz/sessions/<id>/recall` 返回同一份 markdown。
 - 若继续验收,刷新 `/quiz?session=13` 应看到初答评分 89.67 与补答评分 100 两条 LLM 反馈都保留;刷新 `/quiz?session=14` 应看到已评分总分 95 与整场总结。
@@ -125,6 +126,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 | M2.1 Agent | `InterviewCoachAgent` 状态机;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不是多 Agent 数量。 |
 | M2.1 纠偏 | 不设单题固定 1 轮上限;答不好进入 remediation loop,靠达标 / 用户跳过 / 无明显提升 / 偏题 / token budget 退出。 |
 | 后续主线 | 只做 `JDAnalysisAgent`;LLM 被 harness 驱动去自动读 JD、聚合要求、生成学习路径和 quiz topic 候选。 |
+| JD 分析 / RAG | JD 聚合本体不接 RAG;RAG 只在报告 topic 进入 `/quiz` 后发生。笔记覆盖度当前是粗匹配,不是检索增强生成。 |
 | 简历 | 全部砍掉:不上传、不诊断、不改写、不参与出题。 |
 | 岗位类 query | 全部砍掉:不做笔记 + 简历 + JD 三源融合;JD 分析只产出 quiz topic 候选。 |
 | 评分 | LLM-as-Judge 给 evidence;总分权重在 Python,不让 LLM 算。 |
@@ -141,6 +143,8 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **[来自 M1] 评测指标挂到能力首次真实消费的里程碑**:例如 hybrid recall 挂 M2,不挂 M1 service 就绪阶段。
 - **[来自 M2] 聊天框 query 是唯一出题入口**:不要回退到节点点击出题。
 - **[来自 M2.5] 后续功能收束到 JD Intelligence Agent**:不再做 SR、弱点 dashboard、岗位类三源出题、简历上传 / 诊断 / 改写;生产力来自 LLM 被 harness 自动编排工具完成 JD 分析任务。
+- **[来自 M2.5] M2.5 不新增自动化评测主线**:用户已明确"不做测试了";后续只记录手动验收路径和期望现象,不把 `jd_aggregator` eval runner 当下一刀。
+- **[来自 M2.5] JD 分析本体不 RAG 化**:最多约 50 条同质 JD,聚合是已选集合的归纳统计;RAG 只服务 `/quiz` 出题,或未来可选的笔记覆盖度语义查找。
 - **[来自 M2.5] JD 截图原图不进仓库也不入库**:历史 BOSS 截图只留下 OCR 文本样本;新截图链路同样只持久化 OCR 后 raw_text,原图视为版权敏感临时输入。
 - **[来自 M2] Context Cache 不是会话记忆**:请求仍需带必要上下文;cache 只优化重复公共前缀的 provider 侧计算 / 计费。
 - **[来自 M2] Context Cache 当前默认关闭**:一次性答题流不依赖 5 分钟 TTL;等 M2.1 多轮面试讨论再开启显式 cache。

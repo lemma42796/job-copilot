@@ -819,11 +819,11 @@ class JDAnalysisOutput:
 | `aggregate_requirements(parsed_jds)` | parsed_payload list | raw requirement groups | 分批 map,单批失败可重跑 |
 | `dedupe_requirements(groups)` | raw groups | canonical requirements | LLM 只做同义合并,频次不信 LLM |
 | `recompute_frequency(canonicals)` | canonical + supporting_jd_ids | frequency | Python SSoT |
-| `match_notes(requirements)` | canonical requirements | note heading / chunk 粗匹配 | 可选,失败不阻塞报告 |
+| `match_notes(requirements)` | canonical requirements | note heading / chunk 粗匹配 | 可选,失败不阻塞报告;当前不是 RAG |
 | `generate_learning_path(requirements)` | 排序后的 canonical requirements | markdown + quiz topics | 禁止编具体课程 / 资源 |
 | `write_report(output)` | 结构化结果 | `jd_analyses` 快照 | 写失败整体失败,防报告丢失 |
 
-实现状态(2026-05-18):`load_jds` 的 filter 解析、`jd_analyses(in_progress)` 创建、报告列表 / 详情查询和 SSE 已落地;`aggregate_requirements → dedupe_requirements → recompute_frequency → match_notes → generate_learning_path → write_report` 已接成最小闭环。当前 `match_notes` 是标题 / chunk `ilike` 粗匹配,失败降级为 `unknown`;quiz topic 由高频 `硬技能 / 职责` requirement 派生,最多 12 个。
+实现状态(2026-05-18):`load_jds` 的 filter 解析、`jd_analyses(in_progress)` 创建、报告列表 / 详情查询和 SSE 已落地;`aggregate_requirements → dedupe_requirements → recompute_frequency → match_notes → generate_learning_path → write_report` 已接成最小闭环。当前 `match_notes` 是标题 / chunk `ilike` 粗匹配,失败降级为 `unknown`;quiz topic 由高频 `硬技能 / 职责` requirement 派生,最多 12 个。最新决策:真实规模最多约 50 条同质 JD,JD 分析本体不做 RAG 化;RAG 只在 topic 进入 `/quiz` 后发生。
 
 ## 7.3 编排原则
 
@@ -832,6 +832,7 @@ class JDAnalysisOutput:
 - **证据必须可回看**:每个 canonical requirement 至少带 `supporting_jd_ids`;报告里能点回原 JD。
 - **失败可降级**:少数 JD 解析失败不应拖死整批;最终报告要列出 invalid / skipped 条目。
 - **产出可执行**:学习路径只按频次和已有笔记覆盖状态排序,不编外部课程名;quiz topic 候选用于进入已落地的主题类 RAG 面试流。
+- **RAG 边界清晰**:JD 聚合是已选 JD 集合的归纳统计,不走 `retrieval_pipeline`;笔记覆盖度最多升级成轻量语义查找,不把 JD 报告改成检索增强生成。
 
 ## 7.4 Harness Engineering 标准
 
@@ -849,7 +850,7 @@ load_jds
 → write_report
 ```
 
-Langfuse trace 根节点按 `jd_analysis_id` 聚合;每个节点记录输入条数、失败条数、token / cost、cache 命中、输出 schema 校验结果。评测用 `jd_aggregator` suite 守同义合并 F1 和频次 MAE,不再新增简历诊断类 suite。
+Langfuse trace 根节点按 `jd_analysis_id` 聚合;每个节点记录输入条数、失败条数、token / cost、cache 命中、输出 schema 校验结果。当前不新增 `jd_aggregator` 自动化 eval runner;M2.5 质量只走用户手动 dogfood,看报告是否减少手工整理、合并是否合理、频次是否符合直觉、topic 是否能直接进入 `/quiz`。
 
 # 8. M2.1:InterviewCoachAgent(Agentic RAG 编排)
 
@@ -1077,6 +1078,7 @@ Context Cache / prompt caching 只用于降低重复长前缀成本,不是会话
 | QueryRewriter | M2 retrieval pipeline 第一段;扩 ≤5 项,首项必为原 query;失败回退原 query 不阻塞 | 见 §2.7 |
 | Reranker | cross-encoder(本地 / 百炼 reranker 接口),非 LLM 调用,不进 prompt_versions | 见 §2.7.5 + PRD Q-07 |
 | query 形态 | M2 仅主题类;岗位类三源出题与空 query 系统自选已砍掉 | JD 分析报告只产出 quiz topic 候选,再进入主题类 RAG 面试流 |
+| JD 分析 / RAG | JD 聚合本体不接 RAG;`match_notes` 当前只是笔记粗匹配 | 最多约 50 条同质 JD 是已选集合归纳问题;RAG 只在 `/quiz` 出题时发生 |
 | Agent 编排深度 | M2.1 上 `InterviewCoachAgent` 状态机;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不做泛化多 Agent 互聊 | 见 §8 |
 | 后续主线 | 只做 JDAnalysisAgent | LLM 被 harness 驱动完成 JD 分析任务;不做 SR / 弱点 dashboard / 简历诊断 |
 | M2.1 单输入框 | 前端只有一个发送按钮;后端 `turn_type=auto` 分流初答 / 补答 / 追问教练 | UX 简化不改变状态边界;追问教练不进入 `user_answer` 评分 |
@@ -1103,7 +1105,7 @@ Context Cache / prompt caching 只用于降低重复长前缀成本,不是会话
 | thinking 默认 off | 按 agent 显式开 | §2.1 决策表;省成本和延迟 |
 | Temperature 显式传 | 各 agent 调用处显式传 0.2-0.5 | 不依赖模型默认值(易踩坑) |
 | JD 解析时机 | **上传即解析**(M2.5 US-15) | parsed_payload 持久化,后续一键分析 reduce 复用 |
-| JD 一键分析 | 三阶段 hierarchical reduce(分批 → 二次 merge → Python 重算频次) | 单次上限 200 条;跨批跨时间增量聚合不进入后续计划 |
+| JD 一键分析 | 三阶段 hierarchical reduce(分批 → 二次 merge → Python 重算频次) | 真实 dogfood 最多约 50 条同质 JD;代码 safety cap 200 条;跨批跨时间增量聚合不进入后续计划 |
 | 频次重算位置 | Python(SSoT)| LLM 不算 — 同 §4.5 算分原则 |
 | 简历功能 | **全部砍掉** | 不上传、不诊断、不改写、不参与出题;避免回到 v1 失败模式 |
 

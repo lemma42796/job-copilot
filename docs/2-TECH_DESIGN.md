@@ -1,7 +1,7 @@
 ---
 title: TECH DESIGN - JobCopilot v2(架构 / 模块分层 / 数据流 / 错误处理)
 owner: lemma42796
-last_updated: 2026-05-17
+last_updated: 2026-05-18
 purpose: 锁系统架构、技术栈、模块边界、核心数据流、错误处理分层、v1 沿用 / 砍除清单
 ---
 
@@ -365,6 +365,7 @@ FE 粘 JD 文本 / 上传截图 → POST /api/jds (json 或 multipart)
 FE 选范围 + 点"一键分析" → POST /api/jd-analyses {filter} (SSE)
   → routers/jd.create_analysis
   → 校验:filter 解析后 jd_count ≤ 200,否则 422
+    注:真实 dogfood 规模按最多约 50 条同质 JD 设计;200 是代码 safety cap
   → INSERT jd_analyses(status=in_progress, jd_ids=[...])
   → emit started{analysis_id, jd_count}
 
@@ -387,7 +388,7 @@ FE 选范围 + 点"一键分析" → POST /api/jd-analyses {filter} (SSE)
       agents/jd_aggregator.gen_learning_path(unified)  → markdown
 
   → emit progress{phase=note_matching}
-      services/jd_service._match_notes(requirements)  → title / chunk ilike 粗匹配
+      services/jd_service._match_notes(requirements)  → title / chunk ilike 粗匹配(不是 RAG)
 
   → emit progress{phase=quiz_topic_generating}
       services/jd_service._build_quiz_topic_candidates(requirements, note_match_summary)
@@ -408,7 +409,7 @@ FE 选范围 + 点"一键分析" → POST /api/jd-analyses {filter} (SSE)
 - 弱点跟踪 / SR / dashboard / 今日复习队列
 - 岗位类三源出题 / 项目深挖题
 
-M2.5 之后唯一新增生产力流是 JDAnalysisAgent:自动读 JD、聚合岗位要求、生成学习路径和 quiz topic 候选。
+M2.5 之后唯一新增生产力流是 JDAnalysisAgent:自动读 JD、聚合岗位要求、生成学习路径和 quiz topic 候选。JD 分析本体不接 RAG;RAG 边界保留在报告 topic 进入 `/quiz` 后的主题类出题链路。
 
 # 6. 可观测性 / Tracing(Langfuse 自部署)
 
@@ -629,7 +630,7 @@ evals/suites/
 | qwen3.6-flash 多模态 | 文本 / 图像 / tool use 一把抓,JD 截图 OCR 与文本解析共用 | 简化模型路由 |
 | thinking 按 agent | 默认 off;评分 / 综合判断类显式 on(详见 5-AGENT §2.1) | 节省 reasoning_tokens 成本 |
 | JD 累积型 | jds 表跨时间累积,parsed_payload 上传即落库 | 类比笔记;不做 batch 概念 |
-| JD 一键分析 | hierarchical map-reduce,单次上限 200 条;频次 Python 重算 | 避免单次 LLM context 爆 |
+| JD 一键分析 | hierarchical map-reduce,真实 dogfood 最多约 50 条同质 JD;代码 safety cap 200 条;频次 Python 重算 | 避免单次 LLM context 爆;JD 聚合本体不接 RAG |
 | 已砍掉的旧方向 | 简历、SR、弱点 dashboard、岗位类三源出题全部不进入后续计划 | 防止项目回到 v1 失败模式 |
 
 ---

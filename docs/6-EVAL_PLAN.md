@@ -1,13 +1,13 @@
 ---
 title: EVAL PLAN - JobCopilot v2(评测套件 + Cohen's kappa 守门)
 owner: lemma42796
-last_updated: 2026-05-17
+last_updated: 2026-05-18
 purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、不达标处理流程
 ---
 
 # 1. 一句话总览
 
-五套评测,每套对应一个 DoD:
+当前主动维护四套评测;M2.5 不再新增 `jd_aggregator` 自动化 eval runner,只保留手动 dogfood 验收口径:
 
 | Suite | M? DoD | 守什么 | 阈值 |
 |-------|--------|-------|------|
@@ -15,7 +15,7 @@ purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、
 | `quiz_generator` | M2 | 出题结构合规 + type_mix 决策合理 | 合规率 ≥ 0.95 / type_mix 一致率 ≥ 0.7 |
 | `answer_judge` | M2 | 三层 label 跟人工标注一致性 | Cohen's `κ ≥ 0.7`(三层独立) |
 | `interview_coach` | M2.1 | Agent 状态机是否走到人工期望分支 + 多轮纠偏是否正确退出 | branch accuracy ≥ 0.8 / recovery + context + hallucination case 全过 |
-| `jd_aggregator` | M2.5 | 同义合并准确 + 频次重算正确 | F1 ≥ 0.85 / freq MAE ≤ 0.03 |
+| `jd_aggregator` | M2.5 暂缓 | 不作为当前 DoD;用户已明确不做测试 | 手动 dogfood |
 
 不达标 → 改 prompt(bump version) / 分支阈值 / 状态机逻辑 + 重跑全套,**不切模型**(沿用 5-AGENT_DESIGN §2.1)。
 
@@ -38,7 +38,7 @@ evals/
 │   ├── interview_coach/
 │   │   ├── dataset.jsonl
 │   │   └── README.md
-│   └── jd_aggregator/
+│   └── jd_aggregator/              # 暂缓,不作为 M2.5 当前 DoD
 │       ├── dataset.jsonl
 │       └── README.md
 ├── reports/                       # 跑评测产物(.gitignored)
@@ -56,7 +56,7 @@ apps/api/scripts/
 ├── eval_quiz_generator.py
 ├── eval_answer_judge.py
 ├── eval_interview_coach.py
-└── eval_jd_aggregator.py
+└── eval_jd_aggregator.py           # 暂缓,不作为 M2.5 当前 DoD
 ```
 
 ## 2.2 dataset.jsonl 通用约定
@@ -333,7 +333,9 @@ python -m jobcopilot_api.scripts.eval_quiz_generator \
 
 输出报告 schema 类似 §3.4。**不达标时**:跟 §3.5 同流程,先看 per_fixture 再改 prompt。
 
-# 5. `jd_aggregator` suite(M2.5 DoD)
+# 5. `jd_aggregator` suite(暂缓,不作为 M2.5 DoD)
+
+最新决策(2026-05-18):M2.5 不再新增自动化测试 / eval runner。最多约 50 条同质 JD 的真实场景优先靠手动 dogfood 判断报告是否有生产力;以下设计仅作为将来重新需要自动化回归时的存档,不要把它当下一刀。
 
 ## 5.1 评什么
 
@@ -386,7 +388,7 @@ python -m jobcopilot_api.scripts.eval_quiz_generator \
 
 ## 5.3 数据集容量
 
-**MVP 起步 30 条**,组合多种场景:
+若未来重启自动化 suite,可从 30 条起步,组合多种场景:
 
 | # | 场景 | 期望测什么 |
 |---|------|---------|
@@ -396,7 +398,9 @@ python -m jobcopilot_api.scripts.eval_quiz_generator \
 | 21-25 | 噪声词(BOSS 平台标签 / 学历词混入 hard_skills)| 不算 canonical 进单独 group |
 | 26-30 | 极端规模(200 条 JD 上限场景)| reduce 拓扑跑通 + P95 ≤ 60s |
 
-## 5.4 跑法 + 阈值
+## 5.4 存档跑法 + 阈值
+
+当前不执行。只有用户重新明确要求"跑评测"或"恢复 jd_aggregator suite"时再启用。
 
 ```
 python -m jobcopilot_api.scripts.eval_jd_aggregator \
@@ -845,7 +849,7 @@ MVP **单人主标注 + 抽样复核**,不上双人 inter-rater agreement。理�
 | Fidelity claim 匹配 | 语义最近邻(embedding 余弦,阈值 0.6)| Judge claim 跟人工 claim 不可能逐字对齐 |
 | Tool use 评测路径 | **不禁** + 跑 baseline(tool=off)对比 | 没 baseline 不知道工具有没有真实价值 |
 | Trace 集成 | 评测 LLM 调用全进 Langfuse,tag `eval_run_id` + `fixture_id` | 不达标 5 分钟定位,vs 翻日志半小时 |
-| jd_aggregator 不算 kappa | 用 F1(集合)+ MAE(频次)指标 | canonical 不是 categorical label,kappa 不适用 |
+| jd_aggregator suite | 暂缓,不作为 M2.5 当前 DoD | 用户已明确不做测试;若未来恢复,再用 F1(集合)+ MAE(频次) |
 | 简历相关 suite | 全部砍掉 | 不上传、不诊断、不改写、不参与出题 |
 | dogfood 笔记 fixture | hybrid_search suite 强依赖固定笔记库(notes_fixture/ 或 notes_fixture.zip)| chunk_id 稳定才能比;chunker 改动后用 heading_path + anchors 复核 |
 | 跑评测 CLI | `eval_<suite>.py --suite <dir> --prompt-version <v> --output <path>` | 各 suite 统一 |
