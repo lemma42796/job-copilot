@@ -1,388 +1,260 @@
 # JobCopilot
 
-> **给程序员的 AI 面试陪练。把你写过的笔记变成你的面试题。**
->
-> 一行 `docker compose up` 启动,本地优先,数据不出机器。
+> 给学计算机的人用的本地优先 AI 求职准备工具:把目标岗位 JD 累积成岗位要求地图和学习路径,再用自己的笔记做 RAG 面试陪练。
 
-[![Status](https://img.shields.io/badge/status-WIP%20M2-yellow)](docs/STATUS.md)
+[![Status](https://img.shields.io/badge/status-M2.5%20JD%20Intelligence-yellow)](docs/STATUS.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![LLM](https://img.shields.io/badge/LLM-Qwen3.6%20%40%20DashScope-1f7ae0)]()
+[![Stack](https://img.shields.io/badge/stack-FastAPI%20%2B%20Next.js%20%2B%20Postgres-2f6fef)](#技术栈)
+[![LLM](https://img.shields.io/badge/LLM-Qwen3.6%20%40%20DashScope-1f7ae0)](#配置)
 
-[中文](#这是什么) | [English](#english-version)
+[English](#english-summary) | [文档导航](#文档导航) | [快速开始](#快速开始)
 
 ---
+
+## 目录
+
+- [这是什么](#这是什么)
+- [核心功能](#核心功能)
+- [架构](#架构)
+- [快速开始](#快速开始)
+- [配置](#配置)
+- [本地开发](#本地开发)
+- [API 与页面](#api-与页面)
+- [项目状态](#项目状态)
+- [路线图](#路线图)
+- [文档导航](#文档导航)
+- [贡献](#贡献)
+- [许可证](#许可证)
+- [English Summary](#english-summary)
 
 ## 这是什么
 
-写技术笔记的程序员都遇到过同款情境:**学过、写过的东西,面试一问就讲不清楚**。
+JobCopilot 面向正在准备跳槽、实习或校招的计算机学习者和开发者。它解决两件很具体的事:
 
-JobCopilot 把你的笔记当成私人题库,模拟真面试的强度反问你 — 直到把盲区暴露出来。
+1. **大量 JD 看不过来**:把陆续收集的目标岗位 JD 持久化到本地库里,自动解析、聚合、去重、统计频次,生成岗位要求地图、学习路径和 quiz topic 候选。
+2. **学过的笔记面试时讲不清楚**:用你的 Markdown 笔记做 RAG 出题,让 InterviewCoachAgent 按真实面试方式追问、评分、纠偏和总结。
 
-**核心闭环**:
+项目是单用户、本地优先形态。业务数据默认放在本机 Postgres 和本地笔记目录里;LLM 调用通过你自己的 API Key 走 DashScope/Qwen。
 
-```
-1. 笔记入库 — 上传本地 markdown 文件夹 / 在 Web 编辑器里写
-2. 输入主题 — 在聊天框里说 "考考我多线程" / "缓存一致性"
-3. 系统全库 RAG 出题 — 3-10 道开放式 + 八股,基于你笔记的 chunks(反幻觉:每题标 source_chunk_ids)
-4. 你不能看笔记 — 纯靠记忆答
-5. LLM Judge 三层评分 — 覆盖度 / 忠实度 / 深度
-6. 弱点入队 — 知识点维度跟踪,下次按 spaced repetition 重点考你
-```
+## 核心功能
 
-**跟现有工具的区别**
+| 功能 | 当前实现 |
+|------|----------|
+| JD 库 | 文本粘贴上传 JD,立即调用 `jd_parser` 解析并落库;支持列表、详情、title 修改、筛选和软删 |
+| JD 一键分析 | `POST /api/jd-analyses` 通过 SSE 运行固定 harness:读取已解析 JD、批量聚合、同义合并、Python 重算频次、生成学习路径和 quiz topic 候选 |
+| 报告回看 | `/jds` 页面可查看历史报告、岗位要求地图、学习路径、成本/token 审计和 topic 跳转 |
+| 笔记入库 | 浏览器读取本地 Markdown,按 folder/heading 切 chunk,写入 Postgres + pgvector |
+| RAG 出题 | 聊天框输入主题 query,经过 query rewrite、hybrid search、rerank、治理筛选后生成题目 |
+| LLM-as-Judge | AnswerJudge 输出 Coverage/Fidelity/Depth 三层 evidence,Python 负责总分计算 |
+| 面试教练 | M2.1 多轮补答/追问分流已落地:补答会重评,追问教练只解释反馈,每轮消息可回放 |
+| 本场总结 | 已评分 session 可生成 `_recall/{session_id}.md` 复习沉淀 |
+| 可观测 | LLM 调用、SSE 进度、token/cost、trace id 和关键状态入库;Langfuse 可选 |
 
-| 工具 | 在做什么 | JobCopilot 的差异 |
-|------|---------|-------------------|
-| Anki | 手动写卡片 | LLM 从你笔记自动出题 |
-| 面试鸭 / 牛客 | 公共题库 | 私人题库(你写过的就是你的题) |
-| ChatGPT 出题 | 无记忆 / 无评分 / 无校准 | 持续记忆 + 三层评分 + 弱点跟踪 |
-| Notion AI | 被动检索(你问它才答) | 主动 active recall(它反问你) |
+明确不做:简历上传/诊断/改写、投递追踪、岗位类三源融合出题、长期弱点 dashboard、spaced repetition、自动化 JD aggregator eval runner。
 
----
+## 架构
 
-## 一图概览
-
-```
-┌────────────────────────────────────────────────────┐
-│  apps/web (Next.js 15)  macOS 风格                 │
-│  树形导航 / Markdown 编辑器 / 答题 / 弱点 dashboard │
-└────────────────────┬───────────────────────────────┘
-                     │ REST + SSE
-┌────────────────────┴───────────────────────────────┐
-│  apps/api (FastAPI)                                 │
-│  ├─ services/  notes / quiz / answer / sessions     │
-│  ├─ agents/    QuizGenerator / AnswerJudge          │
-│  ├─ llm/       Provider 抽象 + Prompt Cache         │
-│  └─ infra/     pgvector / hybrid search / kappa     │
-└────────────────────┬───────────────────────────────┘
-                     │
-              ┌──────┴──────┐
-              │  Postgres 16 │  notes / chunks / questions /
-              │              │  sessions / answers / knowledge_gap
-              └──────┬──────┘
-                     │
-              ┌──────┴───────────┐
-              │ 阿里云百炼 API    │ Qwen3.6-Flash(thinking on)
-              └──────────────────┘
+```text
+apps/web (Next.js 15 / React 19)
+  notes / quiz / jds UI, SSE client, macOS-style shell
+        |
+        | REST + SSE
+        v
+apps/api (FastAPI / SQLAlchemy 2.x async)
+  routers/      notes, quiz, jd, health
+  services/     retrieval, quiz, answer, interview, jd, recall
+  agents/       quiz_generator, answer_judge, jd_parser, jd_aggregator, coach_chat
+  llm/          provider abstraction, cache, pricing, logging
+  infra/        Postgres, pgvector, Langfuse, request id
+        |
+        v
+Postgres 16 + pgvector
+  notes / note_chunks / questions / quiz_sessions / session_answers
+  session_events / jds / jd_analyses / llm_response_cache / llm_calls
+        |
+        v
+DashScope / Qwen
+  generation, embedding, rerank, future JD screenshot OCR
 ```
 
----
+## 技术栈
 
-## 工程亮点
-
-| 主题 | 实现要点 | 文档 |
-|------|---------|------|
-| **笔记 RAG** | hybrid search(pgvector + tsvector + RRF)+ 中文 char n-gram | `docs/2-TECH_DESIGN` / `docs/5-AGENT_DESIGN` |
-| **反幻觉出题** | 每题强制标 `source_chunk_ids`;chunks 里不存在的术语禁止入题 | `docs/5-AGENT_DESIGN` |
-| **LLM-as-Judge 三层** | Coverage(覆盖度)+ Fidelity(反幻觉)+ Depth(深度),先证据后打分 | `docs/6-EVAL_PLAN` |
-| **Cohen's kappa 守门** | Judge 自身可靠性指标(po-pe)/(1-pe),≥ 0.7 才上 | `docs/6-EVAL_PLAN` |
-| **知识点弱点跟踪** | 用 `folder_path / heading_path` 作 ground truth tag,无需 LLM 抽 | `docs/3-DATA_MODEL` |
-| **Prompt Cache** | sha256(prompt+schema) → cache_key,自动失效,异常降级 miss | `docs/2-TECH_DESIGN` |
-| **Spaced Repetition** | 简化版 SM-2 思路 + 一行 SQL 排期 | `docs/3-DATA_MODEL` |
-| **Agentic RAG 面试教练(M2.1)** | LangGraph 状态机:检索 → 出题 → 等答 → 评分 → 决策 → 追问 / 总结 | `docs/5-AGENT_DESIGN` / `docs/7-ROADMAP` |
-| **可观测** | 每次响应附 trace_id,LLM 调用全量入库 `llm_calls` | `docs/2-TECH_DESIGN` |
-| **本地优先** | docker compose 一键起 + BYOK,数据不出机器 | `docs/1-PRD` |
-
----
+| 层 | 技术 |
+|----|------|
+| Web | Next.js 15, React 19, TypeScript, Tailwind CSS, lucide-react |
+| API | FastAPI, Pydantic v2, SQLAlchemy 2.x async, SSE |
+| DB | Postgres 16, pgvector, Alembic |
+| LLM | DashScope/Qwen, OpenAI-compatible client, structured output, prompt cache |
+| RAG | pgvector + tsvector + RRF, query rewrite, provider rerank, deterministic governance |
+| Observability | request id, `llm_calls`, token/cost audit, optional Langfuse v2 |
+| Tooling | Docker Compose, uv, pnpm, Biome, ruff, mypy, pytest |
 
 ## 快速开始
 
-### 前置
+### 前置条件
 
-- Docker(含 Compose v2)
-- 阿里云百炼 API Key([申请入口](https://bailian.console.aliyun.com/))
+- Docker with Compose v2
+- DashScope API Key: [阿里云百炼控制台](https://bailian.console.aliyun.com/)
 
-### 启动
+### 启动完整栈
 
 ```bash
 git clone https://github.com/lemma42796/job-copilot.git
 cd job-copilot
 cp .env.example .env
-# 编辑 .env,填入:
-#   JOBCOPILOT_DASHSCOPE_API_KEY=sk-xxx
+```
+
+编辑 `.env`:
+
+```bash
+DASHSCOPE_API_KEY=sk-your-key
+LLM_PROVIDER=dashscope
+JOBCOPILOT_ENV=dev
+```
+
+启动:
+
+```bash
 docker compose up -d
 ```
 
-3-5 分钟后:
+访问:
 
-```
-Web:  http://localhost:3000
-API:  http://localhost:8000/v1/health
-Docs: http://localhost:8000/v1/docs   # 开发模式
+```text
+Web:      http://localhost:3000
+API:      http://localhost:8000/v1/health
+API Docs: http://localhost:8000/v1/docs
+Langfuse: http://localhost:3001
+Caddy:    http://localhost
 ```
 
----
+## 配置
+
+| 变量 | 必填 | 说明 |
+|------|------|------|
+| `DASHSCOPE_API_KEY` | 是 | DashScope/Qwen API Key;compose 会映射为 `JOBCOPILOT_DASHSCOPE_API_KEY` |
+| `LLM_PROVIDER` | 否 | 默认 `dashscope`;保留 `deepseek` 备选 |
+| `JOBCOPILOT_ENV` | 否 | `dev` / `prod` / `test`,默认 `dev` |
+| `JOBCOPILOT_NOTES_FS_ROOT` | 否 | recall 文件和本地 notes 逻辑根目录 |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | 否 | 留空时 SDK noop,不影响主流程 |
+| `LANGFUSE_HOST` | 否 | compose 内默认 `http://langfuse:3000` |
+
+## 本地开发
+
+仓库是 monorepo:
+
+```text
+apps/api   FastAPI backend
+apps/web   Next.js frontend
+packages   shared TypeScript schemas
+docs       product, technical, API, agent, eval, roadmap docs
+evals      manually triggered evaluation suites and fixtures
+docker     compose images and service config
+```
+
+常用入口:
+
+```bash
+pnpm --filter @jobcopilot/web dev
+uv run uvicorn jobcopilot_api.main:app --reload --app-dir apps/api/src --port 8000
+```
+
+项目约束是**手动闸门**:lint、typecheck、build、pytest、Playwright 和 eval runner 都保留入口,但不在 push 时自动触发。需要验证时由维护者显式运行。
+
+## API 与页面
+
+| Surface | 说明 |
+|---------|------|
+| `/notes` | Markdown 笔记导入、树形导航、编辑 |
+| `/quiz` | 主题 query 出题、答题、补答、追问教练、整场总结 |
+| `/jds` | JD 上传、JD 库、分析范围选择、历史报告与 topic 跳转 |
+| `POST /api/quiz/sessions` | 主题类 RAG 出题 SSE |
+| `POST /api/quiz/sessions/{id}/answers/{order_index}/turns` | M2.1 单题 turn SSE,支持 `auto` 分流 |
+| `POST /api/quiz/sessions/{id}/finish` | 整场总结 SSE |
+| `POST /api/jds` | 文本 JD 上传并立即解析 |
+| `POST /api/jd-analyses` | JD 一键分析 SSE |
+| `GET /v1/health` | compose healthcheck |
+
+完整接口契约见 [`docs/4-API_SPEC.md`](docs/4-API_SPEC.md)。
+
+## 项目状态
+
+当前阶段:**M2.5 - JD Intelligence Agent**。
+
+已完成:
+
+- M0 仓库改造、v2 文档和基础骨架
+- M1 Markdown 笔记入库、chunker、树形导航、Langfuse 起步
+- M2 主题 query → 全库 RAG → 出题 → LLM-as-Judge
+- M2.1 InterviewCoachAgent 的多轮补答、追问教练、恢复和整场总结
+- M2.5 文本 JD 入库、`jd_parser`、JD 库、`jd_aggregator` 报告 MVP 和 `/jds` 报告查看
+
+仍在 M2.5 内推进:
+
+- 报告质量 hardening 和手动 dogfood
+- JD 截图 OCR 输入链路
+- 报告详情信息密度、筛选和 topic 批量进入 `/quiz`
+
+最新事实以 [`docs/STATUS.md`](docs/STATUS.md) 为准。
+
+## 路线图
+
+```text
+M0    仓库改造 + 文档重写                                      done
+M1    笔记入库 + chunker + 树形导航 + Langfuse 起步              done
+M2    聊天框主题 query -> 全库 RAG -> 出题 + Judge 三层评分       done
+M2.1  InterviewCoachAgent: 状态机 + 多轮纠偏 + 总结              done
+M2.5  JD Intelligence Agent: JD 库 -> 要求地图 -> 学习路径       current
+```
+
+M2.5 之后不再规划 M3 的 SR、弱点 dashboard、岗位类三源出题或简历诊断。后续生产力主线收束到 JD Intelligence Agent。
 
 ## 文档导航
 
 | 文件 | 内容 |
 |------|------|
-| [`docs/STATUS.md`](docs/STATUS.md) | 当前进度的单一可信源 — **新会话从这里开始** |
-| [`docs/1-PRD.md`](docs/1-PRD.md) | 产品需求:目标用户、核心闭环、NSM |
-| [`docs/2-TECH_DESIGN.md`](docs/2-TECH_DESIGN.md) | 技术设计:架构、模块分层、LLM 调用层 |
-| [`docs/3-DATA_MODEL.md`](docs/3-DATA_MODEL.md) | 数据模型:notes / chunks / questions / sessions / answers / knowledge_gap |
-| [`docs/4-API_SPEC.md`](docs/4-API_SPEC.md) | API 规范:REST + SSE 端点、错误码、流式协议 |
-| [`docs/5-AGENT_DESIGN.md`](docs/5-AGENT_DESIGN.md) | Agent 设计:QuizGenerator / AnswerJudge 输入输出 + Prompt 全文 |
-| [`docs/6-EVAL_PLAN.md`](docs/6-EVAL_PLAN.md) | 评测计划:hybrid_search / quiz_generator / answer_judge / interview_coach 等 suite |
-| [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md) | M0 / M1 / M2 / M2.5 / M3 节奏与退出标准 |
-| [`docs/8-ENGINEERING.md`](docs/8-ENGINEERING.md) | 工程规范:仓库结构、Python+TS 规范、CI/CD |
-| [`docs/9-LESSONS.md`](docs/9-LESSONS.md) | 工程踩坑录(8 大类 ~30 条) |
+| [`docs/STATUS.md`](docs/STATUS.md) | 当前进度、已锁定决策、下一刀 |
+| [`docs/1-PRD.md`](docs/1-PRD.md) | 产品定位、用户故事、功能边界 |
+| [`docs/2-TECH_DESIGN.md`](docs/2-TECH_DESIGN.md) | 架构、模块分层、数据流、可观测 |
+| [`docs/3-DATA_MODEL.md`](docs/3-DATA_MODEL.md) | 表结构、JSONB schema、迁移边界 |
+| [`docs/4-API_SPEC.md`](docs/4-API_SPEC.md) | REST + SSE API 契约 |
+| [`docs/5-AGENT_DESIGN.md`](docs/5-AGENT_DESIGN.md) | Agent prompt、输出契约、M2.1/M2.5 编排原则 |
+| [`docs/6-EVAL_PLAN.md`](docs/6-EVAL_PLAN.md) | 评测套件与手动 dogfood 口径 |
+| [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md) | 里程碑范围、退出标准、不做清单 |
+| [`docs/8-ENGINEERING.md`](docs/8-ENGINEERING.md) | 工程规范、本地开发、CI 策略 |
+| [`docs/9-LESSONS.md`](docs/9-LESSONS.md) | v1/v2 工程踩坑与产品反思 |
 
----
+## 贡献
 
-## JD 考点对照表
+这是维护者本地 dogfood 优先的开源项目。欢迎通过 issue 或 PR 讨论以下类型的改动:
 
-把 LLM 应用工程师 JD 高频能力点映射到本项目实现。
+- README、文档和 onboarding 修正
+- 明确复现路径的 bug fix
+- 不扩大产品边界的 M2.5/JD Intelligence 改进
+- 手动验证路径更清楚的开发体验改进
 
-| 招聘考点 | 本项目证据 | 文档 / 代码定位 |
-|---------|-----------|----------------|
-| LLM 应用工程化端到端落地 | 8 份设计文档 + ROADMAP + 工程踩坑录 | `docs/` |
-| Agent 编排(LangGraph 状态机) | InterviewCoachAgent:状态 / 工具 / 分支 / 记忆 / 评测 / 恢复 | `docs/5-AGENT_DESIGN` / `docs/7-ROADMAP` |
-| RAG 工程(混合检索 + 重排) | hybrid search:pgvector + tsvector + RRF + char n-gram | `docs/5-AGENT_DESIGN` / `apps/api/src/jobcopilot_api/services/retrieval_pipeline.py` |
-| Prompt 工程 + 版本管理 | Prompt 即代码,Jinja2 模板 + `prompt_versions` 表 | `apps/api/src/jobcopilot_api/agents/*/prompts.py` |
-| 反幻觉 / 引用追溯 | quiz_generator 强约束 source_chunk_ids;answer_judge fidelity 层 | `docs/5-AGENT_DESIGN` |
-| LLM-as-Judge | 三层评分(Coverage / Fidelity / Depth)+ 先证据后打分 | `docs/6-EVAL_PLAN` |
-| 评测有效性 | Cohen's kappa 守门 ≥ 0.7;Judge 不引入 prompt 没要求的维度 | `docs/6-EVAL_PLAN` |
-| 评测踩坑案例 | 公开记录评测翻车 + 重做经验 | `docs/9-LESSONS.md` |
-| 结构化输出 | Pydantic Schema + JSON Schema retry | `docs/4-API_SPEC` / `apps/api/src/jobcopilot_api/llm/` |
-| 流式 SSE | EventSource + node 级事件协议 | `docs/4-API_SPEC` |
-| Prompt Cache 成本工程 | sha256 cache key + 异常降级 + Postgres 存储 | `docs/2-TECH_DESIGN` |
-| 多 Provider 抽象 | LLMProvider Protocol + qwen / dummy 双实现 | `apps/api/src/jobcopilot_api/llm/` |
-| 向量数据库工程 | pgvector HNSW + 归一化 + 多粒度 chunk | `docs/3-DATA_MODEL` |
-| FastAPI / SQLAlchemy 2.x async | 全异步 IO | `docs/8-ENGINEERING` |
-| Next.js 15 + RSC + TS | 服务端组件 + Tanstack Query | `apps/web/` |
-| Docker Compose 一键部署 | postgres + api + web + caddy + Langfuse | `docker-compose.yml` |
-| 工程纪律(手动闸门) | ruff / mypy / typecheck / build / tests 保留手动入口 | `docs/8-ENGINEERING` |
-
----
-
-## 当前状态
-
-**阶段**:M2 — 聊天框主题 query → 全库 RAG → 出题 + Judge 三层评分
-
-详见 [`docs/STATUS.md`](docs/STATUS.md)。
-
----
-
-## 路线图
-
-6 个阶段(详见 [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md)):
-
-```
-M0  仓库改造 + 文档重写
-M1  笔记入库(.md 上传 + Web 编辑器)+ chunker + 树形导航
-M2  聊天框主题 query → 全库 RAG → 出题 + LLM Judge 三层评分
-M2.1 InterviewCoachAgent → Agentic RAG 面试状态机 + 追问分支
-M2.5 JD 累积上传 + 一键分析 + 学习路径
-M3  弱点跟踪 + SR 队列 + 岗位类三源出题 + 简历诊断
-```
-
----
-
-## 项目演进
-
-JobCopilot v1 是 "AI 改简历 + 投递追踪",做到 W8 时通过真实评测发现产品价值假设站不住(JD 同质化 + retrieval 错放在不增长的 profile)。
-v2 重新定位为 "AI 面试陪练 + 笔记即题库",同一目标用户(1-3 年跳槽开发者),换更强痛点(面试焦虑)+ 更对的工程能力归宿(笔记 RAG / 知识点弱点跟踪 / 开放式答题 LLM Judge)。
-
-工程踩坑沉淀在 [`docs/9-LESSONS.md`](docs/9-LESSONS.md),v1 → v2 的反思在 [`docs/STATUS.md`](docs/STATUS.md) 末尾。
-
----
+提交前请保持改动聚焦,并在 PR 中说明你手动验证过的页面、API 或命令。自动 CI 默认不会在 push 时运行。
 
 ## 许可证
 
 [MIT](LICENSE)
 
----
-
 ## 致谢
 
-- 阿里云百炼:Qwen3.6 与百炼平台
-- LangGraph / FastAPI / Next.js / pgvector / SQLAlchemy / Tailwind 等开源社区
+- 阿里云百炼 / DashScope / Qwen
+- LangGraph, FastAPI, Next.js, pgvector, SQLAlchemy, Tailwind CSS, Langfuse 和开源社区
 
 ---
 
-# English Version
+## English Summary
 
-> **A local-first AI interview coach for developers. Turn your own notes into interview questions.**
->
-> Start with one `docker compose up`. Your notes stay on your machine.
+JobCopilot is a local-first AI job-preparation tool for computer science learners and developers.
 
-[Chinese](#这是什么) | [English](#english-version)
+It has two connected workflows:
 
----
+1. **JD Intelligence Agent**: persist job descriptions, parse them, aggregate repeated requirements, recompute frequencies, generate a learning path, and save report snapshots.
+2. **Note-based interview coach**: use your Markdown notes as the RAG source, generate grounded interview questions, judge answers with evidence, support multi-turn remediation, and save session summaries.
 
-## What is JobCopilot?
+The project runs as a single-user local stack with FastAPI, Next.js, Postgres/pgvector, Docker Compose, and DashScope/Qwen via your own API key.
 
-Developers often run into the same awkward moment: you learned the topic, wrote the notes, maybe even used it at work, but still struggle to explain it clearly in an interview.
-
-JobCopilot turns your technical notes into a private interview question bank. It retrieves from your own Markdown notes, asks questions like a real interviewer, grades your answers, and keeps track of weak spots for later review.
-
-**Core loop**:
-
-```text
-1. Ingest notes - upload a local Markdown folder or write in the web editor
-2. Enter a topic - for example, "quiz me on concurrency" or "cache consistency"
-3. Generate questions with full-repo RAG - 3 to 10 open-ended and interview-style questions, each grounded by source_chunk_ids
-4. Answer from memory - no peeking at notes
-5. Grade with an LLM judge - coverage, fidelity, and depth
-6. Track weak spots - knowledge gaps are queued for spaced repetition
-```
-
-**How it differs from common tools**
-
-| Tool | What it does | What JobCopilot does differently |
-|------|--------------|----------------------------------|
-| Anki | Manual flashcards | Generates questions from your notes |
-| Public interview banks | Shared question sets | Private question bank based on what you wrote |
-| ChatGPT prompts | Stateless questions and feedback | Persistent memory, calibrated judging, and weakness tracking |
-| Notion AI | Passive retrieval | Active recall: it asks you the questions |
-
----
-
-## Architecture
-
-```text
-apps/web (Next.js 15)
-  Tree navigation / Markdown editor / quiz flow / weakness dashboard
-        |
-        | REST + SSE
-        v
-apps/api (FastAPI)
-  services/  notes, quiz, answer, sessions
-  agents/    QuizGenerator, AnswerJudge
-  llm/       provider abstraction + prompt cache
-  infra/     pgvector, hybrid search, kappa evaluation
-        |
-        v
-Postgres 16
-  notes / chunks / questions / sessions / answers / knowledge_gap
-        |
-        v
-Alibaba Cloud Bailian API
-  Qwen3.6-Flash with thinking enabled
-```
-
----
-
-## Engineering Highlights
-
-| Area | Implementation |
-|------|----------------|
-| Note-based RAG | Hybrid search with pgvector, tsvector, RRF, and Chinese char n-gram |
-| Anti-hallucination question generation | Every question must include `source_chunk_ids`; unsupported terms are blocked |
-| LLM-as-Judge | Three-layer scoring: coverage, fidelity, and depth |
-| Judge reliability | Cohen's kappa gate before promotion |
-| Weakness tracking | Uses `folder_path / heading_path` as ground-truth knowledge tags |
-| Prompt cache | `sha256(prompt + schema)` cache key with safe miss fallback |
-| Spaced repetition | Simplified SM-2 style scheduling backed by SQL |
-| Agentic RAG interview coach | LangGraph state machine for retrieval, questioning, grading, follow-up, and summary |
-| Observability | Each response includes a `trace_id`; LLM calls are recorded in `llm_calls` |
-| Local-first deployment | Docker Compose plus BYOK; user notes stay local |
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- Docker with Compose v2
-- Alibaba Cloud Bailian API key
-
-### Run
-
-```bash
-git clone https://github.com/lemma42796/job-copilot.git
-cd job-copilot
-cp .env.example .env
-# Edit .env:
-#   JOBCOPILOT_DASHSCOPE_API_KEY=sk-xxx
-docker compose up -d
-```
-
-After a few minutes:
-
-```text
-Web:  http://localhost:3000
-API:  http://localhost:8000/v1/health
-Docs: http://localhost:8000/v1/docs   # development mode
-```
-
----
-
-## Documentation
-
-| File | Purpose |
-|------|---------|
-| [`docs/STATUS.md`](docs/STATUS.md) | Current project status and locked decisions |
-| [`docs/1-PRD.md`](docs/1-PRD.md) | Product requirements, target users, core loop, NSM |
-| [`docs/2-TECH_DESIGN.md`](docs/2-TECH_DESIGN.md) | Architecture, module boundaries, LLM layer |
-| [`docs/3-DATA_MODEL.md`](docs/3-DATA_MODEL.md) | Data model for notes, chunks, questions, sessions, answers, and knowledge gaps |
-| [`docs/4-API_SPEC.md`](docs/4-API_SPEC.md) | REST + SSE API spec, error codes, streaming protocol |
-| [`docs/5-AGENT_DESIGN.md`](docs/5-AGENT_DESIGN.md) | Agent design, schemas, and full prompts |
-| [`docs/6-EVAL_PLAN.md`](docs/6-EVAL_PLAN.md) | Evaluation plan for retrieval, question generation, judging, and coach behavior |
-| [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md) | Milestones and exit criteria |
-| [`docs/8-ENGINEERING.md`](docs/8-ENGINEERING.md) | Engineering conventions and manual gates |
-| [`docs/9-LESSONS.md`](docs/9-LESSONS.md) | Engineering lessons from v1 and v2 |
-
----
-
-## Engineering Proof Points
-
-| Hiring signal | Project evidence |
-|---------------|------------------|
-| End-to-end LLM application engineering | Product docs, architecture docs, roadmap, and implementation notes |
-| Agent orchestration | InterviewCoachAgent with state, tools, branching, memory, evaluation, and recovery |
-| RAG engineering | Hybrid retrieval with pgvector, tsvector, RRF, and chunk grounding |
-| Prompt engineering | Prompt-as-code with structured schemas and prompt versions |
-| Anti-hallucination | Source-grounded question generation and fidelity judging |
-| LLM-as-Judge | Coverage, fidelity, and depth scoring with evidence-first evaluation |
-| Evaluation quality | Cohen's kappa gate and recorded failure cases |
-| Structured output | Pydantic schemas, JSON Schema retry, and typed API contracts |
-| Streaming UX | SSE event protocol for long-running interview flows |
-| Cost engineering | Prompt cache with stable keys and graceful degradation |
-| Provider abstraction | `LLMProvider` protocol with Qwen and dummy implementations |
-| Vector database engineering | pgvector HNSW, normalization, and multi-granularity chunks |
-| Modern full-stack stack | FastAPI, SQLAlchemy 2.x async, Next.js 15, React 19, TypeScript |
-| Local deployment | Docker Compose stack with Postgres, API, web, Caddy, and Langfuse |
-
----
-
-## Current Status
-
-**Phase**: M2 - topic query in chat -> full-repo RAG -> question generation + three-layer LLM judge.
-
-See [`docs/STATUS.md`](docs/STATUS.md) for details.
-
----
-
-## Roadmap
-
-```text
-M0    Repository restructuring and documentation rewrite
-M1    Markdown note ingestion, web editor, chunker, and tree navigation
-M2    Topic query -> full-repo RAG -> questions + LLM judge
-M2.1  InterviewCoachAgent with agentic RAG, interview state machine, and follow-up questions
-M2.5  JD upload, one-click analysis, and learning path
-M3    Weakness tracking, spaced repetition, job-oriented question generation, and resume diagnosis
-```
-
----
-
-## Project Evolution
-
-JobCopilot v1 started as an AI resume optimization and job application tracker. By W8, real evaluations showed that the product value assumption was weak: job descriptions were too homogeneous, and retrieval was attached to a profile that did not grow enough over time.
-
-v2 repositions the project as an AI interview coach powered by personal notes. It keeps the same target user - developers preparing for job changes - but moves to a sharper pain point: interview anxiety, active recall, note-based RAG, knowledge-gap tracking, and open-ended answer judging.
-
----
-
-## License
-
-[MIT](LICENSE)
-
----
-
-## Acknowledgements
-
-- Alibaba Cloud Bailian for Qwen3.6 and model serving
-- LangGraph, FastAPI, Next.js, pgvector, SQLAlchemy, Tailwind, and the open-source community
+Current phase: **M2.5 JD Intelligence Agent**. See [`docs/STATUS.md`](docs/STATUS.md) and [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md) for the latest implementation state and roadmap boundaries.
