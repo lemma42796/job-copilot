@@ -1,13 +1,13 @@
 ---
 title: EVAL PLAN - JobCopilot v2(评测套件 + Cohen's kappa 守门)
 owner: lemma42796
-last_updated: 2026-05-18
-purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、不达标处理流程
+last_updated: 2026-05-22
+purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、不达标处理流程,以及 JD-to-Knowledge 覆盖指标口径
 ---
 
 # 1. 一句话总览
 
-当前主动维护四套评测;M2.5 不再新增 `jd_aggregator` 自动化 eval runner,只保留手动 dogfood 验收口径:
+当前主动维护四套正式评测 + 一个 M2.5 最小覆盖指标脚本。M2.5 不恢复 `jd_aggregator` 大套件,但保留 `jd_coverage` 用来量化 JD-to-Knowledge 覆盖质量:
 
 | Suite | M? DoD | 守什么 | 阈值 |
 |-------|--------|-------|------|
@@ -15,7 +15,8 @@ purpose: 锁评测套件结构、dataset 标注规范、kappa 算法、跑法、
 | `quiz_generator` | M2 | 出题结构合规 + type_mix 决策合理 | 合规率 ≥ 0.95 / type_mix 一致率 ≥ 0.7 |
 | `answer_judge` | M2 | 三层 label 跟人工标注一致性 | Cohen's `κ ≥ 0.7`(三层独立) |
 | `interview_coach` | M2.1 | Agent 状态机是否走到人工期望分支 + 多轮纠偏是否正确退出 | branch accuracy ≥ 0.8 / recovery + context + hallucination case 全过 |
-| `jd_aggregator` | M2.5 暂缓 | 不作为当前 DoD;用户已明确不做测试 | 手动 dogfood |
+| `jd_coverage` | M2.5 最小指标 | JD 要求对用户知识库的覆盖分类 + 证据排序 | 手动小样本报告 |
+| `jd_aggregator` | M2.5 暂缓 | 不作为当前 DoD;不恢复大而全的同义合并 eval runner | 手动 dogfood |
 
 不达标 → 改 prompt(bump version) / 分支阈值 / 状态机逻辑 + 重跑全套,**不切模型**(沿用 5-AGENT_DESIGN §2.1)。
 
@@ -38,6 +39,9 @@ evals/
 │   ├── interview_coach/
 │   │   ├── dataset.jsonl
 │   │   └── README.md
+│   ├── jd_coverage/
+│   │   ├── dataset.jsonl           # 本地手工标签;默认不提交真实样本
+│   │   └── README.md
 │   └── jd_aggregator/              # 暂缓,不作为 M2.5 当前 DoD
 │       ├── dataset.jsonl
 │       └── README.md
@@ -56,6 +60,7 @@ apps/api/scripts/
 ├── eval_quiz_generator.py
 ├── eval_answer_judge.py
 ├── eval_interview_coach.py
+├── eval_jd_coverage.py             # M2.5 最小覆盖指标脚本
 └── eval_jd_aggregator.py           # 暂缓,不作为 M2.5 当前 DoD
 ```
 
@@ -63,6 +68,7 @@ apps/api/scripts/
 
 - 一行一个 JSON,UTF-8 无 BOM,中文不转义(`ensure_ascii=False`)
 - 每条样本必带:`id`(`q001` / `j001` / `s001` 风格)、`source`(标注来源,如 `dogfood_2026_05`)、`bug_ref`(可选,关联 bug 样本就填 issue 号)
+- 例外:`jd_coverage` 是 M2.5 最小读库指标脚本,只强制 `id / analysis_id / req_id / expected_status / expected_evidence_chunk_ids`。
 - **bug 进 dataset 规则**(沿用 v1 LESSONS §8.2):每发现一类新 bug,加 1 条 fixture 进对应 suite,**永不删除**(防回归)
 - dataset 修改必须 PR,不接受 commit 直接改
 
@@ -333,11 +339,59 @@ python -m jobcopilot_api.scripts.eval_quiz_generator \
 
 输出报告 schema 类似 §3.4。**不达标时**:跟 §3.5 同流程,先看 per_fixture 再改 prompt。
 
-# 5. `jd_aggregator` suite(暂缓,不作为 M2.5 DoD)
+# 5. M2.5 JD Intelligence suites
+
+## 5.1 `jd_coverage` suite(最小指标脚本)
+
+最新决策(2026-05-22):为简历里的 JD-to-Knowledge 覆盖分析补一条最小可复现指标链,但不恢复大而全的自动化测试。该脚本不调 LLM,只读人工 JSONL 标签和 DB 里已经生成的 `jd_analyses.note_match_summary`。
+
+### 5.1.1 评什么
+
+测"JD 聚合出的 canonical requirement → 用户知识库覆盖矩阵"这一步是否可信:
+
+| 指标 | 定义 | 用途 |
+|------|------|------|
+| `coverage_macro_f1` | `covered / partial / missing / unknown` 四分类 macro F1 | 看覆盖分类整体是否准 |
+| `missing_recall` | 人工标为 `missing` 的 requirement 被系统判成 `missing` 的比例 | 守"缺口别漏" |
+| `false_covered_rate` | 人工非 covered 却被系统判成 covered 的比例 | 守"别假装已掌握" |
+| `evidence_precision@k` | Top-k 证据 chunk 中人工认可证据的比例 | 看证据是否干净 |
+| `evidence_recall@k` | 人工认可证据被 Top-k 找回的比例 | 看证据是否找全 |
+| `evidence_mrr@k` | Top-k 中第一个人工认可证据的倒数排名均值 | 看好证据是否排前 |
+
+`coverage_accuracy` 只作为诊断指标,不当 headline,避免类别不均衡时掩盖 missing 类问题。
+
+### 5.1.2 dataset.jsonl schema
+
+```json
+{
+  "id": "cov_001",
+  "analysis_id": 12,
+  "req_id": "req_3",
+  "expected_status": "partial",
+  "expected_evidence_chunk_ids": [9012, 9018],
+  "notes": "Redis cluster note partially covers the requirement"
+}
+```
+
+标注口径:
+
+- `expected_status` 只能是 `covered / partial / missing / unknown`。
+- `expected_evidence_chunk_ids` 只标真正能支持覆盖判断的 `note_chunks.id`;`missing / unknown` 可为空。
+- 第一批最小 dogfood 只需 5-10 条,覆盖 covered / partial / missing 三类即可。
+
+### 5.1.3 跑法
+
+```
+uv run python apps/api/scripts/eval_jd_coverage.py
+```
+
+默认读取 `evals/suites/jd_coverage/dataset.jsonl`,报告写入 `evals/reports/jd-coverage-<timestamp>.md`。可用 `--dataset / --report / --report-dir / --k` 覆盖默认值。
+
+## 5.2 `jd_aggregator` suite(暂缓,不作为 M2.5 DoD)
 
 最新决策(2026-05-18):M2.5 不再新增自动化测试 / eval runner。最多约 50 条同质 JD 的真实场景优先靠手动 dogfood 判断报告是否有生产力;以下设计仅作为将来重新需要自动化回归时的存档,不要把它当下一刀。
 
-## 5.1 评什么
+### 5.2.1 评什么
 
 测 JdAggregator 多 JD 一键分析的 **同义合并准确率** + **频次重算正确性**。不算 kappa(canonical 不是 categorical label,是文本去重),改用集合 / 序列指标。
 
@@ -347,7 +401,7 @@ python -m jobcopilot_api.scripts.eval_quiz_generator \
 | **频次重算误差** | Python 重算 frequency vs 人工 ground truth frequency 的 MAE | ≤ 0.03 |
 | **结构合规率** | aggregated_requirements 全部字段非空 + supporting_jd_ids 非空 | ≥ 0.98 |
 
-## 5.2 dataset.jsonl schema
+### 5.2.2 dataset.jsonl schema
 
 ```json
 {
@@ -386,7 +440,7 @@ python -m jobcopilot_api.scripts.eval_quiz_generator \
 }
 ```
 
-## 5.3 数据集容量
+### 5.2.3 数据集容量
 
 若未来重启自动化 suite,可从 30 条起步,组合多种场景:
 
@@ -398,7 +452,7 @@ python -m jobcopilot_api.scripts.eval_quiz_generator \
 | 21-25 | 噪声词(BOSS 平台标签 / 学历词混入 hard_skills)| 不算 canonical 进单独 group |
 | 26-30 | 极端规模(200 条 JD 上限场景)| reduce 拓扑跑通 + P95 ≤ 60s |
 
-## 5.4 存档跑法 + 阈值
+### 5.2.4 存档跑法 + 阈值
 
 当前不执行。只有用户重新明确要求"跑评测"或"恢复 jd_aggregator suite"时再启用。
 
@@ -849,7 +903,8 @@ MVP **单人主标注 + 抽样复核**,不上双人 inter-rater agreement。理�
 | Fidelity claim 匹配 | 语义最近邻(embedding 余弦,阈值 0.6)| Judge claim 跟人工 claim 不可能逐字对齐 |
 | Tool use 评测路径 | **不禁** + 跑 baseline(tool=off)对比 | 没 baseline 不知道工具有没有真实价值 |
 | Trace 集成 | 评测 LLM 调用全进 Langfuse,tag `eval_run_id` + `fixture_id` | 不达标 5 分钟定位,vs 翻日志半小时 |
-| jd_aggregator suite | 暂缓,不作为 M2.5 当前 DoD | 用户已明确不做测试;若未来恢复,再用 F1(集合)+ MAE(频次) |
+| jd_coverage suite | M2.5 最小指标脚本 | 不调 LLM;用小样本人工标签评覆盖分类和证据 P/R/MRR@k |
+| jd_aggregator suite | 暂缓,不作为 M2.5 当前 DoD | 不恢复大而全的同义合并 eval runner;若未来恢复,再用 F1(集合)+ MAE(频次) |
 | 简历相关 suite | 全部砍掉 | 不上传、不诊断、不改写、不参与出题 |
 | dogfood 笔记 fixture | hybrid_search suite 强依赖固定笔记库(notes_fixture/ 或 notes_fixture.zip)| chunk_id 稳定才能比;chunker 改动后用 heading_path + anchors 复核 |
 | 跑评测 CLI | `eval_<suite>.py --suite <dir> --prompt-version <v> --output <path>` | 各 suite 统一 |

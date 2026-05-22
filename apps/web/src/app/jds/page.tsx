@@ -39,6 +39,7 @@ import {
   type JdAnalysisReport,
   type JdLibraryItem,
   type JdLibraryListItem,
+  type JdNoteMatchSummaryItem,
   type JdParsedPayload,
   type JdQuizTopicCandidate,
 } from '@/lib/api';
@@ -54,6 +55,8 @@ type AsyncState =
 type ActiveView = 'jd' | 'analysis';
 type AnalysisScope = 'all' | 'recent' | 'title' | 'selected';
 type AnalysisInput = { filter: JdAnalysisFilter; description: string };
+type TopicPriorityFilter = 'all' | 'high' | 'medium' | 'low' | string;
+type CoverageStatusFilter = 'all' | 'covered' | 'partial' | 'missing' | 'unknown' | string;
 
 const SAMPLE_JD = `岗位：Java 后端工程师
 职责：
@@ -185,9 +188,15 @@ export default function JdsPage() {
 
   const parsedPayload = selectedDetail?.parsed_payload;
   const stats = useMemo(() => buildStats(parsedPayload), [parsedPayload]);
+  const cleanedRawText = useMemo(() => normalizeJdPaste(rawText), [rawText]);
+  const rawTextIsCleanable = rawText.length > 0 && cleanedRawText !== rawText;
+  const likelyDuplicate = useMemo(
+    () => findLikelyDuplicateJd(cleanedRawText, items),
+    [cleanedRawText, items],
+  );
 
   const handleCreate = async () => {
-    const text = rawText.trim();
+    const text = cleanedRawText.trim();
     if (!text) {
       setSubmitState({ kind: 'error', message: 'JD 原文不能为空' });
       return;
@@ -197,6 +206,12 @@ export default function JdsPage() {
         kind: 'error',
         message: `JD 原文超过 ${JD_TEXT_MAX_LENGTH} 字符`,
       });
+      return;
+    }
+    if (
+      likelyDuplicate &&
+      !window.confirm(`列表里已有相似 JD「${likelyDuplicate.title}」，仍然继续入库？`)
+    ) {
       return;
     }
     setSubmitState({ kind: 'loading' });
@@ -352,15 +367,27 @@ export default function JdsPage() {
                 <h2 className="text-base font-semibold">上传 JD</h2>
                 <p className="text-[13px] text-muted">文本粘贴</p>
               </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setRawText(SAMPLE_JD)}
-              >
-                <FileText className="size-4" />
-                样例
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRawText(cleanedRawText)}
+                  disabled={!rawTextIsCleanable}
+                >
+                  <RefreshCw className="size-4" />
+                  清洗
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRawText(SAMPLE_JD)}
+                >
+                  <FileText className="size-4" />
+                  样例
+                </Button>
+              </div>
             </div>
             <Textarea
               value={rawText}
@@ -368,22 +395,28 @@ export default function JdsPage() {
               placeholder="岗位：Java 后端工程师..."
               className="mt-4 min-h-[180px] resize-y rounded-lg bg-surface leading-relaxed"
             />
+            {rawTextIsCleanable || likelyDuplicate ? (
+              <div className="mt-2 space-y-1 text-xs text-muted">
+                {rawTextIsCleanable ? <div>可清洗复制格式符和多余空行</div> : null}
+                {likelyDuplicate ? <div>可能重复：{likelyDuplicate.title}</div> : null}
+              </div>
+            ) : null}
             <div className="mt-3 flex items-center justify-between gap-3">
               <span
                 className={cn(
                   'text-xs',
-                  rawText.trim().length > JD_TEXT_MAX_LENGTH
+                  cleanedRawText.length > JD_TEXT_MAX_LENGTH
                     ? 'text-[var(--color-danger)]'
                     : 'text-muted',
                 )}
               >
-                {rawText.trim().length}/{JD_TEXT_MAX_LENGTH}
+                {cleanedRawText.length}/{JD_TEXT_MAX_LENGTH}
               </span>
               <Button
                 type="button"
                 onClick={handleCreate}
                 disabled={
-                  submitState.kind === 'loading' || rawText.trim().length > JD_TEXT_MAX_LENGTH
+                  submitState.kind === 'loading' || cleanedRawText.length > JD_TEXT_MAX_LENGTH
                 }
               >
                 {submitState.kind === 'loading' ? (
@@ -795,7 +828,41 @@ function StatusPill({ status }: { status: string }) {
 }
 
 function AnalysisReportView({ report }: { report: JdAnalysisReport }) {
-  const topRequirements = report.aggregated_requirements.slice(0, 40);
+  const [requirementCategory, setRequirementCategory] = useState('all');
+  const [requirementQuery, setRequirementQuery] = useState('');
+  const [topicPriority, setTopicPriority] = useState<TopicPriorityFilter>('all');
+
+  const requirementCategories = useMemo(
+    () => ['all', ...Array.from(new Set(report.aggregated_requirements.map((req) => req.category)))],
+    [report.aggregated_requirements],
+  );
+  const filteredRequirements = useMemo(() => {
+    const query = requirementQuery.trim().toLowerCase();
+    return report.aggregated_requirements.filter((req) => {
+      const categoryMatch = requirementCategory === 'all' || req.category === requirementCategory;
+      const queryMatch =
+        !query ||
+        req.canonical_text.toLowerCase().includes(query) ||
+        req.raw_phrases.some((phrase) => phrase.toLowerCase().includes(query));
+      return categoryMatch && queryMatch;
+    });
+  }, [report.aggregated_requirements, requirementCategory, requirementQuery]);
+  const topRequirements = filteredRequirements.slice(0, 50);
+  const topicPriorities = useMemo(
+    () => ['all', ...Array.from(new Set(report.quiz_topic_candidates.map((topic) => topic.priority)))],
+    [report.quiz_topic_candidates],
+  );
+  const filteredTopics = useMemo(
+    () =>
+      report.quiz_topic_candidates.filter(
+        (topic) => topicPriority === 'all' || topic.priority === topicPriority,
+      ),
+    [report.quiz_topic_candidates, topicPriority],
+  );
+  const batchTopic = filteredTopics
+    .slice(0, 5)
+    .map((topic) => topic.topic)
+    .join('、');
   return (
     <div className="space-y-4 p-5">
       <div className="rounded-lg border border-border bg-background p-4">
@@ -824,13 +891,36 @@ function AnalysisReportView({ report }: { report: JdAnalysisReport }) {
         <Metric label="成本" value={`${report.total_cost_cny ?? 0} CNY`} />
       </div>
 
+      <CoverageAnalysisSection items={report.note_match_summary} />
+
       <section className="rounded-lg border border-border bg-background p-4">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="flex items-center gap-2 text-sm font-semibold">
             <ListChecks className="size-4" />
             岗位要求地图
           </h3>
-          <span className="text-xs text-muted">Top {topRequirements.length}</span>
+          <span className="text-xs text-muted">
+            {topRequirements.length}/{filteredRequirements.length}
+          </span>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <select
+            value={requirementCategory}
+            onChange={(event) => setRequirementCategory(event.target.value)}
+            className="h-9 rounded-lg border border-input bg-surface px-3 text-sm outline-none"
+          >
+            {requirementCategories.map((category) => (
+              <option key={category} value={category}>
+                {category === 'all' ? '全部类别' : category}
+              </option>
+            ))}
+          </select>
+          <Input
+            value={requirementQuery}
+            onChange={(event) => setRequirementQuery(event.target.value)}
+            placeholder="搜要求或原文短语"
+            className="h-9 min-w-[220px] flex-1 rounded-lg bg-surface"
+          />
         </div>
         <div className="mt-3 overflow-x-auto">
           <table className="w-full min-w-[680px] text-left text-sm">
@@ -844,9 +934,15 @@ function AnalysisReportView({ report }: { report: JdAnalysisReport }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {topRequirements.map((req) => (
-                <RequirementRow key={req.id} req={req} />
-              ))}
+              {topRequirements.length ? (
+                topRequirements.map((req) => <RequirementRow key={req.id} req={req} />)
+              ) : (
+                <tr>
+                  <td colSpan={5} className="py-8 text-center text-muted">
+                    没有匹配的要求
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -860,13 +956,36 @@ function AnalysisReportView({ report }: { report: JdAnalysisReport }) {
       </section>
 
       <section className="rounded-lg border border-border bg-background p-4">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-sm font-semibold">Quiz Topics</h3>
-          <span className="text-xs text-muted">{report.quiz_topic_candidates.length}</span>
+          <div className="flex items-center gap-2">
+            <select
+              value={topicPriority}
+              onChange={(event) => setTopicPriority(event.target.value)}
+              className="h-8 rounded-lg border border-input bg-surface px-2 text-xs outline-none"
+            >
+              {topicPriorities.map((priority) => (
+                <option key={priority} value={priority}>
+                  {priority === 'all' ? '全部优先级' : priority}
+                </option>
+              ))}
+            </select>
+            <a
+              href={batchTopic ? `/quiz?topic=${encodeURIComponent(batchTopic)}` : undefined}
+              className={cn(
+                'inline-flex h-8 items-center gap-1 rounded-md border border-border bg-surface px-2 text-xs hover:bg-black/[0.04]',
+                !batchTopic && 'pointer-events-none opacity-50',
+              )}
+            >
+              <ExternalLink className="size-3" />
+              批量练习
+            </a>
+          </div>
         </div>
+        <div className="mt-2 text-xs text-muted">{filteredTopics.length} 个 topic</div>
         <div className="mt-3 grid gap-2">
-          {report.quiz_topic_candidates.length ? (
-            report.quiz_topic_candidates.map((topic, index) => (
+          {filteredTopics.length ? (
+            filteredTopics.map((topic, index) => (
               <QuizTopicItem key={`${topic.topic}-${index}`} topic={topic} />
             ))
           ) : (
@@ -874,6 +993,118 @@ function AnalysisReportView({ report }: { report: JdAnalysisReport }) {
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+function CoverageAnalysisSection({ items }: { items: JdNoteMatchSummaryItem[] }) {
+  const [statusFilter, setStatusFilter] = useState<CoverageStatusFilter>('all');
+  const counts = useMemo(() => buildCoverageCounts(items), [items]);
+  const statuses = useMemo(
+    () => ['all', ...Array.from(new Set(items.map((item) => item.status || 'unknown')))],
+    [items],
+  );
+  const visibleItems = useMemo(
+    () =>
+      items
+        .filter((item) => statusFilter === 'all' || item.status === statusFilter)
+        .slice(0, 40),
+    [items, statusFilter],
+  );
+
+  return (
+    <section className="rounded-lg border border-border bg-background p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className="flex items-center gap-2 text-sm font-semibold">
+          <Search className="size-4" />
+          知识库覆盖分析
+        </h3>
+        <select
+          value={statusFilter}
+          onChange={(event) => setStatusFilter(event.target.value)}
+          className="h-8 rounded-lg border border-input bg-surface px-2 text-xs outline-none"
+        >
+          {statuses.map((status) => (
+            <option key={status} value={status}>
+              {status === 'all' ? '全部状态' : coverageStatusLabel(status)}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-4">
+        <CoverageMetric label="已覆盖" value={counts.covered} tone="covered" />
+        <CoverageMetric label="部分覆盖" value={counts.partial} tone="partial" />
+        <CoverageMetric label="缺口" value={counts.missing} tone="missing" />
+        <CoverageMetric label="未知" value={counts.unknown} tone="unknown" />
+      </div>
+
+      <div className="mt-3 space-y-2">
+        {visibleItems.length ? (
+          visibleItems.map((item) => <CoverageItem key={item.req_id} item={item} />)
+        ) : (
+          <div className="rounded-lg border border-dashed border-border px-3 py-8 text-center text-sm text-muted">
+            没有匹配的覆盖项
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function CoverageMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: string;
+}) {
+  return (
+    <div className={cn('rounded-lg border px-3 py-2', coverageTone(tone))}>
+      <div className="text-xs">{label}</div>
+      <div className="mt-1 text-lg font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function CoverageItem({ item }: { item: JdNoteMatchSummaryItem }) {
+  const evidence = item.evidence_chunks ?? [];
+  const notes = item.matched_notes ?? [];
+  const phrases = item.matched_phrases ?? [];
+  return (
+    <div className="rounded-lg border border-border bg-surface px-3 py-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium">{item.canonical_text ?? item.req_id}</div>
+          <div className="mt-1 text-xs text-muted">
+            {phrases.length ? `命中：${phrases.slice(0, 4).join(' / ')}` : '暂无命中短语'}
+          </div>
+        </div>
+        <span className={cn('rounded-md border px-2 py-0.5 text-[11px]', coverageTone(item.status))}>
+          {coverageStatusLabel(item.status)}
+        </span>
+      </div>
+      {evidence.length ? (
+        <div className="mt-3 space-y-2">
+          {evidence.slice(0, 2).map((chunk) => (
+            <div key={chunk.chunk_id} className="rounded-md border border-border bg-background p-2">
+              <div className="truncate text-xs font-medium">
+                {chunk.note_title}
+                {chunk.heading_path.length ? ` / ${chunk.heading_path.join(' / ')}` : ''}
+              </div>
+              <div className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted">
+                {chunk.snippet}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : notes.length ? (
+        <div className="mt-2 text-xs text-muted">
+          匹配笔记：{notes.slice(0, 3).map((note) => note.title).join(' / ')}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1006,7 +1237,71 @@ function formatAnalysisPhase(data: { phase: string; batch?: number; total?: numb
 }
 
 function formatPercent(value: number): string {
-  return `${Math.round(value * 100)}%`;
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function buildCoverageCounts(items: JdNoteMatchSummaryItem[]) {
+  return items.reduce(
+    (acc, item) => {
+      if (item.status === 'covered') acc.covered += 1;
+      else if (item.status === 'partial') acc.partial += 1;
+      else if (item.status === 'missing') acc.missing += 1;
+      else acc.unknown += 1;
+      return acc;
+    },
+    { covered: 0, partial: 0, missing: 0, unknown: 0 },
+  );
+}
+
+function coverageStatusLabel(status: string): string {
+  if (status === 'covered') return '已覆盖';
+  if (status === 'partial') return '部分覆盖';
+  if (status === 'missing') return '缺口';
+  if (status === 'unknown') return '未知';
+  return status;
+}
+
+function coverageTone(status: string): string {
+  if (status === 'covered') {
+    return 'border-[var(--color-success-border)] bg-[var(--color-success-bg)] text-[var(--color-success-fg)]';
+  }
+  if (status === 'partial') {
+    return 'border-[var(--color-warning-border)] bg-[var(--color-warning-bg)] text-[var(--color-warning-fg)]';
+  }
+  if (status === 'missing') {
+    return 'border-[var(--color-danger)] bg-background text-[var(--color-danger)]';
+  }
+  return 'border-border bg-background text-muted';
+}
+
+function normalizeJdPaste(value: string): string {
+  return value
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line, index, lines) => line || lines[index - 1])
+    .join('\n')
+    .trim();
+}
+
+function normalizeForCompare(value: string): string {
+  return normalizeJdPaste(value).replace(/\s+/g, '').toLowerCase();
+}
+
+function findLikelyDuplicateJd(
+  text: string,
+  items: JdLibraryListItem[],
+): JdLibraryListItem | null {
+  const normalized = normalizeForCompare(text);
+  if (normalized.length < 80) return null;
+  const prefix = normalized.slice(0, 160);
+  return (
+    items.find((item) => {
+      const preview = normalizeForCompare(item.raw_text_preview);
+      return preview.length >= 80 && (prefix.startsWith(preview) || preview.startsWith(prefix));
+    }) ?? null
+  );
 }
 
 function errorMessage(err: unknown): string {

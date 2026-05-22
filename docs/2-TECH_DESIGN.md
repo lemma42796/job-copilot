@@ -1,13 +1,13 @@
 ---
 title: TECH DESIGN - JobCopilot v2(架构 / 模块分层 / 数据流 / 错误处理)
 owner: lemma42796
-last_updated: 2026-05-18
+last_updated: 2026-05-21
 purpose: 锁系统架构、技术栈、模块边界、核心数据流、错误处理分层、v1 沿用 / 砍除清单
 ---
 
 # 1. 一句话总览
 
-monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind + Monaco** 前端,**LLM 走阿里云百炼 OpenAI 兼容接口 + qwen3.6-flash 多模态**(thinking 按 agent 决定),M2.1 起用 LangGraph 编排 InterviewCoachAgent 状态机与多轮纠偏循环,M2.5 起新增 JDAnalysisAgent 工具编排。慢请求(出题 / 评分 / JD 一键分析)走 SSE,embedder 走后台 worker。
+monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind + Monaco** 前端,**LLM 走阿里云百炼 OpenAI 兼容接口 + qwen3.6-flash**(thinking 按 agent 决定),M2.1 起用 LangGraph 编排 InterviewCoachAgent 状态机与多轮纠偏循环,M2.5 起新增 JDAnalysisAgent 工具编排。慢请求(出题 / 评分 / JD 一键分析)走 SSE,embedder 走后台 worker。
 
 # 2. 系统架构
 
@@ -70,7 +70,7 @@ monorepo:**FastAPI + asyncpg + pgvector** 后端,**Next.js App Router + Tailwind
 | DB | Postgres 16 + pgvector 0.7 | 沿用 v1 |
 | 全文搜索 | tsvector + char_ngrams SQL 函数 | 沿用 v1 alembic 0014 |
 | LLM SDK | OpenAI Python SDK 走百炼 OpenAI 兼容接口 | base_url=`https://dashscope.aliyuncs.com/compatible-mode/v1`;`from langfuse.openai import OpenAI` 自动 instrument(只覆盖 chat/completions/responses;embeddings 要手动包 generation,见 STATUS 永久约束) |
-| LLM 模型 | qwen3.6-flash(多模态:文本 + 图像 + tool use 一把抓);thinking 按 agent 决定 | 详见 5-AGENT §2.1;qwen3.6 系列整体是视觉模型 |
+| LLM 模型 | qwen3.6-flash;thinking 按 agent 决定 | 详见 5-AGENT §2.1 |
 | LLM cache | 两层:应用层 `llm_response_cache` + 百炼 Context Cache | response cache 缓完整请求/响应;Context Cache 缓重复公共前缀、只降成本和延迟,不是会话记忆;详见 5-AGENT §2.4 |
 | Embedding | text-embedding-v4(1024 维) | 沿用 v1 |
 | Agent 编排 | M2.1 起上 LangGraph `InterviewCoachAgent` 状态机 + remediation loop;M2.5 新增 `JDAnalysisAgent` 工具编排 | LangGraph checkpointer 序列化坑见 LESSONS §2.1;长上下文靠 context pack,不塞全量 transcript |
@@ -108,7 +108,7 @@ apps/api/src/jobcopilot_api/
 │   ├── quiz_service.py             # 出题编排(调 quiz_generator agent + 落库)
 │   ├── interview_service.py        # M2.1:InterviewCoachAgent session 编排 / checkpoint / SSE
 │   ├── answer_service.py           # 答题落库 + 算分 + finalize session
-│   └── jd_service.py               # M2.5:JD 上传(立即调 jd_parser)+ 一键分析编排(map-reduce + note match + quiz topic + 报告写入)
+│   └── jd_service.py               # M2.5:JD 上传(立即调 jd_parser)+ 一键分析编排(map-reduce + coverage match + quiz topic + 报告写入)
 ├── agents/                         # LLM 调用层
 │   ├── embedder/                   # 沿用 v1
 │   ├── quiz_generator/
@@ -346,13 +346,9 @@ run_loop():
 ## 5.6 JD 单条上传(M2.5,立即解析)
 
 ```
-FE 粘 JD 文本 / 上传截图 → POST /api/jds (json 或 multipart)
+FE 粘 JD 文本 → POST /api/jds (json)
   → routers/jd.upload_jd
   → services/jd_service.upload_one()
-      ├─ if source='image_upload':
-      │     ├─ infra/upload.read_image_base64
-      │     └─ llm.client.complete(qwen3.6-flash, image_url + prompt)
-      │           → raw_text(OCR 结果)
       ├─ agents/jd_parser.run(raw_text)
       │     → JdParseOutput(title / responsibilities / hard_skills / ...)
       └─ INSERT jds(parsed_payload, parse_cost, ...)
@@ -388,7 +384,7 @@ FE 选范围 + 点"一键分析" → POST /api/jd-analyses {filter} (SSE)
       agents/jd_aggregator.gen_learning_path(unified)  → markdown
 
   → emit progress{phase=note_matching}
-      services/jd_service._match_notes(requirements)  → title / chunk ilike 粗匹配(不是 RAG)
+      services/jd_service._match_notes(requirements)  → covered / partial / missing 覆盖矩阵 + 证据 chunks(不是 RAG)
 
   → emit progress{phase=quiz_topic_generating}
       services/jd_service._build_quiz_topic_candidates(requirements, note_match_summary)
@@ -531,9 +527,6 @@ services:
 | `llm_call_failed` | SSE error | agents/* |
 | `session_not_in_progress` | 409 | services/answer_service |
 | `unanswered_questions` | 409 | services/answer_service |
-| `invalid_image_format` | 400 | services/jd_service |
-| `image_too_large` | 413 | services/jd_service(> 7MB) |
-| `ocr_failed` | SSE error | services/jd_service |
 | `jd_parse_failed` | SSE error | agents/jd_parser |
 | `jd_count_exceeds_limit` | 422 | services/jd_service(filter 命中 > 200) |
 | `jd_count_zero` | 422 | services/jd_service(filter 命中 0) |
@@ -620,14 +613,14 @@ evals/suites/
 | M2.1 幻觉治理 | 纠偏 prompt evidence-bound,每次 remediation 记录触发原因和证据 id | coverage 带 missing reference point;fidelity 带 fabricated claim + lookup;depth 带缺失维度 |
 | 部署 | docker compose 本地 | postgres / api / web / caddy / langfuse / langfuse-db 六服务 |
 | Tracing 选型 | Langfuse 自部署 | LLM-native + 数据不出本地;详见 §6 |
-| Tool use 范围 | AnswerJudge 用 `lookup_in_notes_global`;JDAnalysisAgent 用固定工具链 `load_jds → parse_jd → aggregate → dedupe → recompute_frequency → match_notes → write_report` | 工具有明确输入输出和 trace,不做开放工具市场 |
+| Tool use 范围 | AnswerJudge 用 `lookup_in_notes_global`;JDAnalysisAgent 用固定工具链 `load_jds → parse_jd → aggregate → dedupe → recompute_frequency → match_notes → write_report` | 工具有明确输入输出和 trace,不做开放工具市场;`match_notes` 当前输出覆盖矩阵和证据 chunks,不是自由 RAG 生成 |
 | 出题入口 | **聊天框 topic query**或 JD 报告里的 quiz topic 候选;**笔记面板不再触发出题** | 岗位类三源出题 / 空 query 自选已砍掉 |
 | M2 retrieval pipeline | **query_rewrite → hybrid + RRF → reranker(top50) → post-rerank governance/blend → dynamic clean-context selection → parent-doc 扩展**;每段独立可观测进 Langfuse | 见 §5.2 数据流;0 命中守门 < 3 chunks → 返"笔记里没这主题"不兜底;provider rerank 是 challenger source,不是最终成员裁判 |
 | Reranker 选型 | 百炼 **`qwen3-rerank`**(`/compatible-api/v1/reranks`,¥0.0005/k token);本地 bge-reranker-v2-m3 作 fallback 不实施 | 详见 5-AGENT §2.7.5 + memory `reference_aliyun_dashscope_rerank.md`;langfuse 不自动 instrument 要手动 generation 包 |
 | Parent-doc 扩展粒度 | **自适应**:命中段 < 200 字 → 扩到同 H2 父段;≥ 200 字 → 不扩 | 阈值在 M2 实施时按 dogfood 命中分布调 |
 | LLM SDK | OpenAI Python SDK(via 百炼兼容接口)| Langfuse OpenAI wrapper(chat 自动 instrument,embedding 手动);langfuse SDK 锁 <3.0(server v2 不支持 OTLP);env mirror 必须早于 routers import — 见 STATUS 永久约束 |
 | Context Cache 代码改造 | 扩 `LLMClient.complete` / `ProviderRequest` 支持 messages content array + `cache_control`;ProviderResponse 读 `cache_creation_input_tokens` | 当前只有 `system: str` + `user: str`,无法表达显式缓存 marker;落地细节见 5-AGENT §2.4.2 |
-| qwen3.6-flash 多模态 | 文本 / 图像 / tool use 一把抓,JD 截图 OCR 与文本解析共用 | 简化模型路由 |
+| JD 输入 | 文本粘贴 | 截图 OCR 已砍,不进入 M2.5 |
 | thinking 按 agent | 默认 off;评分 / 综合判断类显式 on(详见 5-AGENT §2.1) | 节省 reasoning_tokens 成本 |
 | JD 累积型 | jds 表跨时间累积,parsed_payload 上传即落库 | 类比笔记;不做 batch 概念 |
 | JD 一键分析 | hierarchical map-reduce,真实 dogfood 最多约 50 条同质 JD;代码 safety cap 200 条;频次 Python 重算 | 避免单次 LLM context 爆;JD 聚合本体不接 RAG |

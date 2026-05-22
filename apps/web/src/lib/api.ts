@@ -138,10 +138,12 @@ export async function deleteJd(id: number): Promise<void> {
 // schema 暂时手写,后续 pnpm gen:api 之后可以替换为
 // components['schemas']['JdOut'] 等生成版本。
 
+// Output keeps image_upload for possible legacy rows; create input is text-only.
 export type JdLibrarySource = 'text_paste' | 'image_upload';
+export type JdLibraryCreateSource = 'text_paste';
 
 export type JdLibraryCreateInput = {
-  source?: JdLibrarySource;
+  source?: JdLibraryCreateSource;
   raw_text: string;
 };
 
@@ -223,6 +225,29 @@ export type JdNoteMatchSummaryItem = {
   canonical_text?: string;
   status: 'covered' | 'partial' | 'missing' | 'unknown' | string;
   matched_note_ids: number[];
+  coverage_score?: number;
+  matched_phrases?: string[];
+  evidence_chunks?: JdCoverageEvidenceChunk[];
+  matched_notes?: JdCoverageMatchedNote[];
+};
+
+export type JdCoverageEvidenceChunk = {
+  chunk_id: number;
+  note_id: number;
+  note_title: string;
+  folder_path: string[];
+  heading_path: string[];
+  matched_phrases: string[];
+  match_type: 'canonical' | 'phrase' | string;
+  snippet: string;
+};
+
+export type JdCoverageMatchedNote = {
+  note_id: number;
+  title: string;
+  folder_path: string[];
+  matched_phrases: string[];
+  match_type: 'canonical' | 'phrase' | string;
 };
 
 export type JdAnalysisListItem = {

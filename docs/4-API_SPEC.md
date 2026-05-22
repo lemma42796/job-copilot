@@ -1,7 +1,7 @@
 ---
 title: API SPEC - JobCopilot v2(REST + SSE 端点契约)
 owner: lemma42796
-last_updated: 2026-05-18
+last_updated: 2026-05-21
 purpose: 锁前后端接口契约;每个端点的 path / method / 请求 / 响应 / SSE 事件序列
 ---
 
@@ -807,7 +807,7 @@ data: {"ok": true}
 
 ## 6.1 `POST /api/jds`
 
-单条上传 JD。**当前实现只支持文本粘贴**;后端立即调用 `jd_parser` 解析并落库。截图 OCR 是后续切片,不会在本端点存原图。
+单条上传 JD。**只支持文本粘贴**;后端立即调用 `jd_parser` 解析并落库。截图 OCR 已从 M2.5 范围砍掉。
 
 请求(`Content-Type: application/json`):
 ```json
@@ -819,7 +819,7 @@ data: {"ok": true}
 
 约束:
 
-- `source` 当前必须是 `text_paste`;传 `image_upload` 会返回 `VALIDATION_ERROR`
+- `source` 必须是 `text_paste`;传其他值会返回 `VALIDATION_ERROR`
 - `raw_text` 长度 `1..10000` 字符,后端会 `strip()`
 
 响应 201:
@@ -847,8 +847,6 @@ data: {"ok": true}
 ```
 
 错误:`422 VALIDATION_ERROR` / `500 jd_parse_failed`
-
-**后续截图流程**:multipart 上传 → 服务端 base64 编码 → Qwen 多模态调用(prompt:"请提取这张 JD 截图里的完整文本,只返回文本不加解释")→ 拿到 raw_text → 复用文本方式入 jd_parser。原图不入库、不进 git;只持久化 OCR 后文本。
 
 ## 6.2 `GET /api/jds`
 
@@ -892,7 +890,7 @@ data: {"ok": true}
 
 ## 6.6 `POST /api/jd-analyses`(**SSE**)
 
-一键分析。**单次上限 200 条 JD**(超过 422)。当前实现已接真实固定 harness:解析 filter 并创建 `jd_analyses(in_progress)` 后,通过 SSE 推进 `load parsed_jds → jd_aggregator batch reduce / merge → Python frequency recompute → learning path → note match → quiz topics → write report`。成功时报告状态写 `done`;任一阶段失败时状态写 `failed` 并保存 `failure_reason`。
+一键分析。**单次上限 200 条 JD**(超过 422)。当前实现已接真实固定 harness:解析 filter 并创建 `jd_analyses(in_progress)` 后,通过 SSE 推进 `load parsed_jds → jd_aggregator batch reduce / merge → Python frequency recompute → learning path → coverage match → quiz topics → write report`。成功时报告状态写 `done`;任一阶段失败时状态写 `failed` 并保存 `failure_reason`。
 
 请求:
 ```json
@@ -1007,7 +1005,35 @@ data: {"ok": false}
     }
   ],
   "note_match_summary": [
-    {"req_id": "req_2", "status": "partial", "matched_note_ids": [12, 18]}
+    {
+      "req_id": "req_2",
+      "canonical_text": "Redis 集群 + 分布式锁",
+      "status": "partial",
+      "coverage_score": 0.5,
+      "matched_note_ids": [12, 18],
+      "matched_phrases": ["Redis", "分布式锁"],
+      "evidence_chunks": [
+        {
+          "chunk_id": 9012,
+          "note_id": 12,
+          "note_title": "Redis 高可用",
+          "folder_path": ["数据库"],
+          "heading_path": ["Redis", "集群"],
+          "matched_phrases": ["Redis"],
+          "match_type": "phrase",
+          "snippet": "..."
+        }
+      ],
+      "matched_notes": [
+        {
+          "note_id": 18,
+          "title": "分布式锁",
+          "folder_path": ["分布式"],
+          "matched_phrases": ["分布式锁"],
+          "match_type": "canonical"
+        }
+      ]
+    }
   ],
   "total_cost_cny": 0.42,
   "cache_hit_rate": 0.31

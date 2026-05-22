@@ -20,4 +20,4 @@ SYSTEM = """你是 JobCopilot 的 JD 解析 Agent。任务是把一条岗位 JD 
 
 
 def render_user(raw_text: str) -> str:
-    return f"JD 原文(可能含格式符 / OCR 残留):\n{raw_text.strip()}\n"
+    return f"JD 原文(可能含复制格式符):\n{raw_text.strip()}\n"

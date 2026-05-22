@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 工程踩坑录(Lessons Learned)
 owner: lemma42796
-last_updated: 2026-05-18
+last_updated: 2026-05-21
 purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因 + 解决方案,按主题分 9 类。每条字段统一为「症状 / 根因 / 修法 / 沉淀」,链接详细切片归档,作为面向外部读者(招聘 / 协作者 / 博客读者)的索引视图。
 ---
 
@@ -193,7 +193,7 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 
 - **症状**:M2.5 续作时以为"以前有 JD 截图",但当前工作区和 git history 都找不到原始图片。
 - **根因**:旧 commit `6825e6b` 的提交信息写了 "3 boss screenshots",实际提交的是 `evals/suites/jd_extract/dataset.jsonl` OCR 后文本样本;原图当时放在 `evals/raw/`,被 `.gitignore` 明确标为 "Raw screenshots — never commit"(版权敏感)。
-- **修法**:把旧 OCR 文本样本视为可恢复 fixture,不要再假设原图在仓库里。M2.5 新截图链路同样只持久化 OCR 后 `raw_text`,原图作为临时输入处理。
+- **修法**:把旧 OCR 文本样本视为可恢复 fixture,不要再假设原图在仓库里。M2.5 后续已砍截图链路;若将来恢复,也只能持久化 OCR 后 `raw_text`,原图作为临时输入处理。
 - **沉淀**:版权敏感截图 / 招聘原件不能靠 git 留档;若后续需要可重复评测,必须保存脱敏 OCR 文本或合成截图 fixture,不要保存真实平台原图。
 
 ---
@@ -507,7 +507,7 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 - **AnswerJudge 评分**:LLM 只给 evidence 和 label,总分由 Python 算;重点记录 fabricated 锁顶、证据不足、评分漂移、judge prompt 与 deterministic 权重的边界。
 - **InterviewCoachAgent 状态机**:不要讲"多 Agent 数量",要讲状态、工具、分支、恢复、追问依据、wait_user_answer 人类暂停点;重点记录追问什么时候继续、什么时候总结、什么时候承认证据不足。
 - **Tool use 边界**:tool 不是给 LLM 自由发挥,而是在最容易错的判定上提供验证手段;重点记录强制调工具、调几次、调不到怎么办、如何防循环。
-- **JDAnalysisAgent 工具编排**:重点记录 load_jds / OCR / parse_jd / aggregate / dedupe / Python 频次重算 / match_notes / write_report 这些节点哪里失败、如何恢复、报告怎样真正节省人工整理。
+- **JDAnalysisAgent 工具编排**:重点记录 load_jds / parse_jd / aggregate / dedupe / Python 频次重算 / match_notes / write_report 这些节点哪里失败、如何恢复、报告怎样真正节省人工整理。
 - **zero-hit / insufficient evidence**:"答不上来"是能力,不是失败;重点记录怎样用 core entity、anchor、source diversity 和 score 组合守住边界。
 
 ---

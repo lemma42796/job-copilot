@@ -1,7 +1,7 @@
 ---
 title: AGENT DESIGN - JobCopilot v2(QueryRewriter + QuizGenerator + AnswerJudge + InterviewCoachAgent + JDAnalysisAgent)
 owner: lemma42796
-last_updated: 2026-05-18
+last_updated: 2026-05-21
 purpose: 锁核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / Agentic RAG 编排 / 模型路由 / 版本号策略
 ---
 
@@ -13,13 +13,13 @@ purpose: 锁核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / Agentic R
 - **QuizGenerator**:吃 query + retrieved chunks(retrieval pipeline 输出)→ 出 N 道题(open_ended + definition 自动配比)+ reference_answer + reference_points
 - **AnswerJudge**:吃(题, reference, chunks, 用户答案)→ 输出三层 evidence(coverage / fidelity / depth)
 - **InterviewCoachAgent(M2.1)**:LangGraph session root orchestrator,串起检索 → 出题 → 等答 → 评分 → 纠偏循环 → 总结;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不是多 Agent 数量
-- **JdParser / JdAggregator / JDAnalysisAgent(M2.5)**:JD Intelligence 生产力主线,自动编排 OCR / 解析 / 聚合 / 去重 / 频次重算 / 学习路径 / 报告保存
+- **JdParser / JdAggregator / JDAnalysisAgent(M2.5)**:JD Intelligence 生产力主线,自动编排解析 / 聚合 / 去重 / 频次重算 / 学习路径 / 报告保存
 
 # 2. 通用约定
 
 ## 2.1 模型 + thinking 模式(按 agent 决定)
 
-**所有 LLM 调用走 qwen3.6-flash**(Quiz / Judge / 截图 OCR / JD 解析 / JD 聚合 — qwen3.6 系列 plus/flash/35b-a3b 整体是视觉模型,文本和图像任务共用同一个 model id)。
+**所有 LLM 调用走 qwen3.6-flash**(Quiz / Judge / JD 解析 / JD 聚合)。
 
 **thinking 模式按 agent 决定**(默认 off):
 
@@ -32,7 +32,6 @@ purpose: 锁核心 Agent 的 prompt / 输出契约 / 反幻觉机制 / Agentic R
 | JdParser(单 JD 抽要求)| **off** | 结构化抽取,模板化 |
 | JdAggregator(同义合并 + 频次)| **off** | MVP 先关;dogfood 后看 kappa 决定要不要开 |
 | 学习路径生成 | **off** | 模板化输出 |
-| 截图 OCR(Qwen 多模态)| **off** | 纯文本提取 |
 | InterviewCoachAgent(M2.1 编排决策)| **on** | 纠偏分支 / 下一步决策需要 reasoning;不参与出题事实生成 |
 | JDAnalysisAgent(M2.5 编排决策)| **off** | 主体是 deterministic harness;LLM 只在解析 / 合并 / 学习路径节点局部工作 |
 | Embedder(text-embedding-v4)| N/A | 不是聊天模型 |
@@ -47,7 +46,7 @@ OpenAI 兼容接口标准支持 `temperature` 参数(可直接传)。各 agent �
 
 - **QueryRewriter** / **QuizGenerator** / **JdParser** / **JdAggregator**:`0.3`(降随机性,要稳定结构)
 - **AnswerJudge**:`0.2`(评分要可复现)
-- **学习路径生成** / **截图 OCR**:`0.5`(内容生成允许少许多样性)
+- **学习路径生成**:`0.5`(内容生成允许少许多样性)
 
 具体值在 `apps/api/src/jobcopilot_api/agents/<agent>/agent.py` 调用处显式传 `temperature=`,**不依赖模型默认**(模型默认值跟思考 / 非思考模式联动,易踩坑)。
 
@@ -641,7 +640,7 @@ JD 上传时**立即**调一次,把单条 JD 文本解析成结构化 parsed_pay
 ```python
 @dataclass
 class JdParseInput:
-    raw_text: str          # JD 原文(截图场景已经过 Qwen 多模态 OCR 转成文本)
+    raw_text: str          # JD 原文
 
 @dataclass
 class JdParseOutput:
@@ -669,7 +668,7 @@ class JdParseOutput:
 【输出格式】严格 JSON, schema 见 3-DATA_MODEL §6.6
 ```
 
-USER 模板:`JD 原文(可能含格式符 / OCR 残留):\n{raw_text}\n`
+USER 模板:`JD 原文(可能含复制格式符):\n{raw_text}\n`
 
 ## 5.3 service 层后处理
 
@@ -680,7 +679,7 @@ USER 模板:`JD 原文(可能含格式符 / OCR 残留):\n{raw_text}\n`
 实现状态(2026-05-18):
 
 - `jd_parser` 已接真实 LLM 调用:`Tier.CHEAP`,temperature `0.3`,response schema `JdParseOutput`
-- `POST /api/jds` 当前只支持文本粘贴;截图 OCR 预留在后续切片
+- `POST /api/jds` 只支持文本粘贴;截图 OCR 已从 M2.5 范围砍掉
 - `/jds` 前端已能手动粘贴 JD、解析入库、展示 parsed payload、修改 title、软删
 
 # 6. JdAggregator(多 JD 一键分析,M2.5)
@@ -814,25 +813,24 @@ class JDAnalysisOutput:
 | Tool | 输入 | 输出 | 失败处理 |
 |------|------|------|----------|
 | `load_jds(scope)` | 用户选定范围 | JD 原文 + parsed_payload 快照 | 0 条直接返回可解释错误 |
-| `ocr_if_needed(jd)` | 截图 JD | text | OCR 失败标记该条不可解析,不中断整批 |
 | `parse_jd(jd)` | JD text | responsibilities / hard_skills / soft_skills / business_domains | schema 失败重试一次,仍失败标 invalid |
 | `aggregate_requirements(parsed_jds)` | parsed_payload list | raw requirement groups | 分批 map,单批失败可重跑 |
 | `dedupe_requirements(groups)` | raw groups | canonical requirements | LLM 只做同义合并,频次不信 LLM |
 | `recompute_frequency(canonicals)` | canonical + supporting_jd_ids | frequency | Python SSoT |
-| `match_notes(requirements)` | canonical requirements | note heading / chunk 粗匹配 | 可选,失败不阻塞报告;当前不是 RAG |
+| `match_notes(requirements)` | canonical requirements | `covered / partial / missing / unknown` 覆盖矩阵 + 证据 chunks | 可选,失败不阻塞报告;当前是 deterministic coverage match,不是 RAG 生成 |
 | `generate_learning_path(requirements)` | 排序后的 canonical requirements | markdown + quiz topics | 禁止编具体课程 / 资源 |
 | `write_report(output)` | 结构化结果 | `jd_analyses` 快照 | 写失败整体失败,防报告丢失 |
 
-实现状态(2026-05-18):`load_jds` 的 filter 解析、`jd_analyses(in_progress)` 创建、报告列表 / 详情查询和 SSE 已落地;`aggregate_requirements → dedupe_requirements → recompute_frequency → match_notes → generate_learning_path → write_report` 已接成最小闭环。当前 `match_notes` 是标题 / chunk `ilike` 粗匹配,失败降级为 `unknown`;quiz topic 由高频 `硬技能 / 职责` requirement 派生,最多 12 个。最新决策:真实规模最多约 50 条同质 JD,JD 分析本体不做 RAG 化;RAG 只在 topic 进入 `/quiz` 后发生。
+实现状态(2026-05-21):`load_jds` 的 filter 解析、`jd_analyses(in_progress)` 创建、报告列表 / 详情查询和 SSE 已落地;`aggregate_requirements → dedupe_requirements → recompute_frequency → match_notes → generate_learning_path → write_report` 已接成最小闭环。当前 `match_notes` 输出知识库覆盖矩阵:canonical 命中记 `covered`,raw phrase 命中记 `partial`,无命中记 `missing`,失败降级为 `unknown`,并保存命中短语、证据 chunk snippet 和 matched notes;quiz topic 由高频 `硬技能 / 职责` requirement 派生,最多 12 个。最新决策:真实规模最多约 50 条同质 JD,JD 分析本体不做 RAG 化;RAG 只在 topic 进入 `/quiz` 后发生。
 
 ## 7.3 编排原则
 
-- **LLM 不自由规划**:节点顺序由程序固定;LLM 只在 OCR / 解析 / 同义合并 / markdown 生成这些局部任务里工作。
+- **LLM 不自由规划**:节点顺序由程序固定;LLM 只在解析 / 同义合并 / markdown 生成这些局部任务里工作。
 - **频次由 Python 重算**:canonical 在多少条 JD 里至少出现一次是事实计算,不是语言模型判断。
 - **证据必须可回看**:每个 canonical requirement 至少带 `supporting_jd_ids`;报告里能点回原 JD。
 - **失败可降级**:少数 JD 解析失败不应拖死整批;最终报告要列出 invalid / skipped 条目。
 - **产出可执行**:学习路径只按频次和已有笔记覆盖状态排序,不编外部课程名;quiz topic 候选用于进入已落地的主题类 RAG 面试流。
-- **RAG 边界清晰**:JD 聚合是已选 JD 集合的归纳统计,不走 `retrieval_pipeline`;笔记覆盖度最多升级成轻量语义查找,不把 JD 报告改成检索增强生成。
+- **RAG 边界清晰**:JD 聚合是已选 JD 集合的归纳统计,不走 `retrieval_pipeline`;知识库覆盖矩阵当前是 deterministic evidence match,未来可升级轻量语义查找,但不把 JD 报告改成检索增强生成。
 
 ## 7.4 Harness Engineering 标准
 
@@ -840,7 +838,6 @@ JDAnalysisAgent 的高级感来自可恢复、可观测、可评测的工具编�
 
 ```
 load_jds
-→ ocr_if_needed
 → parse_jd
 → aggregate_requirements
 → dedupe_requirements
@@ -1078,7 +1075,7 @@ Context Cache / prompt caching 只用于降低重复长前缀成本,不是会话
 | QueryRewriter | M2 retrieval pipeline 第一段;扩 ≤5 项,首项必为原 query;失败回退原 query 不阻塞 | 见 §2.7 |
 | Reranker | cross-encoder(本地 / 百炼 reranker 接口),非 LLM 调用,不进 prompt_versions | 见 §2.7.5 + PRD Q-07 |
 | query 形态 | M2 仅主题类;岗位类三源出题与空 query 系统自选已砍掉 | JD 分析报告只产出 quiz topic 候选,再进入主题类 RAG 面试流 |
-| JD 分析 / RAG | JD 聚合本体不接 RAG;`match_notes` 当前只是笔记粗匹配 | 最多约 50 条同质 JD 是已选集合归纳问题;RAG 只在 `/quiz` 出题时发生 |
+| JD 分析 / RAG | JD 聚合本体不接 RAG;`match_notes` 输出知识库覆盖矩阵但不参与生成增强 | 最多约 50 条同质 JD 是已选集合归纳问题;RAG 只在 `/quiz` 出题时发生 |
 | Agent 编排深度 | M2.1 上 `InterviewCoachAgent` 状态机;高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复,不做泛化多 Agent 互聊 | 见 §8 |
 | 后续主线 | 只做 JDAnalysisAgent | LLM 被 harness 驱动完成 JD 分析任务;不做 SR / 弱点 dashboard / 简历诊断 |
 | M2.1 单输入框 | 前端只有一个发送按钮;后端 `turn_type=auto` 分流初答 / 补答 / 追问教练 | UX 简化不改变状态边界;追问教练不进入 `user_answer` 评分 |

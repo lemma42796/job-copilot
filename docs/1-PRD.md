@@ -1,7 +1,7 @@
 ---
 title: PRD - JobCopilot v2(JD Intelligence Agent + 笔记面试陪练)
 owner: lemma42796
-last_updated: 2026-05-17
+last_updated: 2026-05-21
 status: M2.5(JD Intelligence Agent 方向收束)
 purpose: 锁产品边界、目标用户、用户故事、NSM、不在范围
 ---
@@ -10,7 +10,7 @@ purpose: 锁产品边界、目标用户、用户故事、NSM、不在范围
 
 **给学计算机的人:把大量目标岗位 JD 自动读完,沉淀岗位要求地图、学习路径和可练习主题,再用笔记 RAG 面试陪练巩固。**
 
-LLM 不是聊天装饰,而是被 harness 驱动的生产力执行器:自动 OCR / 解析 / 聚合 / 去重 / 频次统计 / 生成学习路径 / 保存报告。你的**JD 库 + 笔记**才是主角;简历诊断、SR、岗位类三源出题等后续分支从路线图移除。
+LLM 不是聊天装饰,而是被 harness 驱动的生产力执行器:解析 / 聚合 / 去重 / 频次统计 / 生成学习路径 / 保存报告。你的**JD 库 + 笔记**才是主角;简历诊断、SR、岗位类三源出题、截图 OCR 等后续分支从路线图移除。
 
 # 2. 目标用户
 
@@ -59,7 +59,7 @@ LLM 不是聊天装饰,而是被 harness 驱动的生产力执行器:自动 OCR 
 
 ### 痛点 B:读大量 JD 很烦,但正适合 LLM 自动干活
 
-用户真正想省下的不是"问 LLM 一句",而是这些重复劳动:截图 / 复制 JD、清洗标题、抽职责、抽要求、合并同义技能、数频次、找最该学的主题、整理成可执行计划。M2.5 的核心就是把这些步骤放进一个 harness,让 LLM 持续调用受控工具直到产出报告。
+用户真正想省下的不是"问 LLM 一句",而是这些重复劳动:复制 JD、清洗标题、抽职责、抽要求、合并同义技能、数频次、找最该学的主题、整理成可执行计划。M2.5 的核心就是把这些步骤放进一个 harness,让 LLM 持续调用受控工具直到产出报告。
 
 ### 痛点 C:LLM 凭训练数据出题 → 跟你笔记脱节(用户感知不到)
 
@@ -89,16 +89,16 @@ LLM 不是聊天装饰,而是被 harness 驱动的生产力执行器:自动 OCR 
 ┌──────────────────────────────────────────────────────────────────┐
 │ 主线 A:JD Intelligence Agent(M2.5,生产力主线)                 │
 ├──────────────────────────────────────────────────────────────────┤
-│  上传 JD(文本 / 截图,陆续累积)                                │
+│  上传 JD(文本粘贴,陆续累积)                                  │
 │     ↓ jd_parser(立即解析,落库 jds 表)                         │
 │  我的 JD 库(累积型资产,可标 title / 删除 / 搜索)              │
 │     ↓ 用户点"一键分析"(选范围:全部 / 最近 N 条 / title)     │
 │  JDAnalysisAgent harness                                        │
-│     load_jds → ocr_if_needed → parse_jd → aggregate_requirements│
-│     → dedupe_requirements → recompute_frequency → match_notes?  │
+│     load_jds → parse_jd → aggregate_requirements               │
+│     → dedupe_requirements → recompute_frequency → coverage_match│
 │     → generate_learning_path → write_report                     │
 │     ↓                                                              │
-│  岗位要求地图 + 高频技能 / 职责 + 学习路径 markdown           │
+│  岗位要求地图 + 知识库覆盖矩阵 + 学习路径 markdown           │
 │     ↓                                                              │
 │  quiz topic 候选 / 笔记缺口提示 / 历史报告对比                 │
 └──────────────────────────────────────────────────────────────────┘
@@ -154,9 +154,9 @@ LLM 不是聊天装饰,而是被 harness 驱动的生产力执行器:自动 OCR 
 
 ## 5.4 JD Intelligence Agent(M2.5)
 
-- **US-15**:作为用户,我可以单条上传 JD(文本粘贴 / 截图二选一),系统**立即** jd_parser 解析(thinking off,结构化抽取职责 / 硬技能 / 软技能 / 学历经验),解析结果落库 jds 表
+- **US-15**:作为用户,我可以单条上传 JD(文本粘贴),系统**立即** jd_parser 解析(thinking off,结构化抽取职责 / 硬技能 / 软技能 / 学历经验),解析结果落库 jds 表
 - **US-16**:作为用户,我可以查看"我的 JD 库"列表(分页 / 按 title 标签筛选 / 单条删除)
-- **US-17**:作为用户,我可以选 JD 库范围(全部 / 最近 N 条 / 某 title),点"一键分析",**单次上限 200 条**;系统自动完成 load_jds / OCR / parser 结果读取 / hierarchical reduce / 同义去重 / 频次重算 / 报告生成
+- **US-17**:作为用户,我可以选 JD 库范围(全部 / 最近 N 条 / 某 title),点"一键分析",**单次上限 200 条**;系统自动完成 load_jds / parser 结果读取 / hierarchical reduce / 同义去重 / 频次重算 / 报告生成
 - **US-18**:作为用户,我可以得到一份岗位要求地图:高频技能、职责主题、软技能、经验门槛、业务方向、学习优先级和证据 JD 列表
 - **US-19**:作为用户,我可以得到学习路径 markdown 和 quiz topic 候选,并保存历史分析报告(`jd_analyses`)用于对比不同岗位 / 时间窗口
 
@@ -191,7 +191,7 @@ LLM 不是聊天装饰,而是被 harness 驱动的生产力执行器:自动 OCR 
 - 代码题(评分需要执行环境,工程量爆炸)
 - 选择题(active recall 弱)
 - 语音输入 / 语音答题
-- 笔记 PDF / 图片导入(**笔记**只接 markdown;JD 截图 OCR 例外)
+- 笔记 PDF / 图片导入;JD 截图 OCR 也不做,JD 只接文本粘贴
 - **所有简历功能**:上传、诊断、改写、按岗位定制、多份简历库都不做
 - **笔记面板节点点击触发出题**(永不做 — 出题入口统一走聊天框 query,笔记面板降级为查看 / 编辑 / 导航树)
 - **投递追踪**(v1 残留,确认死)
@@ -214,7 +214,6 @@ LLM 不是聊天装饰,而是被 harness 驱动的生产力执行器:自动 OCR 
   - JD 一键分析(100 条)≤ ¥0.5
 - **JD 输入限制**:
   - 单条 JD 文本 ≤ 10k 字符
-  - 截图 ≤ 7MB(Base64 编码后受限于阿里云百炼 10MB 上限)
   - 单次一键分析 ≤ 200 条 JD(超过提示拆分多次)
 - **数据可移植**:笔记原文 + sessions 沉淀 + JD 原文都在本地,删数据库不丢内容
 
@@ -239,7 +238,7 @@ LLM 不是聊天装饰,而是被 harness 驱动的生产力执行器:自动 OCR 
 |----|------|------|
 | 目标用户 | 学计算机的人(全开,只排除非开发岗) | v2 扩展自 v1 锁定的"1-3 年开发者" |
 | 笔记输入源 | M1: Web 编辑器 + 本地目录 / 文件直读(File System Access API)| 不做 Notion / 飞书 / Obsidian / 语雀 sync;不接 zip 上传(笔记本来就在本地,免打包)|
-| JD 输入源 | 文本粘贴 + 截图(Qwen 多模态)| 累积型,陆续上传;立即解析 |
+| JD 输入源 | 文本粘贴 | 累积型,陆续上传;立即解析 |
 | JD 单次分析上限 | **200 条**(hierarchical reduce)| 超过提示拆分;不做跨批增量聚合 |
 | 后续主线 | **只做 JD Intelligence Agent** | 砍掉 SR / 简历诊断 / 岗位类三源出题 |
 | 出题入口 | **聊天框 query**(主题类)或 JD 报告里的 quiz topic 候选;**笔记面板不再触发出题** | 不做岗位类 / 空 query |
@@ -249,8 +248,8 @@ LLM 不是聊天装饰,而是被 harness 驱动的生产力执行器:自动 OCR 
 | 题型 | 开放式 + 八股 两类 | 不做代码 / 系统设计 / 选择题 / 项目深挖题 |
 | 评分 | LLM-as-Judge 三层(Coverage / Fidelity / Depth) | 权重在 Python,不让 Judge 算 |
 | Agent 编排 | M2.1 `InterviewCoachAgent` 状态机 | 高级感来自状态 / 工具 / 分支 / 记忆 / 评测 / 恢复;不做泛化多 Agent 互聊 |
-| JD Intelligence Agent | 受控 harness 自动编排 OCR / parser / aggregator / report writer | 目标是替用户读大量 JD 并产出可执行结果 |
-| LLM 模型 | qwen3.6-flash(多模态 + 文本一把抓) | Quiz / Judge / JD 截图 / JD 解析共用 |
+| JD Intelligence Agent | 受控 harness 自动编排 parser / aggregator / report writer | 目标是替用户读大量 JD 并产出可执行结果 |
+| LLM 模型 | qwen3.6-flash | Quiz / Judge / JD 解析 / JD 聚合共用 |
 | LLM thinking | **按 agent 决定,默认 off** | 评分类 / 综合判断类 on,出题 / 解析类 off — 详见 5-AGENT |
 | LLM SDK | OpenAI Python SDK,base_url 走百炼 OpenAI 兼容接口 | `from langfuse.openai import OpenAI` 自动 instrument |
 | LLM Provider | 阿里云百炼 | 沿用 v1 ADR-0003 |

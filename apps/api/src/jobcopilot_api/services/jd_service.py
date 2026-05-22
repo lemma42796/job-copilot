@@ -51,6 +51,7 @@ from jobcopilot_api.schemas.jd import (
 
 JD_RAW_TEXT_MAX_LENGTH = 10_000
 JD_ANALYSIS_MAX_COUNT = 200
+JD_COVERAGE_EVIDENCE_LIMIT = 5
 
 
 class JdNotFoundError(NotFoundError):
@@ -357,6 +358,10 @@ async def _safe_match_notes(
                 "canonical_text": req.canonical_text,
                 "status": "unknown",
                 "matched_note_ids": [],
+                "coverage_score": 0,
+                "matched_phrases": [],
+                "evidence_chunks": [],
+                "matched_notes": [],
             }
             for req in requirements
         ]
@@ -368,24 +373,140 @@ async def _match_notes(
 ) -> list[dict[str, Any]]:
     summary: list[dict[str, Any]] = []
     for req in requirements:
-        canonical_ids = await _find_matching_note_ids(session, [req.canonical_text])
-        all_ids = canonical_ids
-        if not all_ids:
-            all_ids = await _find_matching_note_ids(session, _note_match_phrases(req))
+        canonical = await _find_requirement_evidence(
+            session,
+            [req.canonical_text],
+            match_type="canonical",
+        )
+        fallback = canonical
+        if not fallback["matched_note_ids"]:
+            fallback = await _find_requirement_evidence(
+                session,
+                _note_match_phrases(req),
+                match_type="phrase",
+            )
         status = "missing"
-        if canonical_ids:
+        if canonical["matched_note_ids"]:
             status = "covered"
-        elif all_ids:
+        elif fallback["matched_note_ids"]:
             status = "partial"
         summary.append(
             {
                 "req_id": req.id,
                 "canonical_text": req.canonical_text,
                 "status": status,
-                "matched_note_ids": all_ids,
+                "coverage_score": _coverage_score(status),
+                "matched_note_ids": fallback["matched_note_ids"],
+                "matched_phrases": fallback["matched_phrases"],
+                "evidence_chunks": fallback["evidence_chunks"],
+                "matched_notes": fallback["matched_notes"],
             }
         )
     return summary
+
+
+async def _find_requirement_evidence(
+    session: AsyncSession,
+    phrases: list[str],
+    *,
+    match_type: str,
+) -> dict[str, Any]:
+    cleaned = _clean_match_phrases(phrases)
+    if not cleaned:
+        return _empty_coverage_match()
+    note_clauses: list[Any] = []
+    chunk_clauses: list[Any] = []
+    for phrase in cleaned:
+        pattern = f"%{phrase}%"
+        note_clauses.append(Note.title.ilike(pattern))
+        chunk_clauses.append(NoteChunk.content.ilike(pattern))
+
+    note_ids: set[int] = set()
+    matched_phrases: set[str] = set()
+    matched_notes: list[dict[str, Any]] = []
+    note_rows = (
+        (
+            await session.execute(
+                sa.select(Note.id, Note.title, Note.folder_path)
+                .where(Note.deleted_at.is_(None))
+                .where(sa.or_(*note_clauses))
+                .limit(JD_COVERAGE_EVIDENCE_LIMIT)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    for row in note_rows:
+        note_id = int(row["id"])
+        title = str(row["title"])
+        note_ids.add(note_id)
+        matched = _matched_phrases(title, cleaned)
+        matched_phrases.update(matched)
+        matched_notes.append(
+            {
+                "note_id": note_id,
+                "title": title,
+                "folder_path": list(row["folder_path"] or []),
+                "matched_phrases": matched,
+                "match_type": match_type,
+            }
+        )
+
+    chunk_rows = (
+        (
+            await session.execute(
+                sa.select(
+                    NoteChunk.id,
+                    NoteChunk.note_id,
+                    NoteChunk.folder_path,
+                    NoteChunk.heading_path,
+                    NoteChunk.content,
+                    Note.title.label("note_title"),
+                )
+                .join(Note, Note.id == NoteChunk.note_id)
+                .where(Note.deleted_at.is_(None))
+                .where(sa.or_(*chunk_clauses))
+                .limit(JD_COVERAGE_EVIDENCE_LIMIT)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    evidence_chunks: list[dict[str, Any]] = []
+    for row in chunk_rows:
+        content = str(row["content"])
+        matched = _matched_phrases(content, cleaned)
+        matched_phrases.update(matched)
+        note_id = int(row["note_id"])
+        note_ids.add(note_id)
+        evidence_chunks.append(
+            {
+                "chunk_id": int(row["id"]),
+                "note_id": note_id,
+                "note_title": str(row["note_title"]),
+                "folder_path": list(row["folder_path"] or []),
+                "heading_path": list(row["heading_path"] or []),
+                "matched_phrases": matched,
+                "match_type": match_type,
+                "snippet": _coverage_snippet(content, matched or cleaned),
+            }
+        )
+
+    return {
+        "matched_note_ids": sorted(note_ids)[:JD_COVERAGE_EVIDENCE_LIMIT],
+        "matched_phrases": sorted(matched_phrases)[:8],
+        "evidence_chunks": evidence_chunks,
+        "matched_notes": matched_notes,
+    }
+
+
+def _empty_coverage_match() -> dict[str, Any]:
+    return {
+        "matched_note_ids": [],
+        "matched_phrases": [],
+        "evidence_chunks": [],
+        "matched_notes": [],
+    }
 
 
 async def _find_matching_note_ids(
@@ -420,6 +541,39 @@ async def _find_matching_note_ids(
     ).scalars()
     note_ids.update(int(row) for row in chunk_rows)
     return sorted(note_ids)[:5]
+
+
+def _coverage_score(status: str) -> float:
+    if status == "covered":
+        return 1.0
+    if status == "partial":
+        return 0.5
+    return 0.0
+
+
+def _matched_phrases(text: str, phrases: list[str]) -> list[str]:
+    folded = text.casefold()
+    return [phrase for phrase in phrases if phrase.casefold() in folded]
+
+
+def _coverage_snippet(content: str, phrases: list[str], limit: int = 180) -> str:
+    compact = " ".join(content.split())
+    folded = compact.casefold()
+    positions = [
+        position
+        for phrase in phrases
+        if phrase
+        for position in [folded.find(phrase.casefold())]
+        if position >= 0
+    ]
+    first_match = min(positions, default=-1)
+    if first_match < 0:
+        return compact[:limit]
+    start = max(first_match - 60, 0)
+    end = min(start + limit, len(compact))
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(compact) else ""
+    return f"{prefix}{compact[start:end]}{suffix}"
 
 
 def _note_match_phrases(req: Requirement) -> list[str]:

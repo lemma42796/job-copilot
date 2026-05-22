@@ -1,7 +1,7 @@
 ---
 title: DATA MODEL - JobCopilot v2(笔记 / 题 / 答 / JD schema)
 owner: lemma42796
-last_updated: 2026-05-18
+last_updated: 2026-05-21
 purpose: 锁所有表 schema、字段语义、JSONB 子结构、索引、迁移路径
 ---
 
@@ -73,7 +73,7 @@ purpose: 锁所有表 schema、字段语义、JSONB 子结构、索引、迁移�
 
 | ENUM 名 | 值 | 用途 |
 |---------|----|----|
-| `note_source` | `local_md` / `web_editor` / `text_paste` / `image_upload` | notes.source + jds.source 复用;`local_md` = File System Access API 选目录 / 选单篇 |
+| `note_source` | `local_md` / `web_editor` / `text_paste` / `image_upload` | notes.source + jds.source 历史复用;JD 产品入口只使用 `text_paste`,`image_upload` 为历史保留值 |
 | `question_type` | `open_ended` / `definition` | questions.type;PRD §5.2 US-6 |
 | `quiz_session_status` | `in_progress` / `submitted` / `abandoned` | quiz_sessions.status |
 | `quiz_session_mode` | `topic` | quiz_sessions.mode;岗位类三源出题与空 query 系统自选已砍掉 |
@@ -375,8 +375,8 @@ CREATE INDEX ix_session_events_answer
 CREATE TABLE jds (
   id                  BIGSERIAL PRIMARY KEY,
 
-  source              note_source NOT NULL,            -- 复用 ENUM:'text_paste' / 'image_upload'
-  raw_text            TEXT NOT NULL,                    -- JD 原文(截图场景为 OCR 后的文本)
+  source              note_source NOT NULL,            -- JD 入口只使用 'text_paste'
+  raw_text            TEXT NOT NULL,                    -- JD 原文
   title               VARCHAR(255),                     -- LLM 自动从 JD 抽 + 用户可改
 
   -- jd_parser 输出(立即解析,持久化复用):
@@ -405,8 +405,8 @@ CREATE INDEX ix_jds_title
 设计要点:
 
 - **上传即解析**:POST /api/jds 立即调 jd_parser → parsed_payload 落库,**不延迟分析时机**;后续一键分析直接用 parsed_payload(免重复 LLM)
-- **文本第一刀已落地**:当前 `/api/jds` 只接受 `source='text_paste'` + `raw_text`,上传即解析并写 `parsed_payload`;`source='image_upload'` 是后续截图 OCR 预留值。
-- **截图场景**:`source='image_upload'`;raw_text 字段存的是 **Qwen 多模态 OCR 后的文本**。截图本身不存、不进 git;历史 BOSS 截图原图当时就在 `evals/raw/` gitignore 下,当前仓库只可从旧 commit 恢复 OCR 文本样本。
+- **文本入口已锁定**:当前 `/api/jds` 只接受 `source='text_paste'` + `raw_text`,上传即解析并写 `parsed_payload`;截图 OCR 已从 M2.5 范围砍掉。
+- **历史 enum 保留**:`note_source` 里仍有 `image_upload`,这是 v1/v2 早期历史值;为避免为已砍功能新增迁移,暂不做 DB enum 收缩。
 - **没有 user_id**:沿用 §3.1 单用户 MVP 设计;M4+ SaaS 化时统一 ALTER ADD COLUMN
 - **title 可空**:LLM 抽 title 失败或用户清空时,nullable
 
@@ -428,7 +428,7 @@ CREATE TABLE jd_analyses (
   aggregated_requirements  JSONB,                        -- canonical list + frequency + raw phrases
   learning_path_md         TEXT,                         -- LLM 生成的 markdown
   quiz_topic_candidates    JSONB NOT NULL DEFAULT '[]'::jsonb, -- 可进入主题类 RAG 面试的 topic 候选
-  note_match_summary       JSONB NOT NULL DEFAULT '[]'::jsonb, -- requirements 与现有笔记的粗匹配状态
+  note_match_summary       JSONB NOT NULL DEFAULT '[]'::jsonb, -- requirements 与现有笔记的覆盖分析快照
 
   -- 成本 audit(map-reduce 多次 LLM 调用累加):
   total_tokens_in          INTEGER,
@@ -451,7 +451,7 @@ CREATE INDEX ix_jd_analyses_started ON jd_analyses (started_at DESC);
 - **没有 deleted_at**:报告生成后不可改;真要删,直接物理删除整行(用户主动操作)
 - **status 状态机**:in_progress → done / failed;in_progress 状态下 aggregated_requirements / learning_path_md 可为 NULL
 - **cache_hit_rate 字段**:dogfood 时反复重跑同一批 JD 的命中率,cost 优化指标
-- **M2.5 第二刀实现状态**:当前 `POST /api/jd-analyses` 已接真实 `jd_aggregator` 和报告写入。成功报告会填充 `aggregated_requirements / learning_path_md / quiz_topic_candidates / note_match_summary`、token / cost audit 与 `completed_at`;失败报告写 `status='failed' / failed_at / failure_reason`。
+- **M2.5 覆盖分析实现状态**:当前 `POST /api/jd-analyses` 已接真实 `jd_aggregator` 和报告写入。成功报告会填充 `aggregated_requirements / learning_path_md / quiz_topic_candidates / note_match_summary`、token / cost audit 与 `completed_at`;失败报告写 `status='failed' / failed_at / failure_reason`。`note_match_summary` 已从粗 `matched_note_ids` 升级为覆盖分析快照,包含 `covered / partial / missing / unknown`、`coverage_score`、命中短语、证据 chunks 和匹配笔记。
 
 ## 5.10 已砍掉:`resumes` / `resume_analyses`
 
@@ -647,9 +647,50 @@ JDAnalysisAgent 从高频 canonical requirements 生成可练习 topic 候选。
 字段约束:
 
 - `topic`:可直接放进 `/quiz` 的主题类 query,不带简历或 JD 私有材料。
-- `priority` ∈ {`high`, `medium`, `low`}:由 requirement frequency + note match 粗略决定。
+- `priority` ∈ {`high`, `medium`, `low`}:由 requirement frequency + 知识库覆盖状态粗略决定。
 - `source_req_ids`:候选 topic 对应哪些 canonical requirements,用于报告回看。
-- `note_match_status` ∈ {`covered`, `partial`, `missing`, `unknown`}:只表示笔记粗匹配状态,不做长期弱点追踪。
+- `note_match_status` ∈ {`covered`, `partial`, `missing`, `unknown`}:来自本次报告的知识库覆盖分析状态,不做长期弱点追踪。
+
+`note_match_summary[]` 覆盖分析快照:
+
+```json
+{
+  "req_id": "req_2",
+  "canonical_text": "Redis 集群 + 分布式锁",
+  "status": "partial",
+  "coverage_score": 0.5,
+  "matched_note_ids": [12, 18],
+  "matched_phrases": ["Redis", "分布式锁"],
+  "evidence_chunks": [
+    {
+      "chunk_id": 9012,
+      "note_id": 12,
+      "note_title": "Redis 高可用",
+      "folder_path": ["数据库"],
+      "heading_path": ["Redis", "集群"],
+      "matched_phrases": ["Redis"],
+      "match_type": "phrase",
+      "snippet": "..."
+    }
+  ],
+  "matched_notes": [
+    {
+      "note_id": 18,
+      "title": "分布式锁",
+      "folder_path": ["分布式"],
+      "matched_phrases": ["分布式锁"],
+      "match_type": "canonical"
+    }
+  ]
+}
+```
+
+状态语义:
+
+- `covered`:canonical requirement 在笔记标题或 chunk 内容里直接命中。
+- `partial`:canonical 未命中,但 raw phrase / 同义短语命中。
+- `missing`:没有可解释的笔记 / chunk 命中。
+- `unknown`:覆盖分析失败降级,报告仍可生成。
 
 # 7. 一些"看着不对劲但其实是对的"的设计
 
@@ -749,7 +790,7 @@ DROP TYPE IF EXISTS chunk_granularity;
 | retrieval pipeline 审计 | quiz_sessions 加 `expanded_queries` + `retrieved_chunk_ids` 字段 | evals/suites/hybrid_search/ 直接读这两列;不必走 Langfuse trace |
 | M2.1 Agent 状态 | quiz_sessions 加 `agent_state` / `last_agent_node`;session_answers 加 `answer_turns` / `remediation_state`;新增 `session_events` | 原始多轮事件可回放,当前状态可恢复;LLM 当前输入由 context pack 生成 |
 | `quiz_session_mode` ENUM | `topic` | `job` / `auto` 已砍掉 |
-| 截图入库 | jds.raw_text 存 OCR 文本(不存原图)| Qwen 多模态 OCR 后即扔 |
+| JD 输入 | 只接文本粘贴 | 截图 OCR 已砍,不新增图片入库链路 |
 
 ---
 

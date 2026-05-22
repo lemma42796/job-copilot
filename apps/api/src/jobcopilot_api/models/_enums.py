@@ -13,7 +13,7 @@ NOTE_SOURCE_VALUES: tuple[str, ...] = (
     # notes 用:
     "local_md",
     "web_editor",
-    # jds 复用同 ENUM:
+    # jds 复用同 ENUM; image_upload 是历史保留值,产品入口不再使用:
     "text_paste",
     "image_upload",
 )

@@ -8,17 +8,17 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+JdCreateSource = Literal["text_paste"]
 JdSource = Literal["text_paste", "image_upload"]
 
 
 class JdCreateIn(BaseModel):
     """JD 上传 — M2.5 第一刀先支持文本粘贴。
 
-    截图 OCR 后续会走 multipart + Qwen 多模态 OCR,再复用同一条 parsed
-    payload 入库路径。
+    截图/OCR 输入已从 M2.5 范围砍掉,只保留文本粘贴。
     """
 
-    source: JdSource = "text_paste"
+    source: JdCreateSource = "text_paste"
     raw_text: str = Field(min_length=1, max_length=10_000)
 
 

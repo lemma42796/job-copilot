@@ -1,11 +1,11 @@
 """Jd ORM — DATA_MODEL §5.8. 累积型 JD 库(M2.5)。
 
 类比笔记:用户陆续上传,长期留存。上传即解析(jd_parser),parsed_payload
-JSONB 持久化复用,后续一键分析免重 LLM。截图场景:source='image_upload',
-raw_text 存 Qwen 多模态 OCR 后的文本(原图不存)。
+JSONB 持久化复用,后续一键分析免重 LLM。M2.5 只接文本粘贴;
+历史 DB enum 里可能仍有 image_upload 值,但不再作为产品入口。
 
-source ENUM `note_source` 共享:'text_paste' / 'image_upload' (jds) +
-'local_md' / 'web_editor' (notes)— 4 值同一 ENUM。
+source ENUM `note_source` 历史共享:'text_paste'(jds) +
+'local_md' / 'web_editor' (notes),另有不再作为产品入口的历史值。
 """
 
 from __future__ import annotations

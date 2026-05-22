@@ -1,7 +1,7 @@
 ---
 title: ROADMAP - JobCopilot v2
 owner: lemma42796
-last_updated: 2026-05-18
+last_updated: 2026-05-21
 purpose: 已完成面试陪练基础 + 后续唯一 JD Intelligence Agent 主线
 ---
 
@@ -12,7 +12,7 @@ M0    仓库改造 + 文档重写                                               
 M1    笔记入库 + chunker + 树形导航 + Langfuse 起步                          ✅
 M2    聊天框主题类 query → 全库 RAG → 出题 + Judge 三层评分 + Judge tool use ✅
 M2.1  InterviewCoachAgent: Agentic RAG 面试状态机 + 工具调用 + 多轮纠偏分支 ✅
-M2.5  JD Intelligence Agent: 自动读 JD → 岗位要求地图 → 学习路径 → quiz topics ← 当前(报告 MVP 已落地,报告 hardening / OCR / 手动 dogfood 待接)
+M2.5  JD Intelligence Agent: 自动读 JD → 岗位要求地图 → 学习路径 → quiz topics ← 当前(报告 MVP 已落地,报告 hardening / 手动 dogfood 待接;截图 OCR 已砍)
 ```
 
 不估工时,只讲依赖顺序与最佳实践。M2.5 之后不再规划 SR / 弱点 dashboard / 岗位类三源出题 / 简历诊断;所有后续生产力都收束到 JD Intelligence Agent。
@@ -162,15 +162,14 @@ M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",
 
 ## 范围
 
-- **JD 单条上传**:文本粘贴 / 截图(Qwen 多模态 OCR)→ jd_parser **立即解析**(thinking off)→ 落库 jds 表(累积型,跨时间留)
+- **JD 单条上传**:文本粘贴 → jd_parser **立即解析**(thinking off)→ 落库 jds 表(累积型,跨时间留)
 - **我的 JD 库**:列表 / 按 title 筛选 / 单条删除;LLM 自动从 JD 抽 title + 用户可改
 - **JDAnalysisAgent harness**:用户选范围(全部 / 最近 N 条 / 某 title),系统自动完成:
   - `load_jds`:读取已选 JD 与解析快照
-  - `ocr_if_needed`:截图 JD 走 Qwen 多模态 OCR
   - `parse_jd`:缺 parsed_payload 时补解析
   - `aggregate_requirements`:按职责 / 硬技能 / 软技能 / 业务方向分桶
   - `dedupe_requirements`:LLM 同义合并 + Python 频次重算
-  - `match_notes`:可选,用笔记库标题 / heading / chunks 粗匹配已有材料;当前不是 RAG
+  - `match_notes`:可选,输出 `covered / partial / missing / unknown` 覆盖矩阵和证据 chunks;当前不是 RAG
   - `generate_learning_path`:输出可执行 markdown
   - `write_report`:保存 `jd_analyses` 快照,可回看对比
   - **真实 dogfood 规模按最多约 50 条同质 JD 设计**;代码侧保留 200 条 safety cap,超过提示用户拆分
@@ -180,14 +179,16 @@ M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",
     - 二次合并:LLM 跨 batch 同义词去重
     - 频次 Python 重算(canonical 在多少条 JD 里至少出现一次)
 - **产出**:岗位要求地图、高频技能 / 职责 / 软技能、学习路径 markdown、quiz topic 候选、证据 JD 列表、历史报告
+- **知识库覆盖分析**:对每个 canonical requirement 输出 `covered / partial / missing / unknown`、命中短语、证据 chunk / note,作为后续缺口补笔记和模拟面试题单的桥。
 
 ## 退出标准(DoD)
 
-- [ ] 上传最多约 50 条同岗位 JD(混合文本 + 截图),全部立即解析入库;截图 OCR 准确率(关键字段)≥ 90%。当前已完成**文本粘贴解析入库**,截图 OCR 未接。
-- [ ] "我的 JD 库" 列表能筛选 / 删除;LLM 自动抽 title 准确率 ≥ 80%(主观判断)。当前已完成列表、title 筛选、详情、title 修改、软删,准确率还未正式抽样。
-- [ ] 一键分析跑通最多约 50 条同质 JD:hierarchical reduce + 二次合并 + 频次重算。当前已接真实 `/api/jd-analyses` SSE、`jd_aggregator`、报告写入和前端报告详情,但未做多报告手动 dogfood。
-- [ ] 学习路径 markdown 输出可读、按频次降序、覆盖主要高频要求,并给出 quiz topic 候选。当前已生成学习路径和最多 12 个 topic 候选,质量只走手动 dogfood,不新增自动化 eval runner。
-- [ ] 报告能让用户少做手工整理:至少包含要求频次、证据 JD、学习优先级和已有笔记粗匹配状态。当前报告 MVP 已含这些字段,前端两列布局已优化,仍需多报告验证信息密度。
+- [ ] 上传最多约 50 条同岗位文本 JD,全部立即解析入库。当前已完成**文本粘贴解析入库**;截图 OCR 已砍,不作为 DoD。
+- [ ] "我的 JD 库" 列表能筛选 / 删除;LLM 自动抽 title 准确率 ≥ 80%(主观判断)。当前已完成列表、title 筛选、详情、title 修改、软删、文本清洗和疑似重复提示;准确率还未正式抽样。
+- [ ] 一键分析跑通最多约 50 条同质 JD:hierarchical reduce + 二次合并 + 频次重算。当前已接真实 `/api/jd-analyses` SSE、`jd_aggregator`、报告写入和前端报告详情;最小后端 stub dogfood 已验证写报告链路,真实 LLM 多报告 dogfood 按用户要求跳过。
+- [ ] 学习路径 markdown 输出可读、按频次降序、覆盖主要高频要求,并给出 quiz topic 候选。当前已生成学习路径和最多 12 个 topic 候选;报告页已支持 topic priority 筛选和批量进入 `/quiz`。
+- [ ] 报告能让用户少做手工整理:至少包含要求频次、证据 JD、学习优先级和已有笔记覆盖状态。当前报告 MVP 已含这些字段,并支持 requirement 类别筛选 / 短语搜索 / 知识库覆盖矩阵 / topic 批量练习。
+- [ ] 如需简历证据,补 5-10 条 `evals/suites/jd_coverage/dataset.jsonl` 人工标签并手动跑 `eval_jd_coverage.py`。当前脚本已落地,指标为 `coverage_macro_f1 / missing_recall / false_covered_rate / evidence_precision@k / evidence_recall@k / evidence_mrr@k`。
 - [ ] Langfuse 按 jd_analysis_id 过滤能看完整 map-reduce trace
 
 ---
@@ -202,7 +203,7 @@ M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",
 | 代码题 | 需要执行环境,工程量爆炸 |
 | 选择题 | active recall 弱,产品价值低 |
 | 语音输入 | STT + Whisper 工程量大,文本足够 |
-| 笔记 PDF / 图片导入 | OCR 链路长,markdown 已够;JD 截图 OCR 是 M2.5 主线的一部分 |
+| 笔记 PDF / 图片导入 / JD 截图 OCR | OCR 链路长,文本 JD 已够推进 M2.5;截图输入不进入后续主线 |
 | Notion / 飞书 / Obsidian / 语雀 sync | 三方笔记应用各自做得比本产品好;不竞争 |
 | 弱点跟踪 / SR / dashboard / 空 query 系统自选 | 不再追;生产力主线收束到 JD Intelligence |
 | 岗位类三源出题 / 项目深挖题 | 不再追;JD 分析只产出 quiz topic 候选 |
@@ -211,7 +212,7 @@ M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",
 | 投递追踪(v1 残留)| 已确认产品价值站不住,全砍 |
 | 跨 batch 跨时间增量聚合 JD | 单次上限 200 条够用;后续先不做 |
 | JD 分析本体 RAG 化 | 最多约 50 条同质 JD 是已选集合归纳问题,不是开放检索问题;RAG 只在 topic 进入 `/quiz` 后发生 |
-| M2.5 `jd_aggregator` 自动化 eval runner | 用户已明确不做测试;M2.5 只保留手动 dogfood 验收口径 |
+| M2.5 `jd_aggregator` 自动化 eval runner | 不恢复大而全的同义合并评测;M2.5 只保留手动 dogfood 和 `jd_coverage` 最小指标脚本 |
 
 ---
 
