@@ -187,8 +187,8 @@ M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",
 - [ ] "我的 JD 库" 列表能筛选 / 删除;LLM 自动抽 title 准确率 ≥ 80%(主观判断)。当前已完成列表、title 筛选、详情、title 修改、软删、文本清洗和疑似重复提示;准确率还未正式抽样。
 - [ ] 一键分析跑通最多约 50 条同质 JD:raw-JD 技术栈抽取 + 可选二次合并 + 频次重算。当前已接真实 `/api/jd-analyses` SSE、`jd_aggregator`、报告写入和前端报告详情;`analysis#6(done)` 已用 30 条合成 JD 跑通真实外部 LLM,输出 45 个技术要求和 12 个 topic。
 - [ ] 学习路径 markdown 输出可读、按频次降序、覆盖主要高频要求,并给出 quiz topic 候选。当前已生成学习路径和最多 12 个 topic 候选;报告页已支持 topic priority 筛选和批量进入 `/quiz`。
-- [ ] 报告能让用户少做手工整理:至少包含要求频次、证据 JD、学习优先级和已有笔记覆盖状态。当前报告 MVP 已含这些字段,并支持 requirement 类别筛选 / 短语搜索 / 知识库覆盖矩阵 / topic 批量练习。
-- [ ] 如需简历证据,补 5-10 条 `evals/suites/jd_coverage/dataset.jsonl` 人工标签并手动跑 `eval_jd_coverage.py`。当前脚本已落地,指标为 `coverage_macro_f1 / missing_recall / false_covered_rate / evidence_precision@k / evidence_recall@k / evidence_mrr@k`。
+- [x] 报告能让用户少做手工整理:至少包含要求频次、证据 JD、学习优先级和已有笔记覆盖状态。当前报告 MVP 已含这些字段,并支持 requirement 类别筛选 / 短语搜索 / 知识库覆盖矩阵 / "优先补齐"缺口清单 / topic 批量练习。
+- [x] 如需简历证据,补 5-10 条 `evals/suites/jd_coverage/dataset.jsonl` 人工标签并手动跑 `eval_jd_coverage.py`。当前 `analysis#6` 已补 10 条标签并跑出报告 `evals/reports/jd-coverage-20260523-104233.md`;headline 指标为 `coverage_macro_f1 67.7% / missing_recall 100.0% / false_covered_rate 0.0% / evidence_precision@5 77.5% / evidence_recall@5 100.0% / evidence_mrr@5 87.5%`。
 - [ ] Langfuse 按 jd_analysis_id 过滤能看完整 map-reduce trace
 
 ---

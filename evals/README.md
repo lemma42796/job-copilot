@@ -37,6 +37,7 @@ LLM 应用评测套件:检索 / 出题 / Judge / Agent 状态机 / JD 覆盖分�
 
 - `dataset.jsonl`:本地手工标签,字段见 `evals/suites/jd_coverage/README.md`。
 - `apps/api/scripts/eval_jd_coverage.py`:输出 `coverage_macro_f1`、`missing_recall`、`false_covered_rate`、`evidence_precision@k`、`evidence_recall@k`、`evidence_mrr@k`。
+- 首批 dogfood:基于 `analysis#6` 的 10 条标签已跑通,报告 `evals/reports/jd-coverage-20260523-104233.md`;headline 为 macro F1 67.7%、missing recall 100.0%、false covered rate 0.0%、evidence P/R/MRR@5 为 77.5% / 100.0% / 87.5%。
 
 ## 一句话用法
 

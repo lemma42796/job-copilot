@@ -38,6 +38,15 @@ M2.5 JD-to-Knowledge 覆盖分析的最小指标集。它不调 LLM,只读取:
 
 `coverage_accuracy` 只作为诊断指标,不作为 headline。
 
+## Current Dogfood Result
+
+- Dataset:`evals/suites/jd_coverage/dataset.jsonl`
+- Source report:`analysis#6`
+- Cases:10(covered 6 / partial 2 / missing 2)
+- Report:`evals/reports/jd-coverage-20260523-104233.md`
+- Headline:coverage macro F1 67.7%,missing recall 100.0%,false covered rate 0.0%,evidence precision@5 77.5%,evidence recall@5 100.0%,evidence MRR@5 87.5%
+- Known miss:`req_44 查询改写` was labeled covered but predicted partial, so the current error is conservative rather than false-covered.
+
 ## Run
 
 ```bash

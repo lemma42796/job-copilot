@@ -377,7 +377,14 @@ python -m jobcopilot_api.scripts.eval_quiz_generator \
 
 - `expected_status` 只能是 `covered / partial / missing / unknown`。
 - `expected_evidence_chunk_ids` 只标真正能支持覆盖判断的 `note_chunks.id`;`missing / unknown` 可为空。
-- 第一批最小 dogfood 只需 5-10 条,覆盖 covered / partial / missing 三类即可。
+- 第一批最小 dogfood 已补 10 条,覆盖 covered / partial / missing 三类。
+
+当前第一批结果(2026-05-23):
+
+- 数据集:`evals/suites/jd_coverage/dataset.jsonl`,基于 `analysis#6`,共 10 条标签(covered 6 / partial 2 / missing 2)。
+- 报告:`evals/reports/jd-coverage-20260523-104233.md`。
+- Headline:coverage macro F1 67.7%,missing recall 100.0%,false covered rate 0.0%,evidence precision@5 77.5%,evidence recall@5 100.0%,evidence MRR@5 87.5%。
+- 唯一分类错例:`req_44 查询改写`,人工 `covered`,系统 `partial`;当前表现是偏保守,不是误报已覆盖。
 
 ### 5.1.3 跑法
 

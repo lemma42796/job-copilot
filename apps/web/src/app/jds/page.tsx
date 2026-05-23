@@ -891,7 +891,10 @@ function AnalysisReportView({ report }: { report: JdAnalysisReport }) {
         <Metric label="成本" value={`${report.total_cost_cny ?? 0} CNY`} />
       </div>
 
-      <CoverageAnalysisSection items={report.note_match_summary} />
+      <CoverageAnalysisSection
+        items={report.note_match_summary}
+        requirements={report.aggregated_requirements}
+      />
 
       <section className="rounded-lg border border-border bg-background p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -997,9 +1000,22 @@ function AnalysisReportView({ report }: { report: JdAnalysisReport }) {
   );
 }
 
-function CoverageAnalysisSection({ items }: { items: JdNoteMatchSummaryItem[] }) {
+function CoverageAnalysisSection({
+  items,
+  requirements,
+}: {
+  items: JdNoteMatchSummaryItem[];
+  requirements: AggregatedRequirement[];
+}) {
   const [statusFilter, setStatusFilter] = useState<CoverageStatusFilter>('all');
   const counts = useMemo(() => buildCoverageCounts(items), [items]);
+  const requirementById = useMemo(
+    () =>
+      new Map<string, AggregatedRequirement>(
+        requirements.map((req) => [req.id, req] as [string, AggregatedRequirement]),
+      ),
+    [requirements],
+  );
   const statuses = useMemo(
     () => ['all', ...Array.from(new Set(items.map((item) => item.status || 'unknown')))],
     [items],
@@ -1039,6 +1055,8 @@ function CoverageAnalysisSection({ items }: { items: JdNoteMatchSummaryItem[] })
         <CoverageMetric label="未知" value={counts.unknown} tone="unknown" />
       </div>
 
+      <CoverageGapSummary items={items} requirementById={requirementById} />
+
       <div className="mt-3 space-y-2">
         {visibleItems.length ? (
           visibleItems.map((item) => <CoverageItem key={item.req_id} item={item} />)
@@ -1049,6 +1067,89 @@ function CoverageAnalysisSection({ items }: { items: JdNoteMatchSummaryItem[] })
         )}
       </div>
     </section>
+  );
+}
+
+function CoverageGapSummary({
+  items,
+  requirementById,
+}: {
+  items: JdNoteMatchSummaryItem[];
+  requirementById: Map<string, AggregatedRequirement>;
+}) {
+  const gaps = useMemo(
+    () =>
+      items
+        .filter((item) => item.status === 'missing' || item.status === 'partial')
+        .map((item) => ({
+          item,
+          requirement: requirementById.get(item.req_id),
+        }))
+        .sort((left, right) => {
+          const statusDelta = coverageGapRank(left.item.status) - coverageGapRank(right.item.status);
+          if (statusDelta !== 0) return statusDelta;
+          return (right.requirement?.frequency ?? 0) - (left.requirement?.frequency ?? 0);
+        })
+        .slice(0, 8),
+    [items, requirementById],
+  );
+
+  if (!gaps.length) {
+    return (
+      <div className="mt-3 rounded-lg border border-border bg-surface px-3 py-3 text-sm text-muted">
+        暂无显著知识库缺口
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 rounded-lg border border-border bg-surface">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <AlertCircle className="size-4 text-[var(--color-danger)]" />
+          优先补齐
+        </div>
+        <span className="text-xs text-muted">{gaps.length} 项</span>
+      </div>
+      <div className="divide-y divide-border">
+        {gaps.map(({ item, requirement }) => {
+          const topic = item.canonical_text ?? requirement?.canonical_text ?? item.req_id;
+          const phrases = item.matched_phrases?.length
+            ? item.matched_phrases
+            : requirement?.raw_phrases ?? [];
+          const evidenceCount = item.evidence_chunks?.length ?? 0;
+          return (
+            <div key={item.req_id} className="flex flex-wrap items-center gap-3 px-3 py-2.5">
+              <div className="min-w-[180px] flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="max-w-full truncate text-sm font-medium">{topic}</div>
+                  <span
+                    className={cn(
+                      'rounded-md border px-2 py-0.5 text-[11px]',
+                      coverageTone(item.status),
+                    )}
+                  >
+                    {coverageStatusLabel(item.status)}
+                  </span>
+                </div>
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
+                  <span>频次 {formatPercent(requirement?.frequency ?? 0)}</span>
+                  <span>证据 {evidenceCount} 段</span>
+                  {phrases.length ? <span>{phrases.slice(0, 3).join(' / ')}</span> : null}
+                </div>
+              </div>
+              <a
+                href={`/quiz?topic=${encodeURIComponent(topic)}`}
+                className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs hover:bg-black/[0.04]"
+              >
+                <ExternalLink className="size-3" />
+                练习
+              </a>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -1251,6 +1352,12 @@ function buildCoverageCounts(items: JdNoteMatchSummaryItem[]) {
     },
     { covered: 0, partial: 0, missing: 0, unknown: 0 },
   );
+}
+
+function coverageGapRank(status: string): number {
+  if (status === 'missing') return 0;
+  if (status === 'partial') return 1;
+  return 2;
 }
 
 function coverageStatusLabel(status: string): string {

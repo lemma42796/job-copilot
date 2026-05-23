@@ -1,0 +1,10 @@
+{"id":"cov_001","analysis_id":6,"req_id":"req_3","expected_status":"covered","expected_evidence_chunk_ids":[485,782,275,286],"notes":"RAG 有检索边界、prompt context 边界、长期记忆区别和 zero-hit 证据,足够支撑基础面试覆盖"}
+{"id":"cov_002","analysis_id":6,"req_id":"req_6","expected_status":"covered","expected_evidence_chunk_ids":[259,261,267,376,809],"notes":"Function Calling 有协议、工程坑、ReAct 关系和 tool use 本体解释,覆盖充分"}
+{"id":"cov_003","analysis_id":6,"req_id":"req_7","expected_status":"covered","expected_evidence_chunk_ids":[403,468,487,489],"notes":"向量检索有 hybrid 容错、reranker 位置、pgvector/向量库选型和 BM25 对比,覆盖充分"}
+{"id":"cov_004","analysis_id":6,"req_id":"req_24","expected_status":"covered","expected_evidence_chunk_ids":[955,957,961,1636],"notes":"SQLAlchemy async、FastAPI 集成和连接池踩坑都有直接笔记证据"}
+{"id":"cov_005","analysis_id":6,"req_id":"req_40","expected_status":"covered","expected_evidence_chunk_ids":[319,287,288,292],"notes":"SSE 的流式本质、事件契约、错误事件和 OpenAPI 边界都有直接覆盖"}
+{"id":"cov_006","analysis_id":6,"req_id":"req_12","expected_status":"partial","expected_evidence_chunk_ids":[1263,1273,1925,2005],"notes":"有 DAG/拓扑排序和 Agent vs workflow 解释,但缺通用 workflow 编排平台或生产编排实践"}
+{"id":"cov_007","analysis_id":6,"req_id":"req_17","expected_status":"partial","expected_evidence_chunk_ids":[1797,1866,1874],"notes":"有 RAG/评测人工标注、kappa 和标注质量检查,但不是广义数据标注工程"}
+{"id":"cov_008","analysis_id":6,"req_id":"req_44","expected_status":"covered","expected_evidence_chunk_ids":[440,441,413],"notes":"查询改写有 prompt 模板、长上下文关系和噪声来源,应按已覆盖而不是 partial 处理"}
+{"id":"cov_009","analysis_id":6,"req_id":"req_26","expected_status":"missing","expected_evidence_chunk_ids":[],"notes":"只有配置类型里顺带提到灰度和 A/B,没有实验设计、分流、指标或分析证据,按 missing"}
+{"id":"cov_010","analysis_id":6,"req_id":"req_29","expected_status":"missing","expected_evidence_chunk_ids":[],"notes":"未看到 Next.js 相关知识库证据"}
