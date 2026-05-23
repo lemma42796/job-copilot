@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 
 from jobcopilot_api.schemas.agents.jd_aggregator import (
-    RawRequirementItem,
+    ParsedJdForAggregation,
     Requirement,
     RequirementCandidate,
 )
@@ -20,16 +20,19 @@ PROMPT_NAME_MERGE = "jd_aggregator_merge"
 PROMPT_NAME_PATH = "jd_aggregator_learning_path"
 PROMPT_VERSION = "v1.0"
 
-SYSTEM_BATCH = """你是 JobCopilot 的 JD 要求聚合 Agent。任务是把一批 JD 原文短语做同义合并。
+SYSTEM_BATCH = """你是 JobCopilot 的 JD 技术栈抽取 Agent。任务是阅读一批 JD 原文,找出多个 JD 共同要求的具体技术点,合并同义说法,输出技术栈清单。
 
 硬约束:
-1. 只合并输入里已有的短语,不要补行业常识,不要新增没出现过的要求。
-2. canonical_text 可以选一个更清晰的代表表达,但必须能从 raw_phrases 直接推出。
-3. raw_phrases 必须来自输入 text,不要改写;supporting_jd_ids 必须来自输入 jd_id。
-4. 不要计算 frequency;频次由 Python 端按 supporting_jd_ids 重算。
-5. category 只能用输入里的类别:职责 / 硬技能 / 软技能 / 经验 / 学历。
-6. 跨类别不要强行合并;例如"沟通协作"不能跟"Spring Boot"合一。
-7. 输出必须是严格 JSON,不要输出解释文字。"""
+1. 只输出至少涉及 2 个 JD 的具体技术点;只在单个 JD 出现的内容不要输出。
+2. 最多输出 40 项;优先输出高频、可学习、可面试复习的技术点。
+3. canonical_text 必须是具体技术 / 工具 / 框架 / 数据库 / 方法名,如"Python 编程语言"、"MySQL"、"FastAPI"、"RAG"、"向量检索"、"Function Calling"。
+4. 不要输出宽泛岗位能力、业务方向、职责句或软技能,如"Python 后端开发"、"AI 产品落地"、"业务系统建设"、"工程质量意识"。
+5. 遇到组合表述要拆成具体技术点:如"Python 后端开发"归为"Python 编程语言";若同时明确出现 FastAPI,另列"FastAPI"。
+6. category 默认用"硬技能";只有"API 设计"、"系统设计"、"任务编排"这类明确工程技术实践可用"职责";不要输出"软技能 / 经验 / 学历"。
+7. raw_phrases 每项最多 5 个代表短语,必须来自 JD 原文。
+8. supporting_jd_ids 必须列出涉及该技术点的 JD id,不要编造不存在的 JD id。
+9. 不要计算 frequency;后端会按 supporting_jd_ids 重算。
+10. 只输出严格 JSON,不要解释。"""
 
 SYSTEM_MERGE = """你是 JobCopilot 的 JD 要求二次合并 Agent。任务是把多个 batch 产出的 canonical requirements 再做跨 batch 同义合并。
 
@@ -55,23 +58,24 @@ def render_user_batch(
     *,
     batch_index: int,
     total_batches: int,
-    items: list[RawRequirementItem],
+    jds: list[ParsedJdForAggregation],
 ) -> str:
-    rows = [item.model_dump(mode="json") for item in items]
     return (
         f"这是第 {batch_index}/{total_batches} 个 batch。"
-        "请合并同义 JD 要求,输出 requirements。\n\n"
-        f"输入 raw_items JSON:\n{json.dumps(rows, ensure_ascii=False, indent=2)}"
+        "这里有一组 JD 原文。请找出这些 JD 上相同或相近的技能 / 技术要求,"
+        "合并后标注每个技术要求涉及哪些 JD。\n\n"
+        "输出示例语义:Python 编程语言【涉及 JD:1,2,3】、MySQL【涉及 JD:2,5,8】。\n"
+        "实际输出必须符合 JSON schema。\n\n"
+        f"JD 原文:\n{_render_jd_blocks(jds)}"
     )
 
 
 def render_user_merge(requirements: list[RequirementCandidate]) -> str:
-    rows = [item.model_dump(mode="json") for item in requirements]
     return (
         "请把以下 partial canonical requirements 做跨 batch 同义合并,"
         "输出全局 requirements。\n\n"
-        "输入 partial_requirements JSON:\n"
-        f"{json.dumps(rows, ensure_ascii=False, indent=2)}"
+        "输入 partial_requirements TSV,列顺序为 category / canonical_text / raw_phrases / supporting_jd_ids。\n"
+        f"{_render_requirement_candidate_tsv(requirements)}"
     )
 
 
@@ -84,5 +88,53 @@ def render_user_learning_path(
     return (
         f"本次分析覆盖 {jd_count} 条 JD。"
         "请基于以下 requirement 列表生成 markdown 学习路径。\n\n"
-        f"requirements JSON:\n{json.dumps(rows, ensure_ascii=False, indent=2)}"
+        f"requirements JSON:\n{json.dumps(rows, ensure_ascii=False, separators=(',', ':'))}"
     )
+
+
+def _render_jd_blocks(jds: list[ParsedJdForAggregation]) -> str:
+    blocks: list[str] = []
+    for jd in jds:
+        text = jd.raw_text.strip() or _parsed_jd_text(jd)
+        blocks.append(f"### JD {jd.jd_id}\n{text}")
+    return "\n\n".join(blocks)
+
+
+def _parsed_jd_text(jd: ParsedJdForAggregation) -> str:
+    parsed = jd.parsed
+    lines = [f"岗位:{parsed.title}"]
+    if parsed.responsibilities:
+        lines.append("职责:" + "; ".join(parsed.responsibilities))
+    if parsed.hard_skills:
+        lines.append("硬技能:" + ", ".join(parsed.hard_skills))
+    if parsed.soft_skills:
+        lines.append("软技能:" + ", ".join(parsed.soft_skills))
+    if parsed.experience_years:
+        lines.append(f"经验:{parsed.experience_years}")
+    if parsed.education:
+        lines.append(f"学历:{parsed.education}")
+    return "\n".join(lines)
+
+
+def _render_requirement_candidate_tsv(items: list[RequirementCandidate]) -> str:
+    rows = ["category\tcanonical_text\traw_phrases\tsupporting_jd_ids"]
+    for item in items:
+        rows.append(
+            "\t".join(
+                [
+                    item.category,
+                    _tsv_cell(item.canonical_text),
+                    _tsv_cell(" | ".join(item.raw_phrases)),
+                    _join_ids(item.supporting_jd_ids),
+                ]
+            )
+        )
+    return "\n".join(rows)
+
+
+def _join_ids(ids: list[int]) -> str:
+    return ",".join(str(item) for item in sorted(set(ids)))
+
+
+def _tsv_cell(value: str) -> str:
+    return " ".join(value.replace("\t", " ").split())

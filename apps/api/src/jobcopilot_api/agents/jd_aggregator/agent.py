@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from typing import Any
@@ -40,10 +41,15 @@ from jobcopilot_api.schemas.agents.jd_aggregator import (
     RequirementCandidate,
 )
 
-RAW_REQUIREMENT_BATCH_SIZE = 600
+RAW_JD_BATCH_PROMPT_CHAR_BUDGET = 18_000
 LEARNING_PATH_REQUIREMENT_LIMIT = 80
 REDUCE_TEMPERATURE = 0.3
 LEARNING_PATH_TEMPERATURE = 0.5
+REDUCE_TIMEOUT_S = 120.0
+LEARNING_PATH_TIMEOUT_S = 90.0
+_SCHEMA_PROMPT_PREFIX = (
+    "\n\nRespond with a single JSON object that matches this schema:\n"
+)
 
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -85,9 +91,10 @@ async def run(
             learning_path_md="## 你的学习路径\n\n本次 JD 没有可聚合的结构化要求。",
         )
 
-    batches = _batch(raw_items, RAW_REQUIREMENT_BATCH_SIZE)
+    fallback_items = _exact_candidates(raw_items)
+    batches = _batch_jds(inp.parsed_jds)
     partials: list[RequirementCandidate] = []
-    for index, items in enumerate(batches, start=1):
+    for index, jds in enumerate(batches, start=1):
         if on_progress is not None:
             await on_progress(
                 {"phase": "reducing_batch", "batch": index, "total": len(batches)}
@@ -99,19 +106,20 @@ async def run(
             user=render_user_batch(
                 batch_index=index,
                 total_batches=len(batches),
-                items=items,
+                jds=jds,
             ),
             response_schema=JdRequirementReduceOutput,
             temperature=REDUCE_TEMPERATURE,
+            timeout_s=REDUCE_TIMEOUT_S,
         )
         stats.add(result)
         reduce_output = _expect_parsed(result, JdRequirementReduceOutput)
         partials.extend(_normalize_candidates(reduce_output.requirements, jd_ids))
 
     if not partials:
-        partials = _exact_candidates(raw_items)
+        partials = fallback_items
 
-    if len(partials) > 1:
+    if len(batches) > 1 and len(partials) > 1:
         if on_progress is not None:
             await on_progress({"phase": "merging"})
         merge_result = await client.complete(
@@ -121,6 +129,7 @@ async def run(
             user=render_user_merge(partials),
             response_schema=JdRequirementReduceOutput,
             temperature=REDUCE_TEMPERATURE,
+            timeout_s=REDUCE_TIMEOUT_S,
         )
         stats.add(merge_result)
         merge_output = _expect_parsed(merge_result, JdRequirementReduceOutput)
@@ -144,6 +153,7 @@ async def run(
         ),
         response_schema=JdLearningPathOutput,
         temperature=LEARNING_PATH_TEMPERATURE,
+        timeout_s=LEARNING_PATH_TIMEOUT_S,
     )
     stats.add(path_result)
     path_output = _expect_parsed(path_result, JdLearningPathOutput)
@@ -200,11 +210,31 @@ def _extend_items(
         )
 
 
-def _batch(
-    items: list[RawRequirementItem],
-    size: int,
-) -> list[list[RawRequirementItem]]:
-    return [items[index : index + size] for index in range(0, len(items), size)]
+def _batch_jds(
+    jds: list[ParsedJdForAggregation],
+) -> list[list[ParsedJdForAggregation]]:
+    batches: list[list[ParsedJdForAggregation]] = []
+    current: list[ParsedJdForAggregation] = []
+    for jd in jds:
+        candidate = [*current, jd]
+        if current and _reduce_prompt_chars(candidate) > RAW_JD_BATCH_PROMPT_CHAR_BUDGET:
+            batches.append(current)
+            current = [jd]
+            continue
+        current = candidate
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _reduce_prompt_chars(jds: list[ParsedJdForAggregation]) -> int:
+    user = render_user_batch(batch_index=999, total_batches=999, jds=jds)
+    schema = json.dumps(
+        JdRequirementReduceOutput.model_json_schema(),
+        ensure_ascii=False,
+        indent=2,
+    )
+    return len(SYSTEM_BATCH) + len(user) + len(_SCHEMA_PROMPT_PREFIX) + len(schema)
 
 
 def _expect_parsed(result: LLMResult, schema: type[Any]) -> Any:

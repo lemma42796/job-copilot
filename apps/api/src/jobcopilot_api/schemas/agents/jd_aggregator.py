@@ -16,6 +16,7 @@ RequirementCategory = Literal["职责", "硬技能", "软技能", "经验", "学
 class ParsedJdForAggregation(BaseModel):
     jd_id: int
     parsed: JdParseOutput
+    raw_text: str = ""
 
 
 class RawRequirementItem(BaseModel):

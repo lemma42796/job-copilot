@@ -1,7 +1,7 @@
 ---
 title: ROADMAP - JobCopilot v2
 owner: lemma42796
-last_updated: 2026-05-21
+last_updated: 2026-05-23
 purpose: 已完成面试陪练基础 + 后续唯一 JD Intelligence Agent 主线
 ---
 
@@ -12,7 +12,7 @@ M0    仓库改造 + 文档重写                                               
 M1    笔记入库 + chunker + 树形导航 + Langfuse 起步                          ✅
 M2    聊天框主题类 query → 全库 RAG → 出题 + Judge 三层评分 + Judge tool use ✅
 M2.1  InterviewCoachAgent: Agentic RAG 面试状态机 + 工具调用 + 多轮纠偏分支 ✅
-M2.5  JD Intelligence Agent: 自动读 JD → 岗位要求地图 → 学习路径 → quiz topics ← 当前(报告 MVP 已落地,报告 hardening / 手动 dogfood 待接;截图 OCR 已砍)
+M2.5  JD Intelligence Agent: 自动读 JD → 技术栈地图 → 学习路径 → quiz topics ← 当前(报告 MVP + 30-JD 真实 dogfood 已跑通;截图 OCR 已砍)
 ```
 
 不估工时,只讲依赖顺序与最佳实践。M2.5 之后不再规划 SR / 弱点 dashboard / 岗位类三源出题 / 简历诊断;所有后续生产力都收束到 JD Intelligence Agent。
@@ -167,25 +167,25 @@ M2.1 是为了把项目从"RAG 出题系统"升级成"Agentic RAG 面试教练",
 - **JDAnalysisAgent harness**:用户选范围(全部 / 最近 N 条 / 某 title),系统自动完成:
   - `load_jds`:读取已选 JD 与解析快照
   - `parse_jd`:缺 parsed_payload 时补解析
-  - `aggregate_requirements`:按职责 / 硬技能 / 软技能 / 业务方向分桶
+  - `aggregate_requirements`:raw-JD 技术栈抽取,只保留多个 JD 共同出现的具体技术点
   - `dedupe_requirements`:LLM 同义合并 + Python 频次重算
   - `match_notes`:可选,输出 `covered / partial / missing / unknown` 覆盖矩阵和证据 chunks;当前不是 RAG
   - `generate_learning_path`:输出可执行 markdown
   - `write_report`:保存 `jd_analyses` 快照,可回看对比
   - **真实 dogfood 规模按最多约 50 条同质 JD 设计**;代码侧保留 200 条 safety cap,超过提示用户拆分
-  - 内部走 hierarchical map-reduce:
+  - 内部走 raw-JD reduce:
     - Map 已在上传时完成(parsed_payload 持久化)
-    - Reduce:每 batch 500-600 raw skill,LLM 单次聚合 → N 个 partial result
-    - 二次合并:LLM 跨 batch 同义词去重
+    - Reduce:按 prompt 字符预算把 JD 原文分批,LLM 抽取具体技术点 → N 个 partial result
+    - 二次合并:多 batch 时 LLM 跨 batch 同义词去重;单 batch 跳过
     - 频次 Python 重算(canonical 在多少条 JD 里至少出现一次)
-- **产出**:岗位要求地图、高频技能 / 职责 / 软技能、学习路径 markdown、quiz topic 候选、证据 JD 列表、历史报告
+- **产出**:技术栈地图、高频技能 / 工程实践、学习路径 markdown、quiz topic 候选、证据 JD 列表、历史报告
 - **知识库覆盖分析**:对每个 canonical requirement 输出 `covered / partial / missing / unknown`、命中短语、证据 chunk / note,作为后续缺口补笔记和模拟面试题单的桥。
 
 ## 退出标准(DoD)
 
 - [ ] 上传最多约 50 条同岗位文本 JD,全部立即解析入库。当前已完成**文本粘贴解析入库**;截图 OCR 已砍,不作为 DoD。
 - [ ] "我的 JD 库" 列表能筛选 / 删除;LLM 自动抽 title 准确率 ≥ 80%(主观判断)。当前已完成列表、title 筛选、详情、title 修改、软删、文本清洗和疑似重复提示;准确率还未正式抽样。
-- [ ] 一键分析跑通最多约 50 条同质 JD:hierarchical reduce + 二次合并 + 频次重算。当前已接真实 `/api/jd-analyses` SSE、`jd_aggregator`、报告写入和前端报告详情;最小后端 stub dogfood 已验证写报告链路,真实 LLM 多报告 dogfood 按用户要求跳过。
+- [ ] 一键分析跑通最多约 50 条同质 JD:raw-JD 技术栈抽取 + 可选二次合并 + 频次重算。当前已接真实 `/api/jd-analyses` SSE、`jd_aggregator`、报告写入和前端报告详情;`analysis#6(done)` 已用 30 条合成 JD 跑通真实外部 LLM,输出 45 个技术要求和 12 个 topic。
 - [ ] 学习路径 markdown 输出可读、按频次降序、覆盖主要高频要求,并给出 quiz topic 候选。当前已生成学习路径和最多 12 个 topic 候选;报告页已支持 topic priority 筛选和批量进入 `/quiz`。
 - [ ] 报告能让用户少做手工整理:至少包含要求频次、证据 JD、学习优先级和已有笔记覆盖状态。当前报告 MVP 已含这些字段,并支持 requirement 类别筛选 / 短语搜索 / 知识库覆盖矩阵 / topic 批量练习。
 - [ ] 如需简历证据,补 5-10 条 `evals/suites/jd_coverage/dataset.jsonl` 人工标签并手动跑 `eval_jd_coverage.py`。当前脚本已落地,指标为 `coverage_macro_f1 / missing_recall / false_covered_rate / evidence_precision@k / evidence_recall@k / evidence_mrr@k`。

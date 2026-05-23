@@ -338,7 +338,13 @@ async def _load_parsed_jds(
                 parsed = JdParseOutput.model_validate(jd.parsed_payload)
             except PydanticValidationError:
                 continue
-            parsed_jds.append(ParsedJdForAggregation(jd_id=jd.id, parsed=parsed))
+            parsed_jds.append(
+                ParsedJdForAggregation(
+                    jd_id=jd.id,
+                    parsed=parsed,
+                    raw_text=jd.raw_text,
+                )
+            )
         if not parsed_jds:
             raise JdCountZeroError("没有可用于聚合的 parsed_payload")
         return parsed_jds

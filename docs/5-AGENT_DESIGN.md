@@ -684,14 +684,17 @@ USER 模板:`JD 原文(可能含复制格式符):\n{raw_text}\n`
 
 # 6. JdAggregator(多 JD 一键分析,M2.5)
 
-对累积型 JD 库做 **hierarchical map-reduce**(map 已在上传时完成,这里只跑 reduce + 二次合并 + Python 重算频次)。
+对累积型 JD 库做 **raw-JD 技术栈抽取 + Python 频次重算**。上传时的
+`jd_parser` 仍负责单条结构化解析;多 JD 聚合阶段不再把 parsed_payload
+拆成几百个 raw requirement 让 LLM 搬运,而是把选中 JD 原文交给 LLM,
+让它只抽取多个 JD 共同出现的具体技术点,再由 Python 重算频次。
 
 ## 6.1 输入 / 输出
 
 ```python
 @dataclass
 class JdAggregateInput:
-    parsed_jds: list[JdParseOutput]    # 100+ 条 JD 的 parsed_payload(从 jds 表批量读)
+    parsed_jds: list[ParsedJdForAggregation]  # jd_id + parsed_payload + raw_text
     
 @dataclass
 class JdAggregateOutput:
@@ -714,16 +717,20 @@ class Requirement:
 
 ## 6.2 三阶段流水线
 
-### Stage 1:分批 reduce(LLM)
+### Stage 1:raw-JD 技术栈抽取(LLM)
 
-- 把所有 raw skills(`hard_skills + soft_skills`)聚合成长 list,跨 JD
-- 分 batch(每 batch 500-600 项 raw skill)
-- 每 batch 单独调 LLM 同义合并 → 输出 partial canonical list,每个 canonical 带 `raw_phrases` + 在该 batch 内见过的 JD index 集合
+- 输入是本次选中的 JD 原文,按 prompt 字符预算分 batch(当前目标约 18k chars)
+- LLM 任务不是复述所有要求,而是找"至少涉及 2 个 JD"的具体技术点
+- 输出 partial canonical list,每个 canonical 带代表 `raw_phrases` 和 `supporting_jd_ids`
+- 单批 reduce / merge timeout 单独放宽到 120s,learning path 90s;不改全局 tier
 
 ```
 LLM prompt 要点:
-- 输入:raw skill 列表(每项跟上 jd_index 元数据)
-- 任务:同义合并,输出 canonical 列表 + 每 canonical 的 raw 来源
+- 输入:JD 原文块,每块有 "### JD <id>"
+- 任务:抽取多个 JD 共同出现的具体技术 / 工具 / 框架 / 数据库 / 方法名
+- 示例方向:Python 编程语言 / MySQL / FastAPI / RAG / 向量检索 / Function Calling
+- 禁止输出宽泛岗位能力 / 业务方向 / 职责句 / 软技能 / 经验 / 学历
+- 最多 40 项;raw_phrases 每项最多 5 个代表短语
 - 不算频次(频次 Python 算)
 - thinking off(同义判断 Qwen 中文常识强,不需 reasoning)
 - temperature 0.3
@@ -732,7 +739,7 @@ LLM prompt 要点:
 ### Stage 2:二次 reduce / merge(LLM)
 
 - 把 N 个 batch 的 partial canonical list 喂给 LLM,让它跨 batch 同义合并
-- 输入是 canonical 列表(已经短了,可能 200-500 项),token 安全
+- 输入是 canonical 列表(已经短了),token 安全;如果只有 1 个 batch,跳过 merge
 - 输出:全局 canonical list + 每 canonical 的 raw_phrases 总集 + supporting_jd_ids 全集
 
 ```
@@ -767,16 +774,20 @@ LLM prompt 要点:
 ## 6.3 Map-Reduce 拓扑(单次上限 200 条)
 
 ```
-≤ 200 条 JD parsed_payload(已从 DB 读)
-   ↓ 抽 raw_skills(平均 30/条 → 6000 项)
-   ↓ 分批 (每 batch 600 项 → 10 batch)
-   ↓ 10 次并发 LLM batch reduce
-   ↓ 10 个 partial canonical list(每个 ~50-100 项)
-   ↓ 1 次 LLM 二次 merge(输入 ~500-1000 canonical 项)
+≤ 200 条 JD parsed_payload + raw_text(已从 DB 读)
+   ↓ 按 prompt 字符预算切 raw JD batch
+   ↓ N 次 LLM 技术栈抽取(每批最多 40 项)
+   ↓ N 个 partial 技术栈清单
+   ↓ 若 N > 1,1 次 LLM 二次 merge
    ↓ Python 重算频次 + 排序
    ↓ 1 次 LLM 学习路径生成
-   = 总 LLM 调用数 ≈ 12 次,P95 ≤ 60s
+   = 总 LLM 调用数 ≈ N + optional merge + learning_path
 ```
+
+本地 dogfood 记录:2026-05-23 用 30 条合成 JD 跑通 `analysis#6(done)`;
+输出 45 个技术要求、12 个 quiz topics,tokens in/out `9336/4518`,
+成本 `0.043733 CNY`。失败样本 `analysis#3/#4/#5` 说明旧 raw item
+搬运式 prompt 会 timeout 或输出截断;后续不要回退到 600 raw item JSON。
 
 ## 6.4 service 层后处理
 
