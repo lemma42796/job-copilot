@@ -7,13 +7,14 @@
 [![Stack](https://img.shields.io/badge/stack-FastAPI%20%2B%20Next.js%20%2B%20Postgres-2f6fef)](#技术栈)
 [![LLM](https://img.shields.io/badge/LLM-Qwen%20%40%20DashScope-1f7ae0)](#配置)
 
-[快速开始](#快速开始) | [文档导航](#文档导航) | [English Summary](#english-summary)
+[演示截图](#演示截图) | [快速开始](#快速开始) | [文档导航](#文档导航) | [English Summary](#english-summary)
 
 ---
 
 ## 目录
 
 - [概览](#概览)
+- [演示截图](#演示截图)
 - [为什么做 JobCopilot](#为什么做-jobcopilot)
 - [功能特性](#功能特性)
 - [快速开始](#快速开始)
@@ -41,6 +42,58 @@ JobCopilot 面向正在准备软件工程岗位的计算机学习者和开发者
 
 项目目前是单用户、本地 dogfood 优先形态。你的笔记、JD、报告、练习 session 和 recall 文件默认保存在本机工作区和 Postgres 数据库里。LLM 调用通过你自己的 DashScope/Qwen API Key 完成。
 
+## 演示截图
+
+以下截图来自本地 dogfood 数据,覆盖当前前端的主要功能面。
+
+### 1. JD 入库与结构化详情
+
+文本 JD 粘贴后立即解析入库,右侧展示结构化字段、技能、职责和成本审计。
+
+![JD 入库与结构化详情](docs/assets/screenshots/jd-library-detail.png)
+
+### 2. JD 覆盖分析与优先补齐
+
+30 条 JD dogfood 报告会沉淀知识库 covered / partial / missing 覆盖矩阵,并把最该补的缺口排到前面。
+
+![JD 覆盖分析与优先补齐](docs/assets/screenshots/jd-analysis-coverage.png)
+
+### 3. 岗位要求证据矩阵
+
+每个聚合后的岗位要求会保留命中短语、证据片段和 covered / partial / missing 状态。
+
+![岗位要求证据矩阵](docs/assets/screenshots/jd-analysis-requirements.png)
+
+### 4. 学习路径与 Quiz Topics
+
+报告产出的 topic 可直接跳到 `/quiz`,把 JD 缺口转成下一轮面试练习。
+
+![学习路径与 Quiz Topics](docs/assets/screenshots/jd-analysis-learning-topics.png)
+
+### 5. 本地笔记导入
+
+浏览器直接读取本机 Markdown 目录或多文件,导入后进入 chunk + embedding 流程。
+
+![本地笔记导入](docs/assets/screenshots/notes-import.png)
+
+### 6. Markdown 笔记库
+
+本地 Markdown 笔记按 folder / heading 组织,作为出题、评分和覆盖分析的私有知识来源。
+
+![Markdown 笔记库](docs/assets/screenshots/notes-library.png)
+
+### 7. RAG 面试练习总结
+
+从主题 query 进入出题、答题、evidence-bound 评分、多轮补答纠偏和整场总结。
+
+![RAG 面试练习总结](docs/assets/screenshots/quiz-session-summary.png)
+
+### 8. 评分证据与多轮反馈
+
+评分细节展开后可以看到 Coverage、Fidelity、Depth 的证据卡片和追问/补答上下文。
+
+![评分证据与多轮反馈](docs/assets/screenshots/quiz-scoring-evidence.png)
+
 ## 为什么做 JobCopilot
 
 普通 LLM 官网已经能完成一次性面试问答。JobCopilot 聚焦的是单个聊天窗口很难长期承载的工作流:
@@ -58,9 +111,9 @@ JobCopilot 面向正在准备软件工程岗位的计算机学习者和开发者
 |------|----------|
 | JD 库 | 支持文本粘贴上传 JD,立即调用 `jd_parser` 解析,并支持列表、详情、筛选、title 修改和软删 |
 | JD 一键分析 | `POST /api/jd-analyses` 通过 SSE 跑报告流程:读取 parsed payload、聚合要求、同义去重、Python 重算频次、生成学习路径和 quiz topics |
-| 历史报告 | 保存 `jd_analyses` 快照,包含岗位要求地图、证据 JD ids、token/cost 审计和笔记覆盖粗匹配 |
+| 历史报告 | 保存 `jd_analyses` 快照,包含岗位要求地图、证据 JD ids、token/cost 审计和知识库覆盖矩阵 |
 | Topic 跳转 | 报告里的 quiz topic 候选可作为普通 `/quiz` 主题 query 进入面试练习 |
-| 截图 OCR | M2.5 后续切片,计划只持久化 OCR 后文本,不保存原图 |
+| JD 输入边界 | 当前只支持文本 JD;截图 OCR 已从 M2.5 范围移除 |
 
 ### 面试教练
 
@@ -142,7 +195,7 @@ Caddy:    http://localhost
 3. 持续上传同类岗位 JD。
 4. 选择分析范围:全部、最近 N 条、指定 ids 或 title 筛选。
 5. 点击一键分析。
-6. 查看岗位要求地图、学习路径、笔记覆盖粗匹配和 quiz topic 候选。
+6. 查看岗位要求地图、学习路径、知识库覆盖矩阵和 quiz topic 候选。
 
 ### 用笔记练面试
 
@@ -196,7 +249,7 @@ Postgres 16 + pgvector
         |
         v
 DashScope / Qwen
-  generation, embedding, rerank, future JD screenshot OCR
+  generation, embedding, rerank
 ```
 
 ## 技术栈
@@ -266,7 +319,7 @@ M0    仓库改造 + v2 文档重写                                  done
 M1    Markdown 笔记入库 + chunking + 树形导航 + Langfuse 起步   done
 M2    主题 query -> RAG -> 出题 -> LLM-as-Judge                 done
 M2.1  InterviewCoachAgent 状态机 + 多轮纠偏                    done
-M2.5  JD Intelligence Agent + 报告 hardening                   current
+M2.5  JD Intelligence Agent + 知识库覆盖分析                   closeout
 ```
 
 后续不再规划 SR、弱点 dashboard、岗位类三源出题、简历上传、简历诊断或简历改写。持续生产力主线收束到 JD Intelligence。
@@ -274,7 +327,7 @@ M2.5  JD Intelligence Agent + 报告 hardening                   current
 ## 限制与非目标
 
 - 单用户本地 dogfood 项目,暂无 auth 或 SaaS 模式。
-- JD 截图 OCR 尚未完成,当前 JD 上传以文本为主。
+- 当前 JD 上传以文本粘贴为主;截图 OCR 已明确移出 M2.5 范围。
 - JD 聚合不是 RAG pipeline。它是对选定 parsed JDs 的有界归纳统计;RAG 只在 topic 进入 `/quiz` 后发生。
 - 项目明确不做简历生成、简历定制、投递追踪。
 - 自动化验证不会在每次 push 时运行,需要维护者按需手动跑。
@@ -320,6 +373,6 @@ M2.5  JD Intelligence Agent + 报告 hardening                   current
 
 JobCopilot is a local-first AI job-preparation workspace for CS learners and developers.
 
-It helps you collect job descriptions over time, turn them into requirement maps and learning paths, then practice those topics with a note-grounded RAG interview coach.
+It helps you collect job descriptions over time, turn them into requirement maps, knowledge-coverage matrices, and learning paths, then practice those topics with a note-grounded RAG interview coach.
 
-The current active milestone is **M2.5: JD Intelligence Agent and report hardening**. The project is intentionally single-user and local-first, with manual validation gates and a clear non-goal list around resume generation, application tracking, SR dashboards, and SaaS expansion.
+The core workflow is implemented and currently in closeout/dogfood mode. The project is intentionally single-user and local-first, with manual validation gates and a clear non-goal list around resume generation, application tracking, SR dashboards, and SaaS expansion.
