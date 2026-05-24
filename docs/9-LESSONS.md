@@ -421,6 +421,16 @@ purpose: 项目从 M0 骨架到 M3 W8 期间真实遇到的工程问题 + 根因
 
 **教训**:批量调用是**可以倒车的**(单样本 dry-run 不过就停)、**不可以盲冲的**(全量跑炸 30 条不仅烧钱还污染 cache)。**模型 ID / Provider / Prompt 三件事任何一件靠记忆推断不靠 dry-run 校验**,都是踩坑入口。
 
+## 8.13 README 演示截图要用稳定数据源和 2x 截图,并避开 dev overlay
+
+README 演示截图是公开门面资产,不要直接拿低分辨率浏览器截图凑数。当前约定是用 `1280x720` 视口 + `deviceScaleFactor=2` 生成 `2560x1440` PNG,保持 README 展示比例不变,同时给 GitHub 缩放留足清晰度。
+
+本次重截 README 8 张图时,真实 API / DB / LLM 不需要参与。更稳的做法是开一个临时 mock API,只返回截图所需的 JD / 报告 / 笔记数据,再用本仓库前端页面生成截图。这样不会污染本地 DB,也不会把外部 provider 状态带进公开截图。
+
+注意 Next dev server 会把错误浮层注入 `nextjs-portal`;如果用 dev server 截图,截图前要隐藏 / 移除 `nextjs-portal`、`[data-nextjs-dialog-overlay]`、`[data-nextjs-toast]`,否则左下角红色 dev error 会混进 README 图片。更稳的替代方案是用生产 build 预览,但只有用户明确要求跑 build 时再做。
+
+**教训**:公开截图的关键不是"页面能打开",而是数据稳定、分辨率足够、没有开发浮层和本地脏状态。截图资产更新后至少确认 `sips -g pixelWidth -g pixelHeight docs/assets/screenshots/*.png` 全部为 `2560x1440`,再做一次人工视觉扫图。
+
 ---
 
 # 9. 困难复盘与面试故事素材

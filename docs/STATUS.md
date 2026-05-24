@@ -1,7 +1,7 @@
 ---
 title: JobCopilot 项目当前进度(单一可信源)
 owner: lemma42796
-last_updated: 2026-05-23
+last_updated: 2026-05-24
 purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指向其他文档。
 ---
 
@@ -26,6 +26,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **M2.5 第二刀代码已落地**:`/api/jd-analyses` 不再是 placeholder。现在会解析 `all/title/ids/recent` filter → 创建 `jd_analyses(in_progress)` → 读取 `jds.parsed_payload` → 调 `jd_aggregator` 做 batch reduce / merge / Python 频次重算 / 学习路径 → 做知识库覆盖匹配 → 生成 quiz topic 候选 → 写报告 `done`;失败会标 `failed` 并 SSE 返回 `error + done(false)`。
 - **`/jds` 前端已接一键分析与报告查看**:左侧工作台包含上传、分析范围、JD 列表、历史报告;右侧只展示当前 JD 详情或分析报告,已从原先拥挤三列改成两列。报告详情展示岗位要求地图、学习路径、quiz topics,topic 可跳到 `/quiz?topic=...`。
 - **M2.5 报告打磨已快速收口**:`/jds` 报告详情支持 requirement 类别筛选 + 短语搜索、quiz topic 优先级筛选、当前筛选 topic 前 5 个批量进入 `/quiz`;JD 文本粘贴框支持复制格式清洗和疑似重复提示。
+- **README 演示截图已刷新为高清资产**:`docs/assets/screenshots/` 下 8 张 README 引用 PNG 已从 `1280x720` 重截为 `2560x1440`(2x device scale),README 路径不变;截图用临时 mock API + 本仓库前端页面生成,未改产品代码。
 - **M2.5 30 条合成 JD 真实报告已跑通**:当前本地 DB 有 30 条活跃 JD,其中 28 条标记 `extras.source=synthetic_bulk_m2_5_30`;`analysis#6(done)` 用 raw-JD 技术栈抽取 prompt 跑通真实外部 LLM,输出 45 个技术要求、12 个 quiz topics、tokens in/out `9336/4518`、成本 `0.043733 CNY`。用户已在浏览器看 `/jds`,历史报告在左侧底部"历史报告"里点 `报告 #6`。
 - **`jd_aggregator` prompt 已从 raw requirement 搬运改为 raw JD 技术栈抽取**:旧方案把 30 条 JD 拆成 619 个 raw items,曾造成 `analysis#3/#4` timeout 与 `analysis#5` schema 截断;新方案直接附 30 条 JD 原文,只要求输出至少涉及 2 个 JD 的具体技术点(如 `Python 编程语言`、`MySQL`、`FastAPI`),最多 40 项,并标注 `supporting_jd_ids`。本轮为了跑通真实报告,reduce/merge timeout 提到 120s,learning path 提到 90s。
 - **JD-to-Knowledge 覆盖分析 MVP 已落地**:`note_match_summary` 从粗 `matched_note_ids` 升级为覆盖矩阵:每个 requirement 输出 `covered / partial / missing / unknown`、`coverage_score`、命中短语、证据 chunk snippet 和匹配笔记;`/jds` 报告页展示覆盖统计、缺口与证据。
@@ -37,7 +38,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 - **本轮产品决策已锁定**:M2.5 不恢复大而全的 `jd_aggregator` 自动化 eval runner,但保留 `jd_coverage` 最小指标脚本,用于给简历上的"知识库覆盖分析"提供可追溯量化证据。后续质量判断仍以用户手动 dogfood 为主。
 - **本轮 RAG 边界已锁定**:真实规模最多约 50 条同质 JD,JD 分析本体不做 RAG 化;一键分析继续走"已选 parsed JD → LLM 同义合并 → Python 频次重算 → 覆盖矩阵 → 学习路径 / topic"。RAG 只在 topic 进入 `/quiz` 后发生;`match_notes` 只做 evidence-bound 覆盖判断,不是检索增强生成。
 - **JD 截图链路已砍**:当前工作区和 git 历史没有 JD 截图原图;旧 commit `6825e6b` 只保留 OCR 文本样本。后续 M2.5 不再接截图 OCR,JD 输入只保留文本粘贴。
-- **本轮验证边界**:按用户明确指令跑了 `eval_jd_coverage.py` 最小覆盖评测;仍未主动跑 pytest / mypy / ruff / pnpm typecheck / pnpm build / Playwright,也未截图。新会话不要假设 dev server 仍在。
+- **本轮验证边界**:按用户明确指令跑过 `eval_jd_coverage.py` 最小覆盖评测;本次仅为 README 生成 2x 演示截图并做尺寸 / 视觉核对。仍未主动跑 pytest / mypy / ruff / pnpm typecheck / pnpm build / Playwright。新会话不要假设 dev server 仍在。
 - **M2.1 已由用户确认收口**:收口 tag 为 `v0.5-m2.1-end`;下一阶段切到 M2.5。
 - **后续路线已收束**:M2.5 之后不再规划 SR / 弱点 dashboard / 岗位类三源出题 / 简历诊断 / 简历上传 / 截图 OCR 等分支;唯一生产力主线改为 `JDAnalysisAgent` 自动编排解析 / 聚合 / 去重 / 频次重算 / 知识库覆盖 / 学习路径 / 报告保存。
 - **本轮 pivot 文档已同步**:`docs/1-PRD.md` / `docs/2-TECH_DESIGN.md` / `docs/3-DATA_MODEL.md` / `docs/4-API_SPEC.md` / `docs/5-AGENT_DESIGN.md` / `docs/6-EVAL_PLAN.md` / `docs/7-ROADMAP.md` / `docs/8-ENGINEERING.md` / `docs/9-LESSONS.md` 均已从旧后续路线改为 JD Intelligence Agent;新会话从本文档和 Roadmap 接续即可。
@@ -114,7 +115,7 @@ purpose: 跨会话续作的短状态快照。只放接力必要信息,细节指�
 
 等待用户指示再开工。推荐下一刀:
 
-1. **M2.5 收口确认**:用户手动看 `/jds` → `报告 #6` 的"优先补齐"清单是否符合直觉;若 OK,下一步只做保存 / commit / push。M2.5 不再新增大功能。
+1. **M2.5 收口确认**:用户手动看 GitHub README 的 8 张高清演示截图,以及 `/jds` → `报告 #6` 的"优先补齐"清单是否符合直觉。M2.5 不再新增大功能。
 
 备选:
 
