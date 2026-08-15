@@ -1,4 +1,4 @@
-"""Quiz REST + SSE 端点(M2,4-API_SPEC §4.1 / §4.6)。
+"""Quiz REST + SSE 端点(M2,OpenAPI / Pydantic schemas)。
 
 router 自身 prefix `/quiz`;main.py include 时挂 `/api` 前缀,实际端点路径
 = `/api/quiz/*`。当前实现 M2 出题、答题草稿、提交评分、放弃会话端点。
@@ -38,13 +38,13 @@ QUERY_MAX_LENGTH = 200
     summary="聊天框 query 出题(SSE)",
 )
 async def create_session(payload: QuizSessionCreateIn) -> EventSourceResponse:
-    """4-API_SPEC §4.1。
+    """OpenAPI / Pydantic schemas。
 
     入参 `{query, mode, question_count, jd_ids?}`,SSE 流见 §4.6:
     started → progress(query_rewriting / hybrid / rerank / context_selecting /
     generating / type_mix_decided)→ question_ready × N → done。
     """
-    # 4-API_SPEC §4.1 错误码(M2 阶段):
+    # OpenAPI / Pydantic schemas 错误码(M2 阶段):
     if payload.mode in ("job", "auto"):
         raise ModeNotImplementedError(
             f"M2 阶段仅支持 mode=topic;mode={payload.mode!r} 在 M3 启用"

@@ -1,4 +1,4 @@
-"""ResumeAdvisor IO schema(5-AGENT_DESIGN §7.1 + 3-DATA_MODEL §6.10)。"""
+"""ResumeAdvisor IO schema(docs/TECH_DESIGN.md + SQLAlchemy models / Pydantic schemas)。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from jobcopilot_api.schemas.agents.jd_aggregator import Requirement
 
 
 class ResumeChunk(BaseModel):
-    """简历段落 — 来自 resumes.parsed_chunks(3-DATA_MODEL §6.9)。"""
+    """简历段落 — 来自 resumes.parsed_chunks(SQLAlchemy models / Pydantic schemas)。"""
 
     position: str  # "§3" / "§4 项目经历 / 项目 A"
     type: Literal[

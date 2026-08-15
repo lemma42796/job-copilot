@@ -1,6 +1,6 @@
 """Embedder 批量调用(M1)— 走百炼 text-embedding-v4。
 
-config(5-AGENT_DESIGN §2.1):
+config(docs/TECH_DESIGN.md):
 - model: text-embedding-v4(1024 维)
 - thinking: N/A(非聊天模型,不走 prompt)
 - 不走 prompt_versions 表

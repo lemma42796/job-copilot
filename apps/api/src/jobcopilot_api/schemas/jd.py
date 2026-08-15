@@ -1,4 +1,4 @@
-"""JD 库 + 一键分析 REST IO schema(M2.5,4-API_SPEC §6)。"""
+"""JD 库 + 一键分析 REST IO schema(M2.5,OpenAPI / Pydantic schemas)。"""
 
 from __future__ import annotations
 

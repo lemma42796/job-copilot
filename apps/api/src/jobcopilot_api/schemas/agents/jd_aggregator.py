@@ -1,4 +1,4 @@
-"""JdAggregator IO schema(5-AGENT_DESIGN §6.1 + 3-DATA_MODEL §6.7)。"""
+"""JdAggregator IO schema(docs/TECH_DESIGN.md + SQLAlchemy models / Pydantic schemas)。"""
 
 from __future__ import annotations
 

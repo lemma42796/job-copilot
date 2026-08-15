@@ -1,6 +1,6 @@
 """QueryRewriter service — retrieval pipeline 第一段(M2)。
 
-5-AGENT_DESIGN §2.7:把用户聊天框短 query 扩成同义/相邻概念集,提高全库
+docs/TECH_DESIGN.md:把用户聊天框短 query 扩成同义/相邻概念集,提高全库
 hybrid search 召回。失败回退原 query 不阻塞(rerank / hybrid 也会贡献结果,
 不让一段 LLM 失败把整个 retrieval 链断掉)。
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 PROMPT_NAME = "query_rewriter"
 PROMPT_VERSION = "v2.0"  # v2.0:Query Understanding + weighted queries
 
-# 5-AGENT §2.7.2 — 改一次 bump version,不直接改字面量(沿用 v1 LESSONS §8.2)
+# docs/TECH_DESIGN.md — 改一次 bump version,不直接改字面量(沿用 v1 LESSONS §8.2)
 SYSTEM_PROMPT = """你是 RAG 检索 Query Understanding Agent。任务:理解用户 query,抽取核心约束,并生成少量可加权的检索 query,用于笔记库 hybrid search。
 
 【硬约束】
@@ -95,7 +95,7 @@ async def rewrite_query(
     try:
         result = await client.complete(
             feature=PROMPT_NAME,
-            tier=Tier.CHEAP,  # 5-AGENT §2.1 thinking off
+            tier=Tier.CHEAP,  # docs/TECH_DESIGN.md thinking off
             system=SYSTEM_PROMPT,
             user=USER_TEMPLATE.format(user_query=user_query),
             response_schema=QueryRewriteOutput,

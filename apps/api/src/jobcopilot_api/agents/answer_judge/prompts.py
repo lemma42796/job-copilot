@@ -1,4 +1,4 @@
-"""AnswerJudge prompts — `answer_judge` v1.4(5-AGENT_DESIGN §4.3 / §4.4)。"""
+"""AnswerJudge prompts — `answer_judge` v1.4(docs/TECH_DESIGN.md)。"""
 
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ def render_user(
     chunks: list[QuizGenChunkInput],
     user_answer: str,
 ) -> str:
-    """5-AGENT §4.4 USER 模板。
+    """docs/TECH_DESIGN.md USER 模板。
 
     chunks 用 [N] 编号(1-based),与 question.evidence_chunk_ids /
     scoring_points.supporting_chunk_ids 使用同一套局部编号。

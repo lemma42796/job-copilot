@@ -1,4 +1,4 @@
-"""JD REST + SSE 端点(M2.5,4-API_SPEC §6)。
+"""JD REST + SSE 端点(M2.5,OpenAPI / Pydantic schemas)。
 
 router 自身 prefix `/jds` / `/jd-analyses`;main.py include 时挂 `/api`,
 实际路径为 `/api/jds*` 和 `/api/jd-analyses*`。

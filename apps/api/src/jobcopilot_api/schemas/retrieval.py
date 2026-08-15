@@ -1,6 +1,6 @@
 """Retrieval pipeline 输出 schema(M2)。
 
-5-AGENT_DESIGN §3.1 FinalContextChunk + §2.7 PipelineResult — pipeline 把
+docs/TECH_DESIGN.md FinalContextChunk + §2.7 PipelineResult — pipeline 把
 query_rewrite → multi-query hybrid → RRF → rerank/blend → clean-context
 selection 编排成最终 seed chunk 集合(每个 chunk 含 heading_path /
 note_title / rerank_score 元数据,直接喂 quiz_generator USER 段)。

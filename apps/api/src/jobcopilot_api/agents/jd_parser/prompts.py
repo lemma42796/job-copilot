@@ -1,4 +1,4 @@
-"""JdParser prompts — `jd_parser` v1.0(5-AGENT_DESIGN §5.2)。"""
+"""JdParser prompts — `jd_parser` v1.0(docs/TECH_DESIGN.md)。"""
 
 from __future__ import annotations
 

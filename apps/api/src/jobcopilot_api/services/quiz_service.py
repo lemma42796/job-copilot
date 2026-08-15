@@ -1,4 +1,4 @@
-"""出题编排 service(M2,4-API_SPEC §4.1 / §4.6)。
+"""出题编排 service(M2,OpenAPI / Pydantic schemas)。
 
 职责:
 - POST /api/quiz/sessions(SSE)入口
@@ -100,7 +100,7 @@ _EVIDENCE_STOPWORDS = {
 class IntegrityCheckError(JobCopilotError):
     """quiz_generator 输出过 LLMClient pydantic 校验,但完整性约束失败
     (reference_answer_chunk_ids / weight / type_mix 等);上报 SSE 时映射到
-    `llm_call_failed`(4-API_SPEC §4.1 错误码列表)。"""
+    `llm_call_failed`(OpenAPI / Pydantic schemas 错误码列表)。"""
 
     status_code = 502
     code = "llm_call_failed"
@@ -114,7 +114,7 @@ async def start_session_sse(
     sessionmaker: async_sessionmaker[AsyncSession],
     payload: QuizSessionCreateIn,
 ) -> AsyncIterator[dict[str, Any]]:
-    """SSE 事件流(4-API_SPEC §4.1 / §4.6)。
+    """SSE 事件流(OpenAPI / Pydantic schemas)。
 
     yield dict 形态 `{"event": "<name>", "data": "<json string>"}`
     给 EventSourceResponse 直接转发。

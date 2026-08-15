@@ -1,4 +1,4 @@
-"""简历 + 诊断 REST IO schema(M3,4-API_SPEC §7)。"""
+"""简历 + 诊断 REST IO schema(M3,OpenAPI / Pydantic schemas)。"""
 
 from __future__ import annotations
 

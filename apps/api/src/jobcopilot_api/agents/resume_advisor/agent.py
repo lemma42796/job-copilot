@@ -1,6 +1,6 @@
 """ResumeAdvisor 编排(M3)— JD 通用要求 vs 简历段落,两方锚点严格。
 
-config(5-AGENT_DESIGN §2.1 / §2.2 / §7):
+config(docs/TECH_DESIGN.md):
 - model: qwen3.6-flash
 - thinking: on(综合 JD 通用要求 + 简历段落判断)
 - temperature: 0.2

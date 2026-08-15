@@ -1,6 +1,6 @@
 """QuizGenerator 编排(M2)。
 
-config(5-AGENT_DESIGN §2.1 / §2.2 / §3):
+config(docs/TECH_DESIGN.md):
 - model: qwen3.6-flash(Tier.CHEAP)
 - thinking: off(出题靠 chunks 内容重组,不需复杂推理)
 - temperature: 0.3(降随机性,要稳定结构)
@@ -35,7 +35,7 @@ from jobcopilot_api.schemas.agents.quiz_generator import (
     QuizGenOutput,
 )
 
-TEMPERATURE = 0.3  # 5-AGENT §2.2
+TEMPERATURE = 0.3  # docs/TECH_DESIGN.md
 
 
 async def run(

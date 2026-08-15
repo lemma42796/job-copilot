@@ -1,4 +1,4 @@
-"""答题会话 REST + SSE IO schema(M2,4-API_SPEC §4)。"""
+"""答题会话 REST + SSE IO schema(M2,OpenAPI / Pydantic schemas)。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ QuizMode = Literal["topic", "job", "auto"]
 
 
 class QuizSessionCreateIn(BaseModel):
-    """POST /api/quiz/sessions 请求 body(4-API_SPEC §4.1)。
+    """POST /api/quiz/sessions 请求 body(OpenAPI / Pydantic schemas)。
 
     M2 仅 mode=topic 可用;router 层把 mode=job/auto 拦截成
     422 mode_not_implemented(M3 启用)。query 长度上限 200(超限 422
@@ -46,10 +46,10 @@ class QuizSessionOut(BaseModel):
 
 
 class QuestionReadyOut(BaseModel):
-    """SSE event=question_ready 的 data payload(4-API_SPEC §4.1)。
+    """SSE event=question_ready 的 data payload(OpenAPI / Pydantic schemas)。
 
     答题阶段前端拿不到 reference_answer / scoring_points(active recall
-    强约束,防作弊)— 见 4-API_SPEC §4.2 的"重要"备注。
+    强约束,防作弊)— 见 OpenAPI / Pydantic schemas 的"重要"备注。
     """
 
     order_index: int

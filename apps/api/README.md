@@ -1,6 +1,6 @@
 # jobcopilot-api
 
-FastAPI backend. See `docs/2-TECH_DESIGN.md` for architecture.
+FastAPI backend. See `docs/TECH_DESIGN.md` for architecture.
 
 ## Local dev
 

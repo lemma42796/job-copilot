@@ -1,6 +1,6 @@
 """JdParser 编排(M2.5)— JD 上传时立即调一次。
 
-config(5-AGENT_DESIGN §2.1 / §2.2):
+config(docs/TECH_DESIGN.md):
 - model: qwen3.6-flash
 - thinking: off
 - temperature: 0.3
@@ -19,7 +19,7 @@ from jobcopilot_api.llm.client import LLMClient, LLMResult
 from jobcopilot_api.llm.tiers import Tier
 from jobcopilot_api.schemas.agents.jd_parser import JdParseInput, JdParseOutput
 
-TEMPERATURE = 0.3  # 5-AGENT §2.2
+TEMPERATURE = 0.3  # docs/TECH_DESIGN.md
 
 
 async def run(

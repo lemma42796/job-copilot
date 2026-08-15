@@ -1,4 +1,4 @@
-"""笔记 REST IO schema(M1,4-API_SPEC §3)。"""
+"""笔记 REST IO schema(M1,OpenAPI / Pydantic schemas)。"""
 
 from __future__ import annotations
 

@@ -1,10 +1,10 @@
-"""Notes REST 端点(M1,4-API_SPEC §3)。
+"""Notes REST 端点(M1,OpenAPI / Pydantic schemas)。
 
 router 自身 prefix `/notes`;main.py include 时挂 `/api` 前缀,实际
 端点路径 = `/api/notes/*`。所有端点 application/json。
 
 错误统一抛 JobCopilotError 子类(notes_service 顶部定义),全局
-exception handler 转 RFC 7807 problem+json(2-TECH §7)。
+exception handler 转 RFC 7807 problem+json(docs/TECH_DESIGN.md)。
 
 session.commit() 写在 router 层 — service 只 flush(进 SQL 确保唯一约束
 能即时校验出 IntegrityError),commit 由路由收尾。infra/db.get_session

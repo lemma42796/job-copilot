@@ -1,4 +1,4 @@
-"""QueryRewriter IO schema(5-AGENT_DESIGN §2.7.1)。"""
+"""QueryRewriter IO schema(docs/TECH_DESIGN.md)。"""
 
 from __future__ import annotations
 

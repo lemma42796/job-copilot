@@ -1,4 +1,4 @@
-"""Dashboard REST IO schema(M3,4-API_SPEC §5)。"""
+"""Dashboard REST IO schema(M3,OpenAPI / Pydantic schemas)。"""
 
 from __future__ import annotations
 

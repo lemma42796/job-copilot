@@ -1,4 +1,4 @@
-"""QuizGenerator IO schema(5-AGENT_DESIGN §3.1 / §3.2)。"""
+"""QuizGenerator IO schema(docs/TECH_DESIGN.md)。"""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ class QuizGenChunkInput(BaseModel):
 
 
 class ScoringPoint(BaseModel):
-    """questions.scoring_points JSONB(3-DATA_MODEL §6.1)。"""
+    """questions.scoring_points JSONB(SQLAlchemy models / Pydantic schemas)。"""
 
     id: str  # "p1", "p2"...
     text: str

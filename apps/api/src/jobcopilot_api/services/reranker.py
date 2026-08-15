@@ -18,7 +18,7 @@
   patch — 这里直接 httpx + 手动 generation 包;无 Langfuse key 时不构造
   SDK client,避免 CLI 评测脚本退出时被 noop background thread 拖住。
 - **失败回退**:不抛错,降级为 hybrid 顺序前 top_k(rerank_score=0.0),
-  trace 打 warning(5-AGENT §2.7.5)
+  trace 打 warning(docs/TECH_DESIGN.md)
 - **relevance_score 不可跨请求比较**:仅本次请求内相对值,不存 DB,
   只在 pipeline 内部排序使用(memory §4)
 

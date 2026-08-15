@@ -1,10 +1,10 @@
-"""AnswerJudge 总分计算 — Python SSoT(5-AGENT_DESIGN §4.5)。
+"""AnswerJudge 总分计算 — Python SSoT(docs/TECH_DESIGN.md)。
 
 LLM 不算分,Python 算分。权重常量 SSoT 在本文件:
 - coverage 0.5 / fidelity 0.4 / depth 0.1
 - fabricated > 30% 锁顶 50
 
-阈值依据见 5-AGENT_DESIGN §4.5。dogfood 后调整只改 0.3 / 50.0 两常数,
+阈值依据见 docs/TECH_DESIGN.md。dogfood 后调整只改 0.3 / 50.0 两常数,
 不要 bump prompt(算分位置在 Python,不在 LLM)。
 """
 

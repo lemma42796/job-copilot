@@ -1,6 +1,6 @@
 """AnswerJudge 编排(M2)。
 
-config(5-AGENT_DESIGN §2.1 / §2.2):
+config(docs/TECH_DESIGN.md):
 - model: qwen3.6-flash
 - thinking: off(M2 dogfood:thinking on 在 AnswerJudge 长 prompt 下不收尾)
 - temperature: 0.2
@@ -61,7 +61,7 @@ from jobcopilot_api.services.retrieval_pipeline import fetch_note_titles
 from jobcopilot_api.services.search_service import global_hybrid_search
 from jobcopilot_api.settings import settings
 
-TEMPERATURE = 0.2  # 5-AGENT §2.2
+TEMPERATURE = 0.2  # docs/TECH_DESIGN.md
 TOOL_MAX_CALLS = 5
 MAX_JUDGE_ROUNDS = TOOL_MAX_CALLS * 2 + 4
 TOOL_REF_ID_START = 1000

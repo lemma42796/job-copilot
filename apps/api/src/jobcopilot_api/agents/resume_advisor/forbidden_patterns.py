@@ -1,4 +1,4 @@
-"""ResumeAdvisor 替写文案漏洞检测正则集(5-AGENT_DESIGN §7.3)。
+"""ResumeAdvisor 替写文案漏洞检测正则集(docs/TECH_DESIGN.md)。
 
 LLM 越界写"建议改写为 'XXX'"时 service 层强制重试 / 截断。
 dogfood 中持续累积模式。

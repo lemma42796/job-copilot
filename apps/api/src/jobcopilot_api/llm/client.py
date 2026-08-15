@@ -70,7 +70,7 @@ class ProviderRequest:
     thinking_mode: bool
     timeout_s: float
     max_tokens: int = 4096
-    temperature: float | None = None  # 5-AGENT §2.2:agent 显式传不依赖默认
+    temperature: float | None = None  # docs/TECH_DESIGN.md:agent 显式传不依赖默认
     messages: list[ChatMessage] | None = None
 
 

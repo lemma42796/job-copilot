@@ -1,4 +1,4 @@
-"""SSE 事件统一 schema(4-API_SPEC §2.3)。
+"""SSE 事件统一 schema(OpenAPI / Pydantic schemas)。
 
 通用事件序列(每个 SSE 端点都遵守):
 - started:资源 INSERT 完拿到 id 后立即推

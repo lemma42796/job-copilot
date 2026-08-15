@@ -10,7 +10,7 @@
 token 估算不引外部 tokenizer 库:CJK char ≈ 1 token,ASCII char ≈ 1/4 token。
 偏多估算(留余量),qwen 实际 tokenizer 跑出来一般略低,不影响"超阈值才拆"决策。
 
-数据流(2-TECH §5.1):chunker 只切 chunks + 落 content + content_tsv,
+数据流(docs/TECH_DESIGN.md):chunker 只切 chunks + 落 content + content_tsv,
 embedding 留 NULL;workers/embed_worker 异步补 embedding。
 """
 
@@ -270,7 +270,7 @@ async def get_chunks_for_node(
     heading_path: list[str] | None,
     limit: int = 30,
 ) -> list[NoteChunk]:
-    """节点 prefix 命中 chunks(5-AGENT §3.1 出题前剪枝)。
+    """节点 prefix 命中 chunks(docs/TECH_DESIGN.md 出题前剪枝)。
 
     folder_path / heading_path 都按"前缀匹配":chunks 的 folder_path 必须以
     入参 folder_path 开头(数组切片对比);heading_path 同。

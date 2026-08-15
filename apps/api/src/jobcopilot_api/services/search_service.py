@@ -1,10 +1,10 @@
 """Hybrid search(M1,沿用 v1 风格 — 向量 + lexical 双路 + RRF 融合)。
 
-职责(2-TECH §4.1):
+职责(docs/TECH_DESIGN.md):
 - hybrid_search_in_node:节点 prefix 限定的 hybrid search,被 chunk_service /
   quiz_service 用作出题前剪枝(超 30 chunks 时取语义 Top-30)
 - global_hybrid_search:跨用户全部笔记的 hybrid search,
-  暴露给 AnswerJudge 的 lookup_in_notes_global tool(5-AGENT §4.7,M2)
+  暴露给 AnswerJudge 的 lookup_in_notes_global tool(docs/TECH_DESIGN.md,M2)
 
 底层:
 - vector 路 — pgvector cosine_distance + HNSW(ix_note_chunks_embedding_hnsw)
@@ -68,7 +68,7 @@ async def hybrid_search_in_node(
     3. RRF 融合 + 去重 + 截 top_k
     4. lex query 为空(query 短到无 token)→ 优雅降级到纯向量
 
-    必须过滤 WHERE embedding IS NOT NULL(2-TECH §5.5,worker 异步算 embedding,
+    必须过滤 WHERE embedding IS NOT NULL(docs/TECH_DESIGN.md,worker 异步算 embedding,
     未算完的 chunk 不参与召回);folder_path / heading_path prefix 切片对比。
     """
     return await _hybrid_search(

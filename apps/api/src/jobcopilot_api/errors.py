@@ -2,7 +2,7 @@
 
 Subclass `JobCopilotError`, set `status_code` / `code` / `title`. The
 exception handler installed by `install_exception_handlers` converts every
-unhandled exception into a Problem+JSON body matching 4-API_SPEC §3.
+unhandled exception into a Problem+JSON body matching OpenAPI / Pydantic schemas
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ class NoChunksForQueryError(JobCopilotError):
 
 
 class ModeNotImplementedError(JobCopilotError):
-    """4-API_SPEC §4.1:M2 阶段传 mode=job / mode=auto 返 422。"""
+    """OpenAPI / Pydantic schemas:M2 阶段传 mode=job / mode=auto 返 422。"""
 
     status_code = 422
     code = "mode_not_implemented"
@@ -74,7 +74,7 @@ class ModeNotImplementedError(JobCopilotError):
 
 
 class QueryRequiredError(JobCopilotError):
-    """4-API_SPEC §4.1:mode=topic 但 query 为空。"""
+    """OpenAPI / Pydantic schemas:mode=topic 但 query 为空。"""
 
     status_code = 422
     code = "query_required"
@@ -82,7 +82,7 @@ class QueryRequiredError(JobCopilotError):
 
 
 class QueryTooLongError(JobCopilotError):
-    """4-API_SPEC §4.1:query 超过 200 字符。"""
+    """OpenAPI / Pydantic schemas:query 超过 200 字符。"""
 
     status_code = 422
     code = "query_too_long"

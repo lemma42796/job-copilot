@@ -17,7 +17,7 @@ from jobcopilot_api.settings import settings
 # 这里把字段镜像到 os.environ 让 langfuse.openai 自动读取。
 # **必须在 routers / agents / llm 这些会 import langfuse.openai 的模块之前执行**:
 # langfuse.openai 在 import 时读环境变量,读不到 PUBLIC_KEY 就进 noop 模式,trace 不进。
-# public_key 留空 → SDK 走 noop(8-ENGINEERING §11.3)。
+# public_key 留空 → SDK 走 noop(README / AGENTS.md)。
 if settings.langfuse_public_key:
     os.environ.setdefault(
         "LANGFUSE_HOST", settings.langfuse_host or "http://localhost:3001"
@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.prompt_versions = await load_prompt_versions(get_sessionmaker())
 
     # 后台 embed worker — 笔记入库时 embedding 留 NULL,worker 异步补
-    # (2-TECH_DESIGN §4.3 / §5.5)。stop_event 让 shutdown 干净退出。
+    # (docs/TECH_DESIGN.md)。stop_event 让 shutdown 干净退出。
     stop_event = asyncio.Event()
     worker_task = asyncio.create_task(
         embed_worker.run_forever(stop_event), name="embed_worker"
@@ -86,7 +86,7 @@ def create_app() -> FastAPI:
     install_exception_handlers(app)
 
     # health 暂留 /v1(docker/api.Dockerfile healthcheck 引用 /v1/health,
-    # 切换到 /api 是单独切片,避免 M1 改部署链路)。新业务模块按 4-API_SPEC §2.1
+    # 切换到 /api 是单独切片,避免 M1 改部署链路)。新业务模块按 OpenAPI / Pydantic schemas
     # 统一挂 /api。
     app.include_router(health.router, prefix="/v1")
     app.include_router(notes.router, prefix="/api")

@@ -1,4 +1,4 @@
-"""AnswerJudge IO schema(5-AGENT_DESIGN §4.1 / §4.2 + 3-DATA_MODEL §6.2-§6.4)。"""
+"""AnswerJudge IO schema(docs/TECH_DESIGN.md + SQLAlchemy models / Pydantic schemas§6.4)。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""JdAggregator 频次重算 — Python SSoT(5-AGENT_DESIGN §6.2 Stage 3)。
+"""JdAggregator 频次重算 — Python SSoT(docs/TECH_DESIGN.md Stage 3)。
 
 不信 LLM 算术,自己 group by canonical 数 supporting jd。落地时:
 

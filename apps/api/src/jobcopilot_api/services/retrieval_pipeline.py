@@ -1,6 +1,6 @@
 """Retrieval pipeline 编排(M2)— 全库 RAG 主战场。
 
-5-AGENT_DESIGN §2.7 流程:
+docs/TECH_DESIGN.md 流程:
 
     用户 query
       ↓ query_rewriter (LLM,失败回退原 query)

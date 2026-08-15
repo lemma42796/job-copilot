@@ -2,7 +2,7 @@
 
 > 本地优先的 AI 求职准备工作台:把目标岗位 JD 累积成岗位要求地图和学习路径,再用自己的 Markdown 笔记做 RAG 面试陪练。
 
-[![Status](https://img.shields.io/badge/status-M2.5%20JD%20Intelligence-yellow)](docs/7-ROADMAP.md)
+[![Status](https://img.shields.io/badge/status-M2.6%20planned-lightgrey)](docs/STATUS.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Stack](https://img.shields.io/badge/stack-FastAPI%20%2B%20Next.js%20%2B%20Postgres-2f6fef)](#技术栈)
 [![LLM](https://img.shields.io/badge/LLM-Qwen%20%40%20DashScope-1f7ae0)](#配置)
@@ -223,7 +223,7 @@ Caddy:    http://localhost
 | `POST /api/jd-analyses` | 通过 SSE 运行 JD 一键分析 |
 | `GET /api/jd-analyses/{id}` | 读取已保存的 JD 分析报告 |
 
-完整请求/响应契约见 [`docs/4-API_SPEC.md`](docs/4-API_SPEC.md)。
+完整请求/响应契约以开发环境 `/v1/docs` 和 `/v1/openapi.json` 为准;跨接口约束见 [`docs/TECH_DESIGN.md`](docs/TECH_DESIGN.md)。
 
 ## 架构
 
@@ -310,19 +310,20 @@ pnpm typecheck
 pnpm build
 ```
 
-评测设计见 [`docs/6-EVAL_PLAN.md`](docs/6-EVAL_PLAN.md)。M2.5 JD 报告质量当前走手动 dogfood,不新增 `jd_aggregator` 自动化评测主线。
+评测规范和组件证据见 [`evals/EVAL_GUIDE.md`](evals/EVAL_GUIDE.md)。
 
-## 路线图
+## 项目状态
 
 ```text
 M0    仓库改造 + v2 文档重写                                  done
 M1    Markdown 笔记入库 + chunking + 树形导航 + Langfuse 起步   done
 M2    主题 query -> RAG -> 出题 -> LLM-as-Judge                 done
 M2.1  InterviewCoachAgent 状态机 + 多轮纠偏                    done
-M2.5  JD Intelligence Agent + 知识库覆盖分析                   closeout
+M2.5  JD Intelligence Agent + 知识库覆盖分析                   stopped at current scope
+M2.6  JD 长任务持久化 + 并发/背压 + 断线恢复                   planned, not started
 ```
 
-后续不再规划 SR、弱点 dashboard、岗位类三源出题、简历上传、简历诊断或简历改写。持续生产力主线收束到 JD Intelligence。
+M2.5 不再追加可选打磨。后续不再规划 SR、弱点 dashboard、岗位类三源出题、简历上传、简历诊断或简历改写;M2.6 只加固现有 JD 长任务链路,不改变产品边界。
 
 ## 限制与非目标
 
@@ -336,16 +337,10 @@ M2.5  JD Intelligence Agent + 知识库覆盖分析                   closeout
 
 | 文档 | 用途 |
 |------|------|
-| [`docs/STATUS.md`](docs/STATUS.md) | 当前短接力页和已锁定决策 |
-| [`docs/1-PRD.md`](docs/1-PRD.md) | 产品定位、用户故事、范围边界 |
-| [`docs/2-TECH_DESIGN.md`](docs/2-TECH_DESIGN.md) | 架构、模块边界、数据流、可观测 |
-| [`docs/3-DATA_MODEL.md`](docs/3-DATA_MODEL.md) | 表结构、JSONB schema、迁移边界 |
-| [`docs/4-API_SPEC.md`](docs/4-API_SPEC.md) | REST 和 SSE API 契约 |
-| [`docs/5-AGENT_DESIGN.md`](docs/5-AGENT_DESIGN.md) | Agent prompt、输出契约、M2.1/M2.5 编排 |
-| [`docs/6-EVAL_PLAN.md`](docs/6-EVAL_PLAN.md) | 评测套件与手动 dogfood 口径 |
-| [`docs/7-ROADMAP.md`](docs/7-ROADMAP.md) | 里程碑、退出标准、非目标 |
-| [`docs/8-ENGINEERING.md`](docs/8-ENGINEERING.md) | 工程规范、本地开发、CI 策略 |
-| [`docs/9-LESSONS.md`](docs/9-LESSONS.md) | v1/v2 踩坑与产品反思 |
+| [`docs/STATUS.md`](docs/STATUS.md) | 项目已经实现、已经验证的最新状态 |
+| [`docs/TASKS.md`](docs/TASKS.md) | 当前任务和仍计划执行的未完成任务 |
+| [`docs/TECH_DESIGN.md`](docs/TECH_DESIGN.md) | 技术架构、模块边界、数据流和稳定约束 |
+| [`evals/EVAL_GUIDE.md`](evals/EVAL_GUIDE.md) | 评测通用规范及各组件评测入口 |
 
 ## 贡献
 

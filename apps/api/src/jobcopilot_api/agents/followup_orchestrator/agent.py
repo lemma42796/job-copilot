@@ -1,6 +1,6 @@
 """FollowupOrchestrator 编排(M3)— LangGraph state 机。
 
-config(5-AGENT_DESIGN §2.1 / §8):
+config(docs/TECH_DESIGN.md):
 - model: qwen3.6-flash
 - thinking: on(多轮 reasoning 必需)
 - temperature: 0.2

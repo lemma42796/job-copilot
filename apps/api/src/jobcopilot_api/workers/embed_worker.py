@@ -1,12 +1,12 @@
 """Embed worker — 后台轮询 embedding=NULL 的 note_chunks 批量算(M1)。
 
-数据流(2-TECH_DESIGN §5.5):
+数据流(docs/TECH_DESIGN.md):
 1. 笔记入库时 chunk_service 只切 chunks + 落 content / content_tsv,embedding 留 NULL
 2. 本 worker 周期性扫 note_chunks WHERE embedding IS NULL ORDER BY id LIMIT BATCH_SIZE
 3. 调 agents/embedder.embed_batch(content_list) 拿 1024 维 vector list
 4. UPDATE note_chunks SET embedding / embed_model / embed_version 同事务
 
-启动 / 关停由 main.py lifespan 钩子负责(2-TECH §4.3)。worker 不直接走 router。
+启动 / 关停由 main.py lifespan 钩子负责(docs/TECH_DESIGN.md)。worker 不直接走 router。
 
 错误恢复:单批失败 logger.exception + 退避一轮 POLL_INTERVAL,不让一次失败把
 worker 整体打挂(笔记入库链路对 worker 是 fire-and-forget)。空 dashscope key 时

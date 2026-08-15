@@ -1,6 +1,6 @@
-"""笔记 CRUD + 批量入库 + 树形导航(M1,2-TECH §5.1 + 4-API_SPEC §3)。
+"""笔记 CRUD + 批量入库 + 树形导航(M1,docs/TECH_DESIGN.md + OpenAPI / Pydantic schemas)。
 
-职责(2-TECH §4.3):
+职责(docs/TECH_DESIGN.md):
 - service 层做业务编排 + 事务 + 数据库读写,调 chunk_service 切片
 - **不**直接调 LLM(embedding 由 workers/embed_worker 异步补)
 
@@ -161,7 +161,7 @@ async def move_note(
 
 
 async def delete_note(session: AsyncSession, note_id: int) -> None:
-    """soft delete + 物理删 chunks(2-TECH §4.3:chunks 是 derived,note 软删后切片不应可见)。
+    """soft delete + 物理删 chunks(docs/TECH_DESIGN.md:chunks 是 derived,note 软删后切片不应可见)。
 
     M1 简化:不支持恢复软删 note;真要恢复走 rechunk_note 重新切。
     """

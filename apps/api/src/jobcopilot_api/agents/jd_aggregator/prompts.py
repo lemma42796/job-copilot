@@ -1,4 +1,4 @@
-"""JdAggregator prompts — 三阶段共三个 prompt(5-AGENT_DESIGN §6.2)。
+"""JdAggregator prompts — 三阶段共三个 prompt(docs/TECH_DESIGN.md)。
 
 - batch reduce:同义合并 raw skill batch → partial canonical
 - merge:跨 batch 合并 partial → unified canonical

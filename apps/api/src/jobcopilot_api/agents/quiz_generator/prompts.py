@@ -1,6 +1,6 @@
-"""QuizGenerator prompts — `quiz_generator` v1.3(5-AGENT_DESIGN §3.3 / §3.4)。
+"""QuizGenerator prompts — `quiz_generator` v1.3(docs/TECH_DESIGN.md)。
 
-SYSTEM 基线来自 5-AGENT 文档;改一次 bump version(沿用 v1 LESSONS §8.2)。
+SYSTEM 基线来自 docs/TECH_DESIGN.md 文档;改一次 bump version(沿用 v1 LESSONS §8.2)。
 后续走 prompt_versions 表 SSoT(M2.5 之后);M2 阶段 PROMPT_VERSION 字段
 直接落 questions.gen_prompt_version 做 audit。
 """
@@ -75,7 +75,7 @@ def render_user(
     chunks: list[QuizGenChunkInput],
     question_count: int,
 ) -> str:
-    """5-AGENT §3.4 USER 模板。
+    """docs/TECH_DESIGN.md USER 模板。
 
     chunks 用 [N] 编号(1-based),每段含 note / folder / heading 元数据 +
     content 正文。LLM 只输出 reference_answer / scoring_points 中的 [N]

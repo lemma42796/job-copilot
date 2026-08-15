@@ -1,4 +1,4 @@
-"""Agent IO Pydantic schema — 每个 agent 一个文件(2-TECH_DESIGN §4.1)。
+"""Agent IO Pydantic schema — 每个 agent 一个文件(docs/TECH_DESIGN.md)。
 
 引用关系:
 - services/ 通过 agents/<name>/agent.py.run(input) 调用

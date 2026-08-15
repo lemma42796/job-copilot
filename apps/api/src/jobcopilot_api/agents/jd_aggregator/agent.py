@@ -1,6 +1,6 @@
 """JdAggregator 编排(M2.5)— 三阶段流水线 + 学习路径生成。
 
-流水线(5-AGENT_DESIGN §6.2,单次 ≤ 200 条 JD):
+流水线(docs/TECH_DESIGN.md,单次 ≤ 200 条 JD):
 1. 分批 reduce(LLM,thinking off,temperature 0.3)
 2. 二次 reduce / merge(LLM)
 3. Python 重算频次(frequency.py)

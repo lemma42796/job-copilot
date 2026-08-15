@@ -11,6 +11,6 @@
 - resume_advisor       M3
 - followup_orchestrator M3(LangGraph)
 
-模块职责边界见 2-TECH_DESIGN §4.3:agent 渲染 prompt + 调 LLM + Pydantic 校验,
+模块职责边界见 docs/TECH_DESIGN.md:agent 渲染 prompt + 调 LLM + Pydantic 校验,
 不写 DB(返回结构化结果给 service 层落)。
 """

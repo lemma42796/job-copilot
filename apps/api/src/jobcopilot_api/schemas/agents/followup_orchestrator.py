@@ -1,4 +1,4 @@
-"""FollowupOrchestrator state schema(5-AGENT_DESIGN §8)。"""
+"""FollowupOrchestrator state schema(docs/TECH_DESIGN.md)。"""
 
 from __future__ import annotations
 
