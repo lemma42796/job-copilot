@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     # 成本。需要每次都走真 LLM(prompt 调试 / token 流式)时设 false 关掉。
     llm_cache_enabled: bool = Field(default=True)
 
+    # 所有文本生成 Agent 共用的进程内并发闸门。它限制的是正在占用上游
+    # Provider 的逻辑调用数,避免 JD 分析、出题和面试评分一起把上游额度
+    # 与本地连接池打满。单进程 MVP 先采用背压等待,不引入外部队列。
+    llm_max_concurrency: int = Field(default=4, ge=1)
+
+    # JD 聚合是批量长任务,单独限制同时运行数。等待中的记录仍保持
+    # in_progress,由详情接口和 SSE 观察;不为轻量闭环新增 queued 状态。
+    jd_analysis_max_concurrency: int = Field(default=1, ge=1)
+
     # Query embedding cache 专用守门。评测脚本默认打开 cache-only,避免重复
     # 跑 smoke 时继续请求 embedding provider;产品链路默认允许 miss 后实时计算。
     query_embedding_cache_only: bool = Field(default=False)

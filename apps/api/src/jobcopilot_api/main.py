@@ -31,6 +31,7 @@ from jobcopilot_api.infra.logging import setup_logging  # noqa: E402
 from jobcopilot_api.infra.prompts import load_prompt_versions  # noqa: E402
 from jobcopilot_api.infra.request_id import RequestIDMiddleware  # noqa: E402
 from jobcopilot_api.routers import health, jd, notes, quiz  # noqa: E402
+from jobcopilot_api.services import jd_service  # noqa: E402
 from jobcopilot_api.workers import embed_worker  # noqa: E402
 
 
@@ -49,9 +50,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.embed_worker_stop = stop_event
     app.state.embed_worker_task = worker_task
 
+    # JD 分析执行与 SSE 观察解耦。进程重启后复用持久化 jd_ids 恢复
+    # in_progress 记录;单进程 MVP 不引入外部任务队列或 lease。
+    await jd_service.recover_in_progress_analyses(get_sessionmaker())
+
     try:
         yield
     finally:
+        await jd_service.shutdown_analysis_tasks()
         stop_event.set()
         try:
             await asyncio.wait_for(worker_task, timeout=10.0)

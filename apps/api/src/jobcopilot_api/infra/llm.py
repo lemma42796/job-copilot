@@ -11,6 +11,7 @@ The default `CallLogger` is `DBCallLogger`, which writes every call to the
 from __future__ import annotations
 
 from jobcopilot_api.infra.db import get_sessionmaker
+from jobcopilot_api.llm.admission import get_llm_admission_gate
 from jobcopilot_api.llm.cache_store import CacheStore, NoopCacheStore, PostgresCacheStore
 from jobcopilot_api.llm.client import BaseLLMClient, CallLogger, LLMClient
 from jobcopilot_api.llm.db_logger import DBCallLogger
@@ -29,7 +30,12 @@ def _build_default_client() -> LLMClient:
         if settings.llm_cache_enabled
         else NoopCacheStore()
     )
-    return BaseLLMClient(provider=provider, logger=logger, cache_store=cache_store)
+    return BaseLLMClient(
+        provider=provider,
+        logger=logger,
+        cache_store=cache_store,
+        concurrency_gate_factory=get_llm_admission_gate,
+    )
 
 
 def get_llm_client() -> LLMClient:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 
 import pytest
@@ -12,7 +13,9 @@ from jobcopilot_api.llm.client import (
     BaseLLMClient,
     LLMResult,
     MemoryCallLogger,
+    OnTokenCallback,
     ProviderRequest,
+    ProviderResponse,
 )
 from jobcopilot_api.llm.errors import (
     LLMAuthError,
@@ -390,3 +393,49 @@ async def test_logger_default_is_noop_and_does_not_blow_up() -> None:
         user="usr",
     )
     assert result.success is True
+
+
+async def test_max_concurrency_applies_backpressure() -> None:
+    class BlockingProvider:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.calls = 0
+            self.active = 0
+            self.max_active = 0
+
+        async def complete(
+            self,
+            request: ProviderRequest,
+            *,
+            on_token: OnTokenCallback | None = None,
+        ) -> ProviderResponse:
+            del request, on_token
+            self.calls += 1
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            self.started.set()
+            await self.release.wait()
+            self.active -= 1
+            return ProviderResponse(
+                content="ok",
+                tokens_in=1,
+                tokens_out=1,
+                cached_tokens=0,
+            )
+
+    provider = BlockingProvider()
+    client = BaseLLMClient(provider=provider, max_concurrency=1)
+    first = asyncio.create_task(
+        client.complete(feature="first", tier=Tier.CHEAP, user="one")
+    )
+    await provider.started.wait()
+    second = asyncio.create_task(
+        client.complete(feature="second", tier=Tier.CHEAP, user="two")
+    )
+    await asyncio.sleep(0)
+
+    assert provider.calls == 1
+    provider.release.set()
+    await asyncio.gather(first, second)
+    assert provider.max_active == 1

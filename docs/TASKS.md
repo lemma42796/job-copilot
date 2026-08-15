@@ -15,50 +15,29 @@ purpose: 只记录当前任务和尚未完成、仍计划执行的任务。
 
 # 当前任务
 
-当前没有正在实施的任务。等待用户决定是否启动 M2.6。
+## M2.6:JD Analysis Reliability 验证
+
+状态:**轻量实现已完成,待用户手动验证**。
+
+目标:确认 JD 分析断线恢复、进程重启恢复、JD 任务并发闸门、共享 LLM 并发背压和结构化日志符合单进程 MVP 边界。
+
+依赖:
+
+- 可用的 PostgreSQL、DashScope 配置和本地前后端运行环境。
+- 用户明确执行测试 / typecheck / build 或真实模型验证。
+
+验收标准:
+
+- [ ] SSE 收到稳定 `analysis_id` 后断开,任务继续执行;重新连接 `/api/jd-analyses/{analysis_id}/events` 可拿到终态。
+- [ ] API 重启后,数据库中的 `in_progress` 分析会重新启动并进入 `done / failed`。
+- [ ] `JOBCOPILOT_JD_ANALYSIS_MAX_CONCURRENCY=1` 时,同时提交的 JD 分析不会并行运行。
+- [ ] 普通 Agent 和 AnswerJudge 工具调用共用 `JOBCOPILOT_LLM_MAX_CONCURRENCY` 背压。
+- [ ] 日志可按 `analysis_id` 查看开始、完成 / 中断、延迟、Token、成本和错误终态。
+- [ ] 用户要求后运行新增并发单元测试、相关后端测试和前端 typecheck。
 
 # 未完成任务
 
-## M2.6:JD Analysis Reliability
-
-状态:**已规划,未开工**。
-
-目标:不增加新的 AI 产品功能,只把现有 JD 一键分析从“绑定一次 SSE 连接的进程内任务”改造成可持久化、可限流、可恢复、可验证的后台任务。
-
-### 开工前必须确认
-
-- [ ] 持久化任务字段和状态机:`queued → running → done / failed`。
-- [ ] 创建、查询、进度订阅三个公共接口及兼容方案。
-- [ ] Worker 的 PostgreSQL 领取与 lease 机制。
-- [ ] 任务并发、外部 LLM 并发和待执行容量的配置边界。
-- [ ] `Idempotency-Key` 的保存、payload 冲突和主动重跑语义。
-- [ ] 超时 / 429 / Worker 退出的重试与终态策略。
-
-### 实施顺序
-
-1. [ ] 增加任务持久化字段和 migration,创建分析后返回稳定 `analysis_id`。
-2. [ ] 增加同仓库独立 Worker,从 PostgreSQL 原子领取任务并维护 heartbeat / lease。
-3. [ ] 对运行任务、LLM 调用和待执行任务分别增加并发 / 背压控制。
-4. [ ] 将 SSE 改为只观察持久化状态;客户端断开不取消 Worker。
-5. [ ] 增加同 key 同 payload 复用、同 key 不同 payload 冲突的接口幂等。
-6. [ ] 增加有限重试、过期 lease 回收和统一关联日志。
-7. [ ] 用户明确要求后,用 Dummy Provider 和少量真实模型请求验证故障与容量边界。
-
-### 验收标准
-
-- [ ] 刷新或断开浏览器后,原分析继续执行并可用同一 `analysis_id` 恢复。
-- [ ] 实际运行任务数不超过配置上限;满载行为确定且可观察。
-- [ ] 同一幂等键的并发或重复提交只创建一个任务,参数冲突可识别。
-- [ ] 模拟超时、429 或 Worker 退出后,任务能重试、恢复或进入明确终态。
-- [ ] 日志能按 `analysis_id` 串起排队、执行、模型调用、重试和终态。
-- [ ] 本地报告明确记录配置、并发梯度、P95、失败率和成本,不外推线上容量。
-
-### 明确不做
-
-- 不拆微服务,不上 Kubernetes / Kafka,不为本任务新增 Redis。
-- 不做多用户 / SaaS、跨机高可用、故障转移或分布式一致性。
-- 不把确定性工作流改成通用自主 Agent。
-- 不回流 M2.5 的 learning path prompt、map-reduce trace 或其他可选打磨。
+当前没有其他已确认要实施的开发任务。独立 Worker、lease / heartbeat、接口幂等、多实例接管和完整容量体系不在本轮计划内。
 
 # 不在本文档范围
 

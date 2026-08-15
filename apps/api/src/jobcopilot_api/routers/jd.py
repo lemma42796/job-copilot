@@ -107,11 +107,16 @@ async def create_jd_analysis(payload: JdAnalysisCreateIn) -> EventSourceResponse
         jd_count = analysis.jd_count
         await session.commit()
 
+    jd_service.launch_analysis(
+        sessionmaker,
+        analysis_id=analysis_id,
+        jd_count=jd_count,
+    )
+
     async def _events() -> AsyncIterator[dict[str, Any]]:
-        async for event in jd_service.start_analysis_sse(
+        async for event in jd_service.observe_analysis_sse(
             sessionmaker,
             analysis_id=analysis_id,
-            jd_count=jd_count,
         ):
             yield event
 
@@ -141,3 +146,17 @@ async def get_jd_analysis(
     session: SessionDep,
 ) -> JdAnalysisOut:
     return await jd_service.get_analysis(session, analysis_id)
+
+
+@router.get(
+    "/jd-analyses/{analysis_id}/events",
+    summary="恢复观察 JD 分析进度(SSE)",
+)
+async def observe_jd_analysis(analysis_id: int) -> EventSourceResponse:
+    sessionmaker = get_sessionmaker()
+    return EventSourceResponse(
+        jd_service.observe_analysis_sse(
+            sessionmaker,
+            analysis_id=analysis_id,
+        )
+    )

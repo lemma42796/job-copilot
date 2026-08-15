@@ -32,11 +32,13 @@ import {
   getJdLibraryItem,
   listJdAnalyses,
   listJdLibrary,
+  observeJdAnalysis,
   patchJdLibraryItem,
   type AggregatedRequirement,
   type JdAnalysisFilter,
   type JdAnalysisListItem,
   type JdAnalysisReport,
+  type JdAnalysisSseFrame,
   type JdLibraryItem,
   type JdLibraryListItem,
   type JdNoteMatchSummaryItem,
@@ -311,12 +313,13 @@ export default function JdsPage() {
     setAnalysisRunState({ kind: 'loading' });
     setAnalysisProgress([]);
     let resultAnalysisId: number | null = null;
-    try {
-      for await (const frame of createJdAnalysis({
-        filter: input.filter,
-        filter_description: input.description,
-      })) {
+
+    const consumeAnalysisEvents = async (
+      stream: AsyncGenerator<JdAnalysisSseFrame>,
+    ) => {
+      for await (const frame of stream) {
         if (frame.event === 'started') {
+          resultAnalysisId = frame.data.resource_id;
           appendAnalysisProgress(`报告 #${frame.data.resource_id} 已创建`);
         } else if (frame.event === 'progress') {
           appendAnalysisProgress(formatAnalysisPhase(frame.data));
@@ -330,6 +333,21 @@ export default function JdsPage() {
         } else if (frame.event === 'done' && !frame.data.ok) {
           throw new Error('分析未完成');
         }
+      }
+    };
+
+    try {
+      try {
+        await consumeAnalysisEvents(
+          createJdAnalysis({
+            filter: input.filter,
+            filter_description: input.description,
+          }),
+        );
+      } catch (firstError) {
+        if (resultAnalysisId == null) throw firstError;
+        appendAnalysisProgress(`连接中断，正在恢复报告 #${resultAnalysisId}`);
+        await consumeAnalysisEvents(observeJdAnalysis(resultAnalysisId));
       }
       setAnalysisRunState({ kind: 'success', message: '分析完成' });
       await loadAnalyses();

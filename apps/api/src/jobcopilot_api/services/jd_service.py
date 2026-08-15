@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import Any
 
 import sqlalchemy as sa
+import structlog
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -48,10 +48,19 @@ from jobcopilot_api.schemas.jd import (
     JdOut,
     JdPatchIn,
 )
+from jobcopilot_api.settings import settings
 
 JD_RAW_TEXT_MAX_LENGTH = 10_000
 JD_ANALYSIS_MAX_COUNT = 200
 JD_COVERAGE_EVIDENCE_LIMIT = 5
+
+logger = structlog.get_logger(__name__)
+
+_ANALYSIS_EVENT_BUFFER = 32
+_analysis_gate: asyncio.Semaphore | None = None
+_analysis_gate_loop: asyncio.AbstractEventLoop | None = None
+_analysis_tasks: dict[int, asyncio.Task[None]] = {}
+_analysis_subscribers: dict[int, set[asyncio.Queue[dict[str, str]]]] = {}
 
 
 class JdNotFoundError(NotFoundError):
@@ -180,33 +189,139 @@ async def create_analysis_placeholder(
     return analysis
 
 
-async def start_analysis_sse(
+def launch_analysis(
     sessionmaker: async_sessionmaker[AsyncSession],
     *,
     analysis_id: int,
     jd_count: int,
+) -> bool:
+    """Start one detached in-process analysis, returning False if already active."""
+    existing = _analysis_tasks.get(analysis_id)
+    if existing is not None and not existing.done():
+        return False
+
+    task = asyncio.create_task(
+        _run_analysis(
+            sessionmaker,
+            analysis_id=analysis_id,
+            jd_count=jd_count,
+        ),
+        name=f"jd_analysis_{analysis_id}",
+    )
+    _analysis_tasks[analysis_id] = task
+    task.add_done_callback(
+        lambda completed, resource_id=analysis_id: _forget_analysis_task(
+            resource_id, completed
+        )
+    )
+    return True
+
+
+async def observe_analysis_sse(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    analysis_id: int,
 ) -> AsyncIterator[dict[str, Any]]:
-    """M2.5 一键分析 SSE。
+    """Observe persisted analysis state; disconnecting never cancels execution."""
+    queue: asyncio.Queue[dict[str, str]] = asyncio.Queue(
+        maxsize=_ANALYSIS_EVENT_BUFFER
+    )
+    subscribers = _analysis_subscribers.setdefault(analysis_id, set())
+    subscribers.add(queue)
 
-    placeholder 已在返回 EventSourceResponse 前创建,所以 filter 错误仍能按
-    REST 语义返回 422。这里开始执行真实聚合并把报告写回 `jd_analyses`。
-    """
+    try:
+        async with sessionmaker() as session:
+            analysis = await session.get(JdAnalysis, analysis_id)
+            if analysis is None:
+                raise NotFoundError(f"jd_analysis {analysis_id} 不存在")
+            status = analysis.status
+            jd_count = analysis.jd_count
+            terminal_events = _terminal_analysis_events(analysis)
 
-    queue: asyncio.Queue[dict[str, str] | None] = asyncio.Queue()
+        yield _ev(
+            "started",
+            {
+                "job_id": f"jd-analysis-{analysis_id}",
+                "resource_id": analysis_id,
+                "jd_count": jd_count,
+                "status": status,
+            },
+        )
+        if terminal_events:
+            for event in terminal_events:
+                yield event
+            return
 
-    async def emit(event: str, data: dict[str, Any]) -> None:
-        await queue.put(_ev(event, data))
+        # Defensive recovery for a request arriving before lifespan recovery.
+        launch_analysis(
+            sessionmaker,
+            analysis_id=analysis_id,
+            jd_count=jd_count,
+        )
+        while True:
+            event = await queue.get()
+            yield event
+            if event["event"] == "done":
+                return
+    finally:
+        subscribers.discard(queue)
+        if not subscribers:
+            _analysis_subscribers.pop(analysis_id, None)
 
-    async def worker() -> None:
-        try:
-            await emit(
-                "started",
-                {
-                    "job_id": f"jd-analysis-{uuid.uuid4().hex}",
-                    "resource_id": analysis_id,
-                    "jd_count": jd_count,
-                },
+
+async def recover_in_progress_analyses(
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> int:
+    """Resume persisted in-progress rows when this single-process app starts."""
+    async with sessionmaker() as session:
+        rows = (
+            await session.execute(
+                sa.select(JdAnalysis.id, JdAnalysis.jd_count).where(
+                    JdAnalysis.status == "in_progress"
+                )
             )
+        ).all()
+    started = 0
+    for analysis_id, jd_count in rows:
+        started += int(
+            launch_analysis(
+                sessionmaker,
+                analysis_id=int(analysis_id),
+                jd_count=int(jd_count),
+            )
+        )
+    if started:
+        logger.info("jd_analysis_recovered", count=started)
+    return started
+
+
+async def shutdown_analysis_tasks() -> None:
+    """Cancel process-local work; persisted rows remain resumable on restart."""
+    tasks = [task for task in _analysis_tasks.values() if not task.done()]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _run_analysis(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    analysis_id: int,
+    jd_count: int,
+) -> None:
+    async with _get_analysis_gate():
+        started_at = datetime.now(timezone.utc)
+        logger.info(
+            "jd_analysis_started",
+            analysis_id=analysis_id,
+            jd_count=jd_count,
+        )
+
+        async def emit(event: str, data: dict[str, Any]) -> None:
+            _publish_analysis_event(analysis_id, _ev(event, data))
+
+        try:
             await emit("progress", {"phase": "loading_parsed", "jd_count": jd_count})
             parsed_jds = await _load_parsed_jds(sessionmaker, analysis_id)
 
@@ -255,33 +370,111 @@ async def start_analysis_sse(
                 },
             )
             await emit("done", {"ok": True})
+            logger.info(
+                "jd_analysis_completed",
+                analysis_id=analysis_id,
+                jd_count=jd_count,
+                latency_ms=int(
+                    (datetime.now(timezone.utc) - started_at).total_seconds() * 1000
+                ),
+                tokens_in=aggregate.total_tokens_in,
+                tokens_out=aggregate.total_tokens_out,
+                cost_cny=str(aggregate.total_cost_cny),
+                cache_hit_rate=str(aggregate.cache_hit_rate),
+                success=True,
+            )
+        except asyncio.CancelledError:
+            logger.info(
+                "jd_analysis_interrupted",
+                analysis_id=analysis_id,
+                resumable=True,
+            )
+            raise
         except LLMError as exc:
             wrapped = JdAggregatorCallFailedError(exc.detail)
             await _mark_analysis_failed(sessionmaker, analysis_id, wrapped.detail)
             await emit("error", _error_payload(wrapped))
             await emit("done", {"ok": False})
+            _log_analysis_failure(analysis_id, jd_count, started_at, wrapped)
         except JobCopilotError as exc:
             await _mark_analysis_failed(sessionmaker, analysis_id, exc.detail)
             await emit("error", _error_payload(exc))
             await emit("done", {"ok": False})
+            _log_analysis_failure(analysis_id, jd_count, started_at, exc)
         except Exception as exc:
             wrapped = JdAggregatorCallFailedError(str(exc))
             await _mark_analysis_failed(sessionmaker, analysis_id, wrapped.detail)
             await emit("error", _error_payload(wrapped))
             await emit("done", {"ok": False})
-        finally:
-            await queue.put(None)
+            _log_analysis_failure(analysis_id, jd_count, started_at, wrapped)
 
-    task = asyncio.create_task(worker())
-    try:
-        while True:
-            event = await queue.get()
-            if event is None:
-                break
-            yield event
-    finally:
-        if not task.done():
-            task.cancel()
+
+def _get_analysis_gate() -> asyncio.Semaphore:
+    global _analysis_gate, _analysis_gate_loop
+    loop = asyncio.get_running_loop()
+    if _analysis_gate is None or _analysis_gate_loop is not loop:
+        _analysis_gate = asyncio.Semaphore(settings.jd_analysis_max_concurrency)
+        _analysis_gate_loop = loop
+    return _analysis_gate
+
+
+def _forget_analysis_task(
+    analysis_id: int,
+    completed: asyncio.Task[None],
+) -> None:
+    if _analysis_tasks.get(analysis_id) is completed:
+        _analysis_tasks.pop(analysis_id, None)
+
+
+def _publish_analysis_event(analysis_id: int, event: dict[str, str]) -> None:
+    for queue in tuple(_analysis_subscribers.get(analysis_id, ())):
+        if queue.full():
+            queue.get_nowait()
+        queue.put_nowait(event)
+
+
+def _terminal_analysis_events(analysis: JdAnalysis) -> list[dict[str, str]]:
+    if analysis.status == "done":
+        return [
+            _ev(
+                "result",
+                {
+                    "analysis_id": analysis.id,
+                    "requirement_count": len(analysis.aggregated_requirements or []),
+                    "quiz_topic_count": len(analysis.quiz_topic_candidates or []),
+                    "url": f"/api/jd-analyses/{analysis.id}",
+                },
+            ),
+            _ev("done", {"ok": True}),
+        ]
+    if analysis.status == "failed":
+        exc = JdAggregatorCallFailedError(
+            analysis.failure_reason or "JD 聚合失败"
+        )
+        return [
+            _ev("error", _error_payload(exc)),
+            _ev("done", {"ok": False}),
+        ]
+    return []
+
+
+def _log_analysis_failure(
+    analysis_id: int,
+    jd_count: int,
+    started_at: datetime,
+    exc: JobCopilotError,
+) -> None:
+    logger.warning(
+        "jd_analysis_completed",
+        analysis_id=analysis_id,
+        jd_count=jd_count,
+        latency_ms=int(
+            (datetime.now(timezone.utc) - started_at).total_seconds() * 1000
+        ),
+        success=False,
+        error_code=exc.code,
+        detail=exc.detail,
+    )
 
 
 async def list_analyses(

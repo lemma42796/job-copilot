@@ -17,6 +17,7 @@ without touching the network.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ from decimal import Decimal
 from time import monotonic
 from typing import Any, Protocol
 
+import structlog
 from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 from tenacity import (
@@ -45,6 +47,8 @@ from jobcopilot_api.llm.errors import (
 )
 from jobcopilot_api.llm.pricing import cost_for
 from jobcopilot_api.llm.tiers import Tier, tier_to_model
+
+logger = structlog.get_logger(__name__)
 
 # ---------- Streaming ----------
 
@@ -345,7 +349,15 @@ class BaseLLMClient:
         cache_store: CacheStore | None = None,
         retry_attempts: int = DEFAULT_RETRY_ATTEMPTS,
         retry_wait: wait_base = DEFAULT_RETRY_WAIT,
+        max_concurrency: int | None = None,
+        concurrency_gate_factory: Callable[[], asyncio.Semaphore] | None = None,
     ) -> None:
+        if max_concurrency is not None and max_concurrency < 1:
+            raise ValueError("max_concurrency must be >= 1")
+        if max_concurrency is not None and concurrency_gate_factory is not None:
+            raise ValueError(
+                "pass max_concurrency or concurrency_gate_factory, not both"
+            )
         self._provider = provider
         self._logger: CallLogger = logger if logger is not None else NoopCallLogger()
         self._cache_store: CacheStore = (
@@ -353,6 +365,12 @@ class BaseLLMClient:
         )
         self._retry_attempts = retry_attempts
         self._retry_wait = retry_wait
+        local_gate = (
+            asyncio.Semaphore(max_concurrency) if max_concurrency is not None else None
+        )
+        self._concurrency_gate_factory = concurrency_gate_factory or (
+            (lambda: local_gate) if local_gate is not None else None
+        )
 
     async def complete(
         self,
@@ -431,7 +449,7 @@ class BaseLLMClient:
                     cached = True
 
             if not cached:
-                resp = await self._call_with_retry(
+                resp = await self._call_with_admission(
                     ProviderRequest(
                         model=cfg.model,
                         system=system,
@@ -452,7 +470,7 @@ class BaseLLMClient:
                         acc.parsed = _parse(acc.content, response_schema)
                     except (json.JSONDecodeError, PydanticValidationError):
                         acc.schema_attempt = 1
-                        retry_resp = await self._call_with_retry(
+                        retry_resp = await self._call_with_admission(
                             ProviderRequest(
                                 model=cfg.model,
                                 system=system,
@@ -506,6 +524,22 @@ class BaseLLMClient:
                 cached=False,
             )
             await self._logger.log(result)
+            logger.warning(
+                "llm_call_completed",
+                feature=feature,
+                model=result.model,
+                tier=tier.value,
+                trace_id=trace_id,
+                related_entity=related_entity,
+                related_id=related_id,
+                latency_ms=result.latency_ms,
+                tokens_in=result.tokens_in,
+                tokens_out=result.tokens_out,
+                cost_cny=str(result.cost_cny),
+                cached=False,
+                success=False,
+                error_code=result.error_code,
+            )
             raise
 
         result = self._build_result(
@@ -524,6 +558,22 @@ class BaseLLMClient:
             cached=cached,
         )
         await self._logger.log(result)
+        logger.info(
+            "llm_call_completed",
+            feature=feature,
+            model=result.model,
+            tier=tier.value,
+            trace_id=trace_id,
+            related_entity=related_entity,
+            related_id=related_id,
+            latency_ms=result.latency_ms,
+            tokens_in=result.tokens_in,
+            tokens_out=result.tokens_out,
+            cost_cny=str(result.cost_cny),
+            cached=result.cached,
+            success=True,
+            error_code=None,
+        )
 
         # Cache miss + 成功 → 写入。streaming 不写(on_token 路径下 cached 永
         # 远是 False,但语义上 streaming 不该污染 cache)。
@@ -552,6 +602,18 @@ class BaseLLMClient:
         return result
 
     # ---------- internals ----------
+
+    async def _call_with_admission(
+        self,
+        request: ProviderRequest,
+        *,
+        on_token: OnTokenCallback | None = None,
+    ) -> ProviderResponse:
+        """Apply process-wide backpressure before touching the provider."""
+        if self._concurrency_gate_factory is None:
+            return await self._call_with_retry(request, on_token=on_token)
+        async with self._concurrency_gate_factory():
+            return await self._call_with_retry(request, on_token=on_token)
 
     async def _call_with_retry(
         self,

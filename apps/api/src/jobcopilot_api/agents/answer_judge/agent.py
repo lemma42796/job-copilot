@@ -42,6 +42,7 @@ from jobcopilot_api.agents.answer_judge.prompts import (
 )
 from jobcopilot_api.agents.context_cache import build_chunk_cache_messages
 from jobcopilot_api.infra.llm import get_llm_client
+from jobcopilot_api.llm.admission import get_llm_admission_gate
 from jobcopilot_api.llm.client import LLMClient, LLMResult
 from jobcopilot_api.llm.db_logger import DBCallLogger
 from jobcopilot_api.llm.errors import (
@@ -363,7 +364,8 @@ async def _create_chat_completion(
         kwargs["response_format"] = {"type": "json_object"}
 
     try:
-        return await client.chat.completions.create(**kwargs)
+        async with get_llm_admission_gate():
+            return await client.chat.completions.create(**kwargs)
     except (APITimeoutError, APIConnectionError) as exc:
         raise LLMTimeoutError(str(exc)) from exc
     except RateLimitError as exc:

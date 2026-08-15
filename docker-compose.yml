@@ -40,6 +40,8 @@ services:
       JOBCOPILOT_CORS_ALLOW_ORIGINS: '["http://localhost:3000","http://localhost"]'
       JOBCOPILOT_DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       JOBCOPILOT_LLM_PROVIDER: ${LLM_PROVIDER:-dashscope}
+      JOBCOPILOT_LLM_MAX_CONCURRENCY: ${JOBCOPILOT_LLM_MAX_CONCURRENCY:-4}
+      JOBCOPILOT_JD_ANALYSIS_MAX_CONCURRENCY: ${JOBCOPILOT_JD_ANALYSIS_MAX_CONCURRENCY:-1}
       # Langfuse 三件套:public_key 留空 → SDK noop(README / AGENTS.md)。
       # api 容器内走 service name 通信,host 默认 http://langfuse:3000(容器内端口仍是 3000)
       JOBCOPILOT_LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse:3000}

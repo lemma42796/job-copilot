@@ -183,7 +183,21 @@ prompt_versions / llm_calls / llm_response_cache 记录 LLM 配置、审计和�
 
 JD 聚合是对已选集合的有界归纳,不是 RAG。RAG 只在报告 topic 进入 `/quiz` 后发生。
 
-当前可靠性边界:JD 分析会在请求内创建无界 `asyncio.Queue` 和 `asyncio.create_task`;SSE 结束或断开会取消未完成任务。当前没有任务级并发上限、有界待执行队列、业务幂等或独立 JD Worker。M2.6 的待办和验收见 `TASKS.md`,不能把规划写成已有能力。
+可靠性链路:
+
+```text
+POST 创建 jd_analyses(in_progress)
+→ 进程内 task registry 启动聚合
+→ JD analysis semaphore 控制同时运行数
+→ SSE 只订阅有界事件缓冲区
+→ 断线不取消 task;同 analysis_id 可重新订阅
+→ done / failed 与最终报告持久化
+→ API 重启时重新启动仍为 in_progress 的记录
+```
+
+文本生成统一经过进程内 LLM admission gate;`BaseLLMClient` 和 AnswerJudge 工具调用链共享同一并发额度。缓存命中不占用上游额度,实际 Provider 调用及其重试占用额度。LLM 调用和 JD 分析终态均输出结构化日志。
+
+当前可靠性边界:这是单 API 进程 MVP,不是分布式任务系统。数据库没有逐步 progress、待执行容量、幂等键、lease 或 heartbeat;多 API 实例可能重复执行同一 `in_progress` 分析。进程重启恢复允许重复外部调用,不能表述为 exactly-once。独立 Worker、多实例接管和容量报告不在当前范围。
 
 # Agent 与 LLM 约束
 
@@ -203,6 +217,7 @@ Prompt 和模型规则:
 - 应用层 response cache 缓完整请求 / 响应;query embedding eval 默认 cache-only。
 - Context Cache 只优化 provider 计算和计费,不是会话记忆,当前显式模式默认关闭。
 - Langfuse 环境变量必须在 import routers / agents / llm 前完成镜像。
+- 文本 LLM Provider 调用必须通过共享 admission gate,避免各 Agent 各自设置互不相干的并发上限。
 - embeddings 和 rerank 不在 OpenAI auto-instrument 覆盖范围,需要显式 generation trace。
 
 # 可观测性与评测

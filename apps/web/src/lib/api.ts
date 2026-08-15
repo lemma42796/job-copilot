@@ -362,6 +362,15 @@ export function createJdAnalysis(
   });
 }
 
+export function observeJdAnalysis(id: number): AsyncGenerator<JdAnalysisSseFrame> {
+  return streamSse<JdAnalysisSseFrame>(
+    `${API_BASE_URL}/api/jd-analyses/${id}/events`,
+    {
+      headers: { 'X-User-Id': USER_ID },
+    },
+  );
+}
+
 export async function listJdAnalyses(
   opts: { cursor?: number | null; limit?: number; signal?: AbortSignal } = {},
 ): Promise<JdAnalysisListResponse> {
