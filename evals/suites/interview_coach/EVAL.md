@@ -8,7 +8,7 @@
 
 - Dataset:`evals/suites/interview_coach/dataset.flow_smoke.jsonl`
 - Runner:`apps/api/scripts/eval_interview_coach.py`
-- 最近保存报告:`evals/reports/interview-coach-flow-smoke-20260517-132154.md`
+- 最新报告(已入库):`evals/reports/interview-coach-flow-smoke-20260517-132154.md`
 
 ## 覆盖范围
 
@@ -33,20 +33,9 @@
 - `hallucination_guard`:是否避免引入 source chunks 外的新标准答案。
 - `recovery_pass`:恢复后是否继续期望节点。
 
-## 最近可信快照
+## 证据边界
 
-2026-05-17 报告使用 offline stubbed Judge,不访问 DB 或真实 LLM:
-
-- 10/10 fixtures 通过。
-- branch decisions:29/29。
-- remediation targets:9/9。
-- cumulative rejudge:4/4。
-- loop exit:2/2。
-- context pack:10/10。
-- hallucination guard:7/7。
-- recovery:1/1。
-
-该结果证明固定 harness 行为,不证明真实 Judge 准确率、真实模型稳定性或线上恢复能力。
+评测使用 offline stubbed Judge,不访问 DB 或真实 LLM。结果只证明固定 harness 行为,不证明真实 Judge 准确率、真实模型稳定性或线上恢复能力。具体数字以最新报告为准。
 
 ## 运行
 

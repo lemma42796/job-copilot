@@ -2,7 +2,6 @@
 
 > 本地优先的 AI 求职准备工作台:把目标岗位 JD 累积成岗位要求地图和学习路径,再用自己的 Markdown 笔记做 RAG 面试陪练。
 
-[![Status](https://img.shields.io/badge/status-M2.6%20planned-lightgrey)](docs/STATUS.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Stack](https://img.shields.io/badge/stack-FastAPI%20%2B%20Next.js%20%2B%20Postgres-2f6fef)](#技术栈)
 [![LLM](https://img.shields.io/badge/LLM-Qwen%20%40%20DashScope-1f7ae0)](#配置)
@@ -26,7 +25,6 @@
 - [项目结构](#项目结构)
 - [本地开发](#本地开发)
 - [测试与评测](#测试与评测)
-- [路线图](#路线图)
 - [限制与非目标](#限制与非目标)
 - [文档导航](#文档导航)
 - [贡献](#贡献)
@@ -40,11 +38,11 @@ JobCopilot 面向正在准备软件工程岗位的计算机学习者和开发者
 1. **JD Intelligence**:把陆续收集的目标岗位 JD 持久化到本地库,解析成结构化数据,聚合重复要求,重算频次,生成学习路径和 quiz topic 候选。
 2. **笔记 RAG 面试陪练**:导入 Markdown 笔记,只从相关笔记 chunks 里检索上下文,生成面试题,用 evidence 评分,并支持多轮补答和追问教练。
 
-项目目前是单用户、本地 dogfood 优先形态。你的笔记、JD、报告、练习 session 和 recall 文件默认保存在本机工作区和 Postgres 数据库里。LLM 调用通过你自己的 DashScope/Qwen API Key 完成。
+项目是单用户、本地优先形态。你的笔记、JD、报告、练习 session 和 recall 文件默认保存在本机工作区和 Postgres 数据库里。LLM 调用通过你自己的 DashScope/Qwen API Key 完成。
 
 ## 演示截图
 
-以下截图来自本地 dogfood 数据,覆盖当前前端的主要功能面。
+以下截图来自本地数据,覆盖前端的主要功能面。
 
 ### 1. JD 入库与结构化详情
 
@@ -107,18 +105,18 @@ JobCopilot 面向正在准备软件工程岗位的计算机学习者和开发者
 
 ### JD Intelligence
 
-| 功能 | 当前状态 |
-|------|----------|
+| 功能 | 说明 |
+|------|------|
 | JD 库 | 支持文本粘贴上传 JD,立即调用 `jd_parser` 解析,并支持列表、详情、筛选、title 修改和软删 |
 | JD 一键分析 | `POST /api/jd-analyses` 通过 SSE 跑报告流程:读取 parsed payload、聚合要求、同义去重、Python 重算频次、生成学习路径和 quiz topics |
 | 历史报告 | 保存 `jd_analyses` 快照,包含岗位要求地图、证据 JD ids、token/cost 审计和知识库覆盖矩阵 |
 | Topic 跳转 | 报告里的 quiz topic 候选可作为普通 `/quiz` 主题 query 进入面试练习 |
-| JD 输入边界 | 当前只支持文本 JD;截图 OCR 已从 M2.5 范围移除 |
+| JD 输入边界 | 只支持文本 JD,不做截图 OCR |
 
 ### 面试教练
 
-| 功能 | 当前状态 |
-|------|----------|
+| 功能 | 说明 |
+|------|------|
 | Markdown 笔记入库 | 浏览器读取本地 Markdown,后端按 folder 和 heading 切 chunk,写入 Postgres |
 | Retrieval pipeline | query rewrite、hybrid search、RRF、provider rerank、deterministic governance、0 命中守门 |
 | 出题 | `QuizGenerator` 基于选出的 chunks 生成 source-grounded questions |
@@ -128,8 +126,8 @@ JobCopilot 面向正在准备软件工程岗位的计算机学习者和开发者
 
 ### 工程能力
 
-| 功能 | 当前状态 |
-|------|----------|
+| 功能 | 说明 |
+|------|------|
 | 本地优先 | Docker Compose 启动 Postgres、API、Web、Caddy 和可选 Langfuse |
 | 流式体验 | 出题、评分、整场总结、JD 一键分析等长流程走 SSE |
 | 可观测 | 记录 `trace_id`、LLM calls、token/cost、cache metadata,可选接 Langfuse |
@@ -272,8 +270,8 @@ apps/
   web/              Next.js frontend
 packages/
   schemas/          shared TypeScript schemas
-docs/               产品、技术、API、Agent、评测、路线图文档
-evals/              evaluation datasets and reports
+docs/               状态、任务、技术架构文档
+evals/              评测规范、dataset 与运行报告
 docker/             Dockerfiles and service config
 test-notes/         local dogfood notes and recall output
 ```
@@ -312,23 +310,10 @@ pnpm build
 
 评测规范和组件证据见 [`evals/EVAL_GUIDE.md`](evals/EVAL_GUIDE.md)。
 
-## 项目状态
-
-```text
-M0    仓库改造 + v2 文档重写                                  done
-M1    Markdown 笔记入库 + chunking + 树形导航 + Langfuse 起步   done
-M2    主题 query -> RAG -> 出题 -> LLM-as-Judge                 done
-M2.1  InterviewCoachAgent 状态机 + 多轮纠偏                    done
-M2.5  JD Intelligence Agent + 知识库覆盖分析                   stopped at current scope
-M2.6  JD 长任务持久化 + 并发/背压 + 断线恢复                   planned, not started
-```
-
-M2.5 不再追加可选打磨。后续不再规划 SR、弱点 dashboard、岗位类三源出题、简历上传、简历诊断或简历改写;M2.6 只加固现有 JD 长任务链路,不改变产品边界。
-
 ## 限制与非目标
 
 - 单用户本地 dogfood 项目,暂无 auth 或 SaaS 模式。
-- 当前 JD 上传以文本粘贴为主;截图 OCR 已明确移出 M2.5 范围。
+- JD 上传只支持文本粘贴,不做截图 OCR。
 - JD 聚合不是 RAG pipeline。它是对选定 parsed JDs 的有界归纳统计;RAG 只在 topic 进入 `/quiz` 后发生。
 - 项目明确不做简历生成、简历定制、投递追踪。
 - 自动化验证不会在每次 push 时运行,需要维护者按需手动跑。
@@ -348,7 +333,7 @@ M2.5 不再追加可选打磨。后续不再规划 SR、弱点 dashboard、岗�
 
 - README、文档、onboarding 改进。
 - 有清晰复现路径的 bug fix。
-- 不扩大产品边界的 M2.5 JD Intelligence 改进。
+- 不扩大产品边界的 JD Intelligence 改进。
 - 让手动验证路径更清楚的开发体验改进。
 
 请保持改动聚焦,并说明你做过哪些手动验证。
@@ -370,4 +355,4 @@ JobCopilot is a local-first AI job-preparation workspace for CS learners and dev
 
 It helps you collect job descriptions over time, turn them into requirement maps, knowledge-coverage matrices, and learning paths, then practice those topics with a note-grounded RAG interview coach.
 
-The core workflow is implemented and currently in closeout/dogfood mode. The project is intentionally single-user and local-first, with manual validation gates and a clear non-goal list around resume generation, application tracking, SR dashboards, and SaaS expansion.
+The project is intentionally single-user and local-first, with manual validation gates and a clear non-goal list around resume generation, application tracking, SR dashboards, and SaaS expansion.

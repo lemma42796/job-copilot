@@ -31,6 +31,13 @@ evals/
 - dataset 字段由对应脚本和组件 `EVAL.md` 共同定义,脚本是运行事实。
 - 报告必须注明数据集、运行模式、关键配置和生成时间;LLM / rerank 路径还要报告 tokens、成本或 cache 策略。
 
+## suite 文档与运行报告的分工
+
+- `suites/<component>/EVAL.md`:一个组件长期一份,写方法、dataset schema、指标定义、目标阈值和证据边界。稳定内容,不写某次运行的数字。
+- `reports/<name>-<timestamp>.md`:每次评测或实验新建一份,写该次运行的完整证据。默认被 gitignore;有结论价值、被 `EVAL.md` 引用的报告用 `git add -f` 入库,其余留在本地。
+- 需要评测的新方向(如后端并发压测)先建 `suites/<component>/EVAL.md`,结果照样落 `reports/`。
+- `*.trace.jsonl` 等大体积原始产物一律不入库,只留在本机;`EVAL.md` 引用时标明未入库。
+
 ## 运行与缓存边界
 
 - 所有评测都由用户明确指令后手动运行;AI 助手不主动执行。

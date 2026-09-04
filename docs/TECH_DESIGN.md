@@ -74,14 +74,7 @@ Evaluation:evals/suites + apps/api/scripts/eval_*.py
 
 # 活跃 API 边界
 
-`main.py` 当前挂载四类 router:
-
-- `/v1/health`:liveness。
-- `/api/notes*`:笔记创建、树、详情、更新、移动、软删和批量导入。
-- `/api/quiz*`:创建 session、列表 / 详情、草稿、单题 turn、finish、submit、recall 和 abandon。
-- `/api/jds*`、`/api/jd-analyses*`:JD 入库 / 列表 / 详情 / 修改 / 软删、分析创建 / 列表 / 详情。
-
-公共契约以 router、Pydantic schema 和 OpenAPI 为准。统一约束:
+`main.py` 当前挂载四类 router:`/v1/health`、`/api/notes*`、`/api/quiz*`、`/api/jds*` 与 `/api/jd-analyses*`。端点清单与字段以 router、Pydantic schema 和 OpenAPI 为准,本文不复制。统一约束:
 
 - 普通端点使用 JSON;错误由全局 handler 转为 Problem+JSON。
 - 慢链路使用 `text/event-stream`。
@@ -115,32 +108,18 @@ prompt_versions / llm_calls / llm_response_cache 记录 LLM 配置、审计和�
 
 # 核心数据流
 
+只记录模块顺序与边界;具体步骤以代码、migration 和 OpenAPI 为准。
+
 ## 笔记入库
 
-```text
-浏览器读取 Markdown
-→ /api/notes/batch-import
-→ heading-aware chunk
-→ notes / note_chunks 落库(embedding=NULL)
-→ embed worker 异步补 embedding
-```
+`/api/notes/batch-import` → heading-aware chunk → `notes` / `note_chunks` 落库(embedding=NULL)→ embed worker 异步补齐。
 
-不接 zip 或第三方笔记同步。负载压力按总字数 / token 判断,不按文件数判断。
+- 不接 zip 或第三方笔记同步。
+- 负载压力按总字数 / token 判断,不按文件数判断。
 
 ## 主题出题与检索
 
-```text
-用户主题 query
-→ QueryRewriter
-→ hybrid retrieval + weighted RRF
-→ provider rerank challenger
-→ deterministic governance / blend
-→ clean final context + zero-hit guard
-→ QuizGenerator
-→ questions + quiz_session 落库
-```
-
-约束:
+主题 query → QueryRewriter → hybrid retrieval + weighted RRF → provider rerank challenger → deterministic governance / blend → zero-hit guard → QuizGenerator → `quiz_sessions` 落库。
 
 - 只支持主题 query;聊天框是唯一出题入口。
 - 用户原话权重大于改写,项目私有实体不能被泛化。
@@ -150,19 +129,10 @@ prompt_versions / llm_calls / llm_response_cache 记录 LLM 配置、审计和�
 
 ## 答题、评分与纠偏
 
-```text
-用户答案 / 补答
-→ AnswerJudge 输出 coverage / fidelity / depth evidence
-→ Python 计算稳定总分并校验引用
-→ InterviewCoach 决定 remediate / ask_next / finish
-→ 状态、turn、event 落库
-→ SSE 通知前端
-```
-
-约束:
+答案 / 补答 → AnswerJudge 产出 coverage / fidelity / depth evidence → Python 计算稳定总分并校验引用 → InterviewCoach 决定 remediate / ask_next / finish → 状态与 event 落库 → SSE 通知前端。
 
 - LLM 给 evidence 和 label,不直接决定产品总分。
-- 补答会并入累计答案后重评;教练追问不修改正式答案或分数。
+- 补答并入累计答案后重评;教练追问不修改正式答案或分数。
 - 纠偏必须 evidence-bound,不能引入 final context 外的新标准答案来源。
 - 多轮上下文使用 context pack 和摘要,不把全量 transcript 塞回 prompt。
 - 退出条件包括达标、用户跳过、无明显提升、偏题和 token budget。
@@ -170,34 +140,13 @@ prompt_versions / llm_calls / llm_response_cache 记录 LLM 配置、审计和�
 
 ## JD 分析
 
-```text
-文本 JD
-→ JdParser 立即解析并保存 parsed_payload
-→ 用户选择 JD 范围
-→ JdAggregator raw-JD reduce / merge
-→ Python 重算 supporting_jd_ids 与频次
-→ note coverage matching
-→ learning path + quiz topics
-→ jd_analyses 报告快照
-```
+文本 JD → JdParser 即时解析存 `parsed_payload` → 用户选定范围 → JdAggregator raw-JD reduce / merge → Python 重算 supporting_jd_ids 与频次 → note coverage matching → learning path + quiz topics → `jd_analyses` 报告快照。
 
-JD 聚合是对已选集合的有界归纳,不是 RAG。RAG 只在报告 topic 进入 `/quiz` 后发生。
+- JD 聚合是对已选集合的有界归纳,不是 RAG;RAG 只在报告 topic 进入 `/quiz` 后发生。
+- 执行与观察解耦:进程内 task registry 承载任务,SSE 只订阅有界事件缓冲区;断线不取消任务,同 `analysis_id` 可重新订阅,API 重启会重新启动仍为 `in_progress` 的记录。
+- 文本生成统一经过进程内 LLM admission gate,`BaseLLMClient` 与 AnswerJudge 工具调用链共享同一并发额度;缓存命中不占额度,实际 Provider 调用及其重试占额度。
 
-可靠性链路:
-
-```text
-POST 创建 jd_analyses(in_progress)
-→ 进程内 task registry 启动聚合
-→ JD analysis semaphore 控制同时运行数
-→ SSE 只订阅有界事件缓冲区
-→ 断线不取消 task;同 analysis_id 可重新订阅
-→ done / failed 与最终报告持久化
-→ API 重启时重新启动仍为 in_progress 的记录
-```
-
-文本生成统一经过进程内 LLM admission gate;`BaseLLMClient` 和 AnswerJudge 工具调用链共享同一并发额度。缓存命中不占用上游额度,实际 Provider 调用及其重试占用额度。LLM 调用和 JD 分析终态均输出结构化日志。
-
-当前可靠性边界:这是单 API 进程 MVP,不是分布式任务系统。数据库没有逐步 progress、待执行容量、幂等键、lease 或 heartbeat;多 API 实例可能重复执行同一 `in_progress` 分析。进程重启恢复允许重复外部调用,不能表述为 exactly-once。独立 Worker、多实例接管和容量报告不在当前范围。
+当前可靠性边界:单 API 进程 MVP,不是分布式任务系统。没有逐步 progress 持久化、待执行容量、幂等键、lease 或 heartbeat;多 API 实例可能重复执行同一 `in_progress` 分析。进程重启恢复允许重复外部调用,不能表述为 exactly-once。独立 Worker、多实例接管和容量报告不在当前范围。
 
 # Agent 与 LLM 约束
 

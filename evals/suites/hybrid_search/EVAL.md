@@ -11,8 +11,8 @@
 - Dataset:`evals/suites/hybrid_search/dataset.note_smoke.jsonl`
 - 固定语料:`evals/suites/hybrid_search/notes_fixture/`
 - Runner:`apps/api/scripts/eval_hybrid_search_note_smoke.py`
-- 最近保存报告:`evals/reports/hybrid-search-note-smoke-20260516-100624.md`
-- Trace:`evals/reports/hybrid-search-note-smoke-20260516-100624.trace.jsonl`
+- 最新报告(已入库):`evals/reports/hybrid-search-note-smoke-20260516-100624.md`
+- Trace:`evals/reports/hybrid-search-note-smoke-20260516-100624.trace.jsonl`(1.5 MB,未入库,仅本机)
 
 ## Dataset 关键字段
 
@@ -36,20 +36,9 @@
 | `zero_hit_precision` | 空主题 / 近邻干扰是否被正确拒绝 | ≥ 90% |
 | `hard_negative_intrusion` | hard negative 是否进入最终 context | 越低越好 |
 
-## 最近可信快照
+## 当前已知缺口
 
-2026-05-16 报告,配置为 provider blend、rerank input 50、selected top-k 8、parent-doc off、query embedding cache-only:
-
-- 旧 note-level pass rule:12/12。
-- `candidate_recall@15`:91.67%。
-- `selected_recall@10`:90.00%。
-- `mrr@10`:68.33%。
-- `final_context_recall`:90.00%。
-- `final_context_precision`:41.75%,**低于 70% 目标**。
-- zero-hit:2/2,100%。
-- hard-negative intrusion:0/12。
-
-因此不能只引用“12/12 通过”声称检索质量全部达标;当前明确缺口是 final context 不够干净。
+`final_context_precision` 未达 70% 目标,最终上下文不够干净。因此不能只引用“smoke 全通过”声称检索质量达标。具体数字以最新报告为准。
 
 ## 运行
 

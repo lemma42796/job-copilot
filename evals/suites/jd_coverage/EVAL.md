@@ -8,7 +8,7 @@
 
 - Dataset:`evals/suites/jd_coverage/dataset.jsonl`
 - Runner:`apps/api/scripts/eval_jd_coverage.py`
-- 最近保存报告:`evals/reports/jd-coverage-20260523-104233.md`
+- 最新报告(已入库):`evals/reports/jd-coverage-20260523-104233.md`
 
 ## Label schema
 
@@ -36,19 +36,9 @@
 
 `coverage_accuracy` 只作诊断,不作为 headline。
 
-## 最近可信快照
+## 证据边界
 
-2026-05-23,基于 `analysis#6` 的 10 条人工标签(covered 6 / partial 2 / missing 2):
-
-- coverage macro F1:67.7%。
-- missing recall:100.0%。
-- false covered rate:0.0%。
-- evidence precision@5:77.5%。
-- evidence recall@5:100.0%。
-- evidence MRR@5:87.5%。
-- 唯一分类错例:`req_44 查询改写` 人工为 covered、系统为 partial,属于保守误差。
-
-该小样本只支撑当前 analysis#6 的最小覆盖证据,不能外推任意 JD 或知识库。
+标签只覆盖 `analysis#6` 的 10 条人工判断(covered 6 / partial 2 / missing 2),只支撑该次分析的最小覆盖证据,不能外推任意 JD 或知识库。具体数字以最新报告为准。
 
 ## 运行
 
