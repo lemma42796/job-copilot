@@ -50,7 +50,7 @@ def _result(**overrides: Any) -> LLMResult:
         cached_tokens=2,
         cost_cny=Decimal("0.001"),
         latency_ms=123,
-        model="qwen3.6-flash",
+        model="qwen3.8-flash",
         feature="jd_parse",
         tier=Tier.CHEAP,
         thinking_mode=False,
@@ -89,7 +89,7 @@ async def test_log_writes_one_row_with_all_fields() -> None:
     assert isinstance(record, LlmCall)
     assert record.feature == "jd_parse"
     assert record.tier == "cheap"  # tier.value, not the enum
-    assert record.model == "qwen3.6-flash"
+    assert record.model == "qwen3.8-flash"
     assert record.tokens_in == 10
     assert record.cached_tokens == 2
     assert record.tokens_out == 4

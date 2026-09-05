@@ -1,8 +1,9 @@
 """JudgeClient(S21 子任务 4-C)— 调 LLMClient 跑 Rubric / evidence 评测。
 
-模型选择:Judge 永远走 `Tier.PREMIUM`(qwen3.6-plus thinking on),被评的
-agent 是 qwen3.6-flash;**评委 ≠ 被评者**避免自评偏高 5-10pp(EVAL_PLAN
-§6.3)。
+模型选择:Judge 永远走 `Tier.PREMIUM`(qwen3.8-flash thinking on)。注意
+被评 agent 同为 qwen3.8-flash,**评委 = 被评者**,EVAL_PLAN §6.3 所述的
+自评偏高 5-10pp 在当前配置下未被规避;绝对分数只可用于同配置下的纵向
+对比,不可作为质量绝对值。恢复隔离需要给 PREMIUM 换回独立模型。
 
 Temperature 注:EVAL_PLAN 写 Judge 应当用 0.2,但当前 `LLMClient.complete`
 接口未暴露 temperature(走 DashScope SDK 默认),只能用 prompt 端"严格按

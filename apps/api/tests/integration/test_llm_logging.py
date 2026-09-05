@@ -147,7 +147,7 @@ async def test_success_call_writes_one_success_row(
         ).one()
     assert row.feature == "jd_parse"
     assert row.tier == "cheap"
-    assert row.model == "qwen3.6-flash"
+    assert row.model == "qwen3.8-flash"
     assert row.success is True
     assert row.tokens_in == 120
     assert row.cached_tokens == 10

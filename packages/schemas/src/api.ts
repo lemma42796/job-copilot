@@ -605,7 +605,7 @@ export interface components {
          * @description `jd_source` PG ENUM (migration 0003).
          *
          *     M1 API only accepts `text_paste` / `pdf_upload` (ADR-0006 D1);
-         *     `image_upload` ships with M1 末 (qwen3.6-flash 原生多模态); `extension_paste`
+         *     `image_upload` ships with M1 末 (qwen3.8-flash 原生多模态); `extension_paste`
          *     is reserved for M5+.
          * @enum {string}
          */

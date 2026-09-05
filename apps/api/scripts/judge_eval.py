@@ -19,7 +19,7 @@
         --report  evals/reports/judge-resume-2026-05.md
 
 环境:连真 DashScope(`JOBCOPILOT_DASHSCOPE_API_KEY`)。Judge 走 Tier.PREMIUM
-(qwen3.6-plus thinking on);相同 dataset 重跑命中 4-B response cache,成本
+(qwen3.8-flash thinking on);相同 dataset 重跑命中 4-B response cache,成本
 接近 0(`cached=true / cost_cny=0`)。
 """
 
@@ -229,7 +229,7 @@ def render_resume_report(rows: list[ResumeResultRow]) -> str:
 
     lines: list[str] = []
     lines.append("# Judge: resume_generate Rubric 报告\n")
-    lines.append(f"样本量:{n} 条 | Judge model: qwen3.6-plus(thinking on)\n")
+    lines.append(f"样本量:{n} 条 | Judge model: qwen3.8-flash(thinking on)\n")
     lines.append("## 总体均值\n")
     lines.append("| 指标 | 值 | EVAL_PLAN 阈值 |")
     lines.append("|------|----|---------------|")
@@ -278,7 +278,7 @@ def render_evidence_report(rows: list[EvidenceResultRow]) -> str:
 
     lines: list[str] = []
     lines.append("# Judge: match_analysis evidence_validity 报告\n")
-    lines.append(f"样本量:{n} 条 | Judge model: qwen3.6-plus(thinking on)\n")
+    lines.append(f"样本量:{n} 条 | Judge model: qwen3.8-flash(thinking on)\n")
     lines.append("## 总体\n")
     lines.append(f"- supports=true 比例:{supports_count}/{n} = {supports_count / n:.2f}")
     lines.append(f"- Cache 命中数:{cached_count}/{n}")

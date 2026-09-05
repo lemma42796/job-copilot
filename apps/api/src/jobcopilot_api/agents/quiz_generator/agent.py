@@ -1,7 +1,7 @@
 """QuizGenerator 编排(M2)。
 
 config(docs/TECH_DESIGN.md):
-- model: qwen3.6-flash(Tier.CHEAP)
+- model: qwen3.8-flash(Tier.CHEAP)
 - thinking: off(出题靠 chunks 内容重组,不需复杂推理)
 - temperature: 0.3(降随机性,要稳定结构)
 - prompt name/version: quiz_generator v1.3(详见 prompts.py)

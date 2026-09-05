@@ -15,7 +15,7 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "llm"
 
 def _request(content_marker: str = "u") -> ProviderRequest:
     return ProviderRequest(
-        model="qwen3.6-flash",
+        model="qwen3.8-flash",
         system="s",
         user=content_marker,
         response_format=None,

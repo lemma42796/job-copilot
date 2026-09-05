@@ -1,7 +1,7 @@
 """FollowupOrchestrator 编排(M3)— LangGraph state 机。
 
 config(docs/TECH_DESIGN.md):
-- model: qwen3.6-flash
+- model: qwen3.8-flash
 - thinking: on(多轮 reasoning 必需)
 - temperature: 0.2
 - 触发条件: coverage_score < 60 AND ≥1 个 depth 维度 covered=false

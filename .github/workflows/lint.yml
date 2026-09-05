@@ -55,6 +55,6 @@ jobs:
               --exclude-dir=__pycache__ --exclude-dir=slices \
               --exclude=STATUS.md --exclude=lint.yml \
               .; then
-            echo "::error::发现过时模型 ID。项目唯一模型是 qwen3.6-flash(详见 STATUS.md 永久约束 19)。docs/slices/ 已豁免(历史踩坑记录)。"
+            echo "::error::发现过时模型 ID。项目唯一模型是 qwen3.8-flash(详见 STATUS.md 永久约束 19)。docs/slices/ 已豁免(历史踩坑记录)。"
             exit 1
           fi

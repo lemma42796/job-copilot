@@ -234,7 +234,7 @@ async def start_session_sse(
 
         # 7. quiz_generator LLM
         yield _ev(
-            "progress", {"phase": "generating", "model": "qwen3.6-flash"}
+            "progress", {"phase": "generating", "model": "qwen3.8-flash"}
         )
         gen_chunks = [
             QuizGenChunkInput(

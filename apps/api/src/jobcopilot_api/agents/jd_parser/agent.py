@@ -1,7 +1,7 @@
 """JdParser 编排(M2.5)— JD 上传时立即调一次。
 
 config(docs/TECH_DESIGN.md):
-- model: qwen3.6-flash
+- model: qwen3.8-flash
 - thinking: off
 - temperature: 0.3
 - prompt name/version: jd_parser v1.0

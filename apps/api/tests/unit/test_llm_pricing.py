@@ -34,7 +34,7 @@ def test_flash_cost_with_cache() -> None:
 
 def test_unknown_model_returns_zero() -> None:
     cost = cost_for(
-        model="qwen3.6-plus",  # not yet in table — pending real-test backfill
+        model="model-not-in-price-table",
         tokens_in=1000,
         cached_tokens=0,
         tokens_out=500,

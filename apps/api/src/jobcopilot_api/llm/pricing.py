@@ -40,6 +40,14 @@ class ToolCallPricing:
 
 
 _TABLE: dict[str, Pricing] = {
+    # DashScope Model Studio console, China Mainland, 2026-09-05.
+    "qwen3.8-flash": Pricing(
+        in_=Decimal("0.8"),
+        cached_in=Decimal("0.1"),
+        cache_creation_in=Decimal("1.25"),
+        out=Decimal("2.7"),
+    ),
+    # 保留:历史 llm_calls 行仍按旧模型计价,删掉会让成本回溯失效。
     # DashScope Model Studio console, China Mainland, 2026-05-13.
     "qwen3.6-flash": Pricing(
         in_=Decimal("1.2"),
@@ -47,11 +55,19 @@ _TABLE: dict[str, Pricing] = {
         cache_creation_in=Decimal("1.5"),
         out=Decimal("7.2"),
     ),
-    # qwen3.6-plus: 实测后回填 (ADR-0003 §「负面」第 4 条)
+    # qwen3.6-plus 已不再使用(PREMIUM 亦切至 qwen3.8-flash),不再回填。
 }
 
 
 _BATCH_TABLE: dict[str, BatchPricing] = {
+    # DashScope Model Studio console, China Mainland, 2026-09-05.
+    # chat_in / chat_out 为限时 5 折价(原价 0.8 / 2.7),折扣到期需回填。
+    "qwen3.8-flash": BatchPricing(
+        file_in=Decimal("0.4"),
+        file_out=Decimal("1.35"),
+        chat_in=Decimal("0.4"),
+        chat_out=Decimal("1.35"),
+    ),
     # DashScope Model Studio console, China Mainland, 2026-05-13.
     "qwen3.6-flash": BatchPricing(
         file_in=Decimal("0.6"),

@@ -9,20 +9,20 @@ from jobcopilot_api.llm.tiers import Tier, tier_to_model
 
 def test_cheap_tier_uses_flash_without_thinking() -> None:
     cfg = tier_to_model(Tier.CHEAP)
-    assert cfg.model == "qwen3.6-flash"
+    assert cfg.model == "qwen3.8-flash"
     assert cfg.thinking_mode is False
     assert cfg.default_timeout_s == 30.0
 
 
 def test_standard_tier_uses_flash_with_thinking() -> None:
     cfg = tier_to_model(Tier.STANDARD)
-    assert cfg.model == "qwen3.6-flash"
+    assert cfg.model == "qwen3.8-flash"
     assert cfg.thinking_mode is True
 
 
-def test_premium_tier_uses_plus_with_thinking_and_higher_timeout() -> None:
+def test_premium_tier_uses_flash_with_thinking_and_higher_timeout() -> None:
     cfg = tier_to_model(Tier.PREMIUM)
-    assert cfg.model == "qwen3.6-plus"
+    assert cfg.model == "qwen3.8-flash"
     assert cfg.thinking_mode is True
     assert cfg.default_timeout_s == 60.0
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -23,6 +24,7 @@ from jobcopilot_api.llm.errors import (
     LLMTimeoutError,
     LLMUpstreamError,
 )
+from jobcopilot_api.llm import tiers
 from jobcopilot_api.llm.providers.dummy import DummyProvider
 from jobcopilot_api.llm.tiers import Tier
 
@@ -62,7 +64,7 @@ async def test_complete_happy_path() -> None:
     assert result.cached_tokens == 2
     assert result.feature == "jd_parse"
     assert result.tier is Tier.CHEAP
-    assert result.model == "qwen3.6-flash"
+    assert result.model == "qwen3.8-flash"
     assert result.thinking_mode is False
     assert result.error_code is None
     assert len(logger.calls) == 1
@@ -252,12 +254,22 @@ async def test_cost_uses_pricing_table_for_known_model() -> None:
     assert result.cost_cny == Decimal("8.4")
 
 
-async def test_cost_zero_for_unknown_model() -> None:
+async def test_cost_zero_for_unknown_model(monkeypatch) -> None:
     dummy = DummyProvider()
     dummy.queue(content="ok", tokens_in=100, tokens_out=50)
     client, _ = _client(dummy)
 
-    # PREMIUM maps to qwen3.6-plus which is not yet in the price table.
+    # 所有 tier 现在都映射到 qwen3.8-flash,且它在价目表内,因此改为
+    # 直接把该 tier 的模型换成一个不存在于价目表的 ID 来覆盖该分支。
+    monkeypatch.setattr(
+        "jobcopilot_api.llm.tiers._TIER_TABLE",
+        {
+            **tiers._TIER_TABLE,
+            Tier.PREMIUM: replace(
+                tiers._TIER_TABLE[Tier.PREMIUM], model="model-not-in-price-table"
+            ),
+        },
+    )
     result = await client.complete(
         feature="jd_parse",
         tier=Tier.PREMIUM,
@@ -304,7 +316,7 @@ async def test_thinking_mode_for_standard_tier() -> None:
     )
     sent: ProviderRequest = dummy.calls[0]
     assert sent.thinking_mode is True
-    assert sent.model == "qwen3.6-flash"
+    assert sent.model == "qwen3.8-flash"
 
 
 async def test_explicit_timeout_overrides_tier_default() -> None:

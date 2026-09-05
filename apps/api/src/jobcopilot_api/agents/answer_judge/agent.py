@@ -1,7 +1,7 @@
 """AnswerJudge 编排(M2)。
 
 config(docs/TECH_DESIGN.md):
-- model: qwen3.6-flash
+- model: qwen3.8-flash
 - thinking: off(M2 dogfood:thinking on 在 AnswerJudge 长 prompt 下不收尾)
 - temperature: 0.2
 - prompt name/version: answer_judge v1.4
