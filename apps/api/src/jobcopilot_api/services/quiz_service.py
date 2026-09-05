@@ -78,6 +78,10 @@ logger = logging.getLogger(__name__)
 
 REFERENCE_POINTS_MIN = 2
 REFERENCE_POINTS_MAX = 5
+# quiz_generator 输出过 Pydantic 校验但违反完整性约束时的总尝试次数
+# (首次 + 重试)。重试把失败原因拼进 prompt;每次尝试都是真实 LLM 调用
+# 并正常计费,次数收敛在 2 避免成本放大。
+GEN_INTEGRITY_ATTEMPTS = 2
 EVIDENCE_SUPPORT_MIN_SCORE = 0.18
 EVIDENCE_SUPPORT_MIN_HITS = 2
 _CITATION_RE = re.compile(r"\[(\d+)\]")
@@ -267,25 +271,42 @@ async def start_session_sse(
             chunks=gen_chunks,
             question_count=payload.question_count,
         )
-        try:
-            llm_result = await quiz_generator_agent.run(gen_input, user_id=user_id)
-        except LLMError as e:
-            raise IntegrityCheckError(f"quiz_generator LLM 调用失败:{e}") from e
+        correction: str | None = None
+        for attempt in range(1, GEN_INTEGRITY_ATTEMPTS + 1):
+            try:
+                llm_result = await quiz_generator_agent.run(
+                    gen_input, user_id=user_id, correction=correction
+                )
+            except LLMError as e:
+                raise IntegrityCheckError(f"quiz_generator LLM 调用失败:{e}") from e
 
-        gen_output = llm_result.parsed
-        if not isinstance(gen_output, QuizGenOutput):
-            raise IntegrityCheckError(
-                "quiz_generator 没返回有效的 QuizGenOutput"
-            )
+            gen_output = llm_result.parsed
+            if not isinstance(gen_output, QuizGenOutput):
+                raise IntegrityCheckError(
+                    "quiz_generator 没返回有效的 QuizGenOutput"
+                )
 
-        # 8. 后处理 + 完整性校验
-        rows = _build_question_rows(
-            gen_output=gen_output,
-            gen_chunks=gen_chunks,
-            query=payload.query,
-            mode=payload.mode,
-            llm_result=llm_result,
-        )
+            # 8. 后处理 + 完整性校验;结构约束失败时带原因重试一次
+            #    (scoring_points 数量 / 引用完整性等属于 LLM 输出方差,
+            #     Pydantic 层拦不住,盲重采样成功率低,把失败原因反馈给模型)
+            try:
+                rows = _build_question_rows(
+                    gen_output=gen_output,
+                    gen_chunks=gen_chunks,
+                    query=payload.query,
+                    mode=payload.mode,
+                    llm_result=llm_result,
+                )
+            except IntegrityCheckError as e:
+                correction = str(e)
+                if attempt >= GEN_INTEGRITY_ATTEMPTS:
+                    raise
+                yield _ev(
+                    "progress",
+                    {"phase": "generating_retry", "attempt": attempt + 1},
+                )
+                continue
+            break
         yield _ev(
             "progress",
             {

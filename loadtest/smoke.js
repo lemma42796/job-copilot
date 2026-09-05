@@ -32,10 +32,16 @@ export default function () {
     JSON.stringify({
       title: '压测笔记 - Python GIL',
       folder_path: ['loadtest'],
-      content:
-        '# GIL\n\nCPython 的全局解释器锁保证同一时刻只有一个线程执行字节码。' +
-        'CPU 密集任务因此无法靠多线程加速,需要多进程或把热点下沉到 C 扩展。' +
-        'IO 密集任务在等待时会释放 GIL,所以多线程仍然有效。',
+      content_md:
+        '# Python 并发与 GIL\n\n' +
+        '## GIL 是什么\n\n' +
+        'Python 的全局解释器锁(GIL)保证同一时刻只有一个线程执行 Python 字节码。\n\n' +
+        '## GIL 对 CPU 密集的影响\n\n' +
+        'CPU 密集任务在 Python 里无法靠多线程加速,因为 GIL 让线程串行执行,' +
+        '需要改用多进程或把热点下沉到 C 扩展来绕过 GIL。\n\n' +
+        '## GIL 对 IO 密集的影响\n\n' +
+        'IO 密集任务在等待时会释放 GIL,所以 Python 多线程对 IO 密集场景仍然有效,' +
+        '并发能力基本不受 GIL 限制。',
     }),
     { headers },
   );
@@ -45,9 +51,10 @@ export default function () {
   sleep(15);
 
   // 3. 出题:202 + job_id,不再是一条长 SSE。
+  const questionCount = 2;
   const created = http.post(
     api('/quiz/sessions'),
-    JSON.stringify({ query: 'Python GIL 对并发的影响', mode: 'topic', question_count: 2 }),
+    JSON.stringify({ query: 'Python GIL 对并发的影响', mode: 'topic', question_count: questionCount }),
     { headers },
   );
   check(created, { 'quiz 202': (r) => r.status === 202 });
@@ -57,13 +64,15 @@ export default function () {
   const status = waitForJob(token, created.json('job_id'));
   check({ status }, { '出题任务成功': (o) => o.status === 'succeeded' });
 
-  // 4. 存草稿 + 提交评分。
-  const draft = http.put(
-    api(`/quiz/sessions/${sessionId}/answers/0`),
-    JSON.stringify({ answer_text: 'GIL 让 CPU 密集的多线程无法并行,IO 密集不受影响。' }),
-    { headers },
-  );
-  check(draft, { 'draft 200': (r) => r.status === 200 });
+  // 4. 给每一题存草稿(submit 要求所有题的 user_answer 非空)+ 提交评分。
+  for (let i = 0; i < questionCount; i++) {
+    const draft = http.put(
+      api(`/quiz/sessions/${sessionId}/answers/${i}`),
+      JSON.stringify({ user_answer: 'GIL 让 CPU 密集的多线程无法并行,IO 密集不受影响。' }),
+      { headers },
+    );
+    check(draft, { [`draft ${i} 200`]: (r) => r.status === 200 });
+  }
 
   const submitted = http.post(api(`/quiz/sessions/${sessionId}/submit`), null, { headers });
   check(submitted, { 'submit 202': (r) => r.status === 202 });

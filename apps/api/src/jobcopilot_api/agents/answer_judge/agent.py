@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from time import monotonic
+from types import SimpleNamespace
 from typing import Any
 
 from langfuse.openai import AsyncOpenAI
@@ -344,6 +345,11 @@ async def _run_with_lookup_tool(
 def _get_tool_client() -> AsyncOpenAI:
     global _tool_client
     if _tool_client is None:
+        # P8 压测:stub 模式下 _create_chat_completion 不碰这个 client,
+        # 无 key 也不报错。
+        if settings.llm_provider == "stub":
+            _tool_client = AsyncOpenAI(api_key="stub", base_url=DASHSCOPE_BASE_URL)
+            return _tool_client
         if not settings.dashscope_api_key:
             raise LLMAuthError("AnswerJudge tool path requires DashScope API key")
         _tool_client = AsyncOpenAI(
@@ -361,6 +367,31 @@ async def _create_chat_completion(
     thinking_mode: bool,
     tool_mode: str,
 ) -> Any:
+    # P8 压测:上游换 stub 假实现 —— 直接返回无 tool_calls 的终态 JSON,
+    # 循环首轮即收敛。token 折算与 StubProvider 同口径(÷4)。
+    if settings.llm_provider == "stub":
+        from jobcopilot_api.llm.providers.stub import (
+            stub_answer_judge_content,
+            stub_upstream_call,
+        )
+
+        async with get_llm_admission_gate():
+            await stub_upstream_call()
+        content = stub_answer_judge_content()
+        prompt_chars = sum(len(str(m.get("content", ""))) for m in messages)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=content, tool_calls=None)
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=max(1, prompt_chars // 4),
+                completion_tokens=max(1, len(content) // 4),
+                prompt_tokens_details=None,
+            ),
+        )
+
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": list(messages),

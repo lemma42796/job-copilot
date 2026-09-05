@@ -28,8 +28,36 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 ENV PATH="/app/.venv/bin:${PATH}"
 
-# 没有 HTTP 端口,健康检查就看进程还在不在。
+# 没有 HTTP 端口,健康检查就看 worker 主进程还在不在。
+# python:3.12-slim-bookworm 不带 procps(pgrep / ps 都没有),所以用纯 Python
+# 扫 /proc:命中条件是某进程 argv 同时含独立 token `-m` 与模块名。healthcheck
+# 自身 argv 是 [python, /app/worker_healthcheck.py],不含这两个 token,不会自命中。
+COPY <<'EOF' /app/worker_healthcheck.py
+import os
+import sys
+
+TARGET = (b"-m", b"jobcopilot_api.workers.main")
+
+
+def _argv(pid: str) -> list[bytes]:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read().split(b"\x00")
+    except OSError:
+        return []
+
+
+def _alive() -> bool:
+    for pid in os.listdir("/proc"):
+        if pid.isdigit() and all(token in _argv(pid) for token in TARGET):
+            return True
+    return False
+
+
+sys.exit(0 if _alive() else 1)
+EOF
+
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD pgrep -f "jobcopilot_api.workers.main" > /dev/null || exit 1
+    CMD ["python", "/app/worker_healthcheck.py"]
 
 CMD ["python", "-m", "jobcopilot_api.workers.main"]

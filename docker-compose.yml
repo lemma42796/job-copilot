@@ -40,6 +40,8 @@ services:
     container_name: jobcopilot-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -66,6 +68,10 @@ services:
       JOBCOPILOT_DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       JOBCOPILOT_LLM_PROVIDER: ${LLM_PROVIDER:-dashscope}
       JOBCOPILOT_LLM_MAX_CONCURRENCY: ${JOBCOPILOT_LLM_MAX_CONCURRENCY:-32}
+      # 压测 stub 上游参数(loadtest/);仅 LLM_PROVIDER=stub 时生效。
+      JOBCOPILOT_STUB_LATENCY_S: ${JOBCOPILOT_STUB_LATENCY_S:-2}
+      JOBCOPILOT_STUB_MAX_CONCURRENCY: ${JOBCOPILOT_STUB_MAX_CONCURRENCY:-256}
+      JOBCOPILOT_LLM_CACHE_ENABLED: ${JOBCOPILOT_LLM_CACHE_ENABLED:-true}
       JOBCOPILOT_JD_ANALYSIS_MAX_CONCURRENCY: ${JOBCOPILOT_JD_ANALYSIS_MAX_CONCURRENCY:-1}
       # P0/P1:令牌签名密钥与注册赠额。auth_secret 留空时 /api/auth 一律 401。
       JOBCOPILOT_AUTH_SECRET: ${JOBCOPILOT_AUTH_SECRET:-dev-auth-secret-change-in-prod}
@@ -106,6 +112,10 @@ services:
       JOBCOPILOT_DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       JOBCOPILOT_LLM_PROVIDER: ${LLM_PROVIDER:-dashscope}
       JOBCOPILOT_LLM_MAX_CONCURRENCY: ${JOBCOPILOT_LLM_MAX_CONCURRENCY:-32}
+      # 压测 stub 上游参数(loadtest/);仅 LLM_PROVIDER=stub 时生效。
+      JOBCOPILOT_STUB_LATENCY_S: ${JOBCOPILOT_STUB_LATENCY_S:-2}
+      JOBCOPILOT_STUB_MAX_CONCURRENCY: ${JOBCOPILOT_STUB_MAX_CONCURRENCY:-256}
+      JOBCOPILOT_LLM_CACHE_ENABLED: ${JOBCOPILOT_LLM_CACHE_ENABLED:-true}
       JOBCOPILOT_AUTH_SECRET: ${JOBCOPILOT_AUTH_SECRET:-dev-auth-secret-change-in-prod}
       JOBCOPILOT_REDIS_URL: ${JOBCOPILOT_REDIS_URL:-redis://redis:6379/0}
       # 每个 worker 副本并发跑几条 job。副本数 × 这个值 = 同时在飞的任务数,

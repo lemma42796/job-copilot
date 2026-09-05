@@ -168,6 +168,42 @@ async def rerank(
 
     candidate_chunks = chunks[:QWEN3_RERANK_MAX_DOCUMENTS]
     documents = [_format_document(c) for c in candidate_chunks]
+
+    # P8 压测:上游换 stub 假实现 —— 固定延迟 / 固定并发上限,零真实调用。
+    # 记账仍走 record_usage(模拟 token / 成本),保持账本链路满负载。
+    if settings.llm_provider == "stub":
+        from jobcopilot_api.llm.providers.stub import stub_upstream_call
+
+        await billing_service.assert_can_spend(user_id)
+        breaker.check()
+        started = monotonic()
+        async with get_llm_admission_gate():
+            await stub_upstream_call()
+        breaker.record_success()
+        stub_tokens = len(query) + sum(len(d) for d in documents)
+        stub_cost = _rerank_cost(stub_tokens)
+        await record_usage(
+            user_id=user_id,
+            feature=FEATURE_RERANK,
+            channel=billing_service.CHANNEL_RERANK,
+            model=model,
+            tokens_in=stub_tokens,
+            cost_cny=stub_cost,
+            latency_ms=int((monotonic() - started) * 1000),
+            success=True,
+            metadata={"doc_count": len(documents), "top_k": top_k, "stub": True},
+        )
+        scored = [
+            (chunk, 1.0 - 0.01 * i)
+            for i, chunk in enumerate(candidate_chunks[:top_k])
+        ]
+        return RerankResult(
+            scored=scored,
+            total_tokens=stub_tokens,
+            model=model,
+            cost_cny=stub_cost,
+        )
+
     generation = start_generation(
         name="reranker",
         model=model,

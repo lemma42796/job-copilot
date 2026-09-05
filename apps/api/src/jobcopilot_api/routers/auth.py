@@ -41,8 +41,10 @@ async def register(payload: RegisterIn, session: SessionDep) -> TokenOut:
         password=payload.password,
         name=payload.name,
     )
-    await session.commit()
+    # 先签 token 再 commit:签发失败(如 AUTH_SECRET 未配置)时
+    # get_session 会 rollback,避免“用户已落库但拿不到 token”的残留。
     token = auth_service.issue_token(user.id)
+    await session.commit()
     return TokenOut(
         access_token=token.access_token,
         expires_at=token.expires_at,

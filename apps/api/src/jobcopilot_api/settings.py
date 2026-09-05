@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     dashscope_api_key: str = Field(default="")
     llm_provider: str = Field(default="dashscope")
 
+    # 压测专用 stub 上游(loadtest/,P8):上游在压测中是常量不是变量 ——
+    # 固定延迟、固定并发上限(超限排队不报错)、永远返回合法响应。
+    stub_latency_s: float = Field(default=2.0, ge=0)
+    stub_max_concurrency: int = Field(default=256, ge=1)
+
     # S21 4-B: response cache 默认开 — dogfood/评测命中率 70%+,直接降一个数量级
     # 成本。需要每次都走真 LLM(prompt 调试 / token 流式)时设 false 关掉。
     llm_cache_enabled: bool = Field(default=True)

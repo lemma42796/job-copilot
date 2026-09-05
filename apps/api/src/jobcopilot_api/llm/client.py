@@ -77,6 +77,9 @@ class ProviderRequest:
     timeout_s: float
     max_tokens: int = 4096
     temperature: float | None = None  # docs/TECH_DESIGN.md:agent 显式传不依赖默认
+    # 调用方 feature 名(query_rewriter / quiz_generator / ...)。生产
+    # provider 不看它;StubProvider 靠它分发预构响应(P8 压测)。
+    feature: str = ""
     messages: list[ChatMessage] | None = None
 
 
@@ -475,6 +478,7 @@ class BaseLLMClient:
                         max_tokens=effective_max_tokens,
                         temperature=temperature,
                         messages=first_messages,
+                        feature=feature,
                     ),
                     on_token=on_token,
                 )
@@ -504,6 +508,7 @@ class BaseLLMClient:
                                     if messages is not None
                                     else None
                                 ),
+                                feature=feature,
                             ),
                             on_token=on_token,
                         )
