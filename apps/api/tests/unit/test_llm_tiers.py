@@ -7,10 +7,11 @@ import pytest
 from jobcopilot_api.llm.tiers import Tier, tier_to_model
 
 
-def test_cheap_tier_uses_flash_without_thinking() -> None:
+def test_cheap_tier_uses_flash_with_thinking() -> None:
     cfg = tier_to_model(Tier.CHEAP)
     assert cfg.model == "qwen3.8-flash"
-    assert cfg.thinking_mode is False
+    assert cfg.thinking_mode is True
+    assert cfg.reasoning_effort == "medium"
     assert cfg.default_timeout_s == 30.0
 
 

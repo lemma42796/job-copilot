@@ -161,7 +161,8 @@ prompt_versions / llm_calls / llm_response_cache 记录 LLM 配置、审计和�
 
 Prompt 和模型规则:
 
-- 当前文本 Agent 统一使用 `qwen3.8-flash`;thinking / temperature 由具体 Agent 显式配置。
+- 当前文本 Agent 统一使用 `qwen3.8-flash`;temperature 由具体 Agent 显式配置。
+- thinking 默认开启,力度为 `reasoning_effort=medium`(思维链预算 16384 token),三个 tier 一致。上游要求 `reasoning_effort` 与 `thinking_budget` 不可同设,故全仓只下发前者。例外:AnswerJudge 在强制指定工具的轮次单独关闭 thinking,因为上游不支持思考模式下强制调用某个工具。
 - prompt 修改必须 bump version;启动时从仓库 prompt 资产同步到 `prompt_versions`。
 - 应用层 response cache 缓完整请求 / 响应;query embedding eval 默认 cache-only。
 - Context Cache 只优化 provider 计算和计费,不是会话记忆,当前显式模式默认关闭。

@@ -22,6 +22,7 @@ def compute_cache_key(
     response_format: dict[str, Any] | None,
     thinking_mode: bool,
     prompt_version_id: int | None,
+    reasoning_effort: str | None = None,
     temperature: float | None = None,
 ) -> str:
     payload = {
@@ -30,6 +31,7 @@ def compute_cache_key(
         "user": user,
         "response_format": response_format,
         "thinking_mode": thinking_mode,
+        "reasoning_effort": reasoning_effort,
         "prompt_version_id": prompt_version_id,
         "temperature": temperature,
     }

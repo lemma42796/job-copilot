@@ -98,6 +98,10 @@ class DashscopeProvider(Provider):
             "max_tokens": request.max_tokens,
             "extra_body": {"enable_thinking": request.thinking_mode},
         }
+        # reasoning_effort 与 thinking_budget 互斥(同设上游报错),这里只发前者。
+        # thinking 关闭时不下发,避免上游按 `none` 以外的档位重新开启思考。
+        if request.thinking_mode and request.reasoning_effort is not None:
+            kwargs["extra_body"]["reasoning_effort"] = request.reasoning_effort
         if request.response_format is not None:
             kwargs["response_format"] = request.response_format
         if request.temperature is not None:

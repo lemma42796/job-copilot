@@ -76,6 +76,8 @@ class ProviderRequest:
     max_tokens: int = 4096
     temperature: float | None = None  # docs/TECH_DESIGN.md:agent 显式传不依赖默认
     messages: list[ChatMessage] | None = None
+    # 思考力度档位,thinking_mode=False 时忽略。见 tiers.TierConfig。
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -422,6 +424,7 @@ class BaseLLMClient:
             user=cache_key_user,
             response_format=response_format,
             thinking_mode=cfg.thinking_mode,
+            reasoning_effort=cfg.reasoning_effort,
             prompt_version_id=prompt_version_id,
             temperature=temperature,
         )
@@ -456,6 +459,7 @@ class BaseLLMClient:
                         user=first_user,
                         response_format=response_format,
                         thinking_mode=cfg.thinking_mode,
+                        reasoning_effort=cfg.reasoning_effort,
                         timeout_s=effective_timeout,
                         max_tokens=effective_max_tokens,
                         temperature=temperature,
@@ -481,6 +485,7 @@ class BaseLLMClient:
                                 ),
                                 response_format=response_format,
                                 thinking_mode=cfg.thinking_mode,
+                                reasoning_effort=cfg.reasoning_effort,
                                 timeout_s=effective_timeout,
                                 max_tokens=effective_max_tokens,
                                 temperature=temperature,

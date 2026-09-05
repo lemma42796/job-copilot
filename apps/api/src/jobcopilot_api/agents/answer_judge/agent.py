@@ -206,11 +206,13 @@ async def _run_with_lookup_tool(
                 else "none"
             )
             force_lookup_next = False
+            # 上游不支持在思考模式下强制指定工具(tool_choice 指名 function),
+            # 故 forced 轮单独关掉思考;其余轮次跟随 tier 配置。
             resp = await _create_chat_completion(
                 client=client,
                 model=cfg.model,
                 messages=messages,
-                thinking_mode=cfg.thinking_mode,
+                thinking_mode=cfg.thinking_mode and tool_mode != "forced",
                 tool_mode=tool_mode,
             )
             _absorb_usage(usage, resp)
@@ -351,6 +353,11 @@ async def _create_chat_completion(
         "temperature": TEMPERATURE,
         "extra_body": {"enable_thinking": thinking_mode},
     }
+    # 与 llm/providers/dashscope.py 保持一致:只发 reasoning_effort,不发
+    # thinking_budget(两者同设上游报错)。
+    effort = tier_to_model(Tier.CHEAP).reasoning_effort
+    if thinking_mode and effort is not None:
+        kwargs["extra_body"]["reasoning_effort"] = effort
     if tool_mode == "auto":
         kwargs["tools"] = [LOOKUP_TOOL_SPEC]
         kwargs["tool_choice"] = "auto"
@@ -479,11 +486,18 @@ def _snippet(content: str, limit: int = 500) -> str:
 
 
 def _assistant_tool_message(message: Any, tool_calls: list[Any]) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "role": "assistant",
         "content": message.content or "",
         "tool_calls": [_tool_call_to_dict(tool_call) for tool_call in tool_calls],
     }
+    # qwen3.8-flash 的 preserve_thinking 默认为 true,要求历史轮次的
+    # reasoning_content 原样回传,且不得拼接进 content。缺失不报错,但会
+    # 丢失模型对自己上一轮推理的引用。
+    reasoning = getattr(message, "reasoning_content", None)
+    if reasoning:
+        out["reasoning_content"] = reasoning
+    return out
 
 
 def _tool_call_to_dict(tool_call: Any) -> dict[str, Any]:
@@ -649,7 +663,7 @@ def _build_result(
         model=model,
         feature=PROMPT_NAME,
         tier=Tier.CHEAP,
-        thinking_mode=False,
+        thinking_mode=cfg.thinking_mode,
         success=success,
         error_code=error_code,
         user_id=None,

@@ -95,7 +95,7 @@ async def rewrite_query(
     try:
         result = await client.complete(
             feature=PROMPT_NAME,
-            tier=Tier.CHEAP,  # docs/TECH_DESIGN.md thinking off
+            tier=Tier.CHEAP,
             system=SYSTEM_PROMPT,
             user=USER_TEMPLATE.format(user_query=user_query),
             response_schema=QueryRewriteOutput,
