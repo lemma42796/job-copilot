@@ -12,6 +12,14 @@ services:
     image: pgvector/pgvector:pg16
     container_name: jobcopilot-postgres
     restart: unless-stopped
+    # P5:连接上限要覆盖所有进程的连接池之和。
+    # api  = gunicorn 4 worker × (pool 20 + overflow 20) = 160
+    # worker = 2 副本 × (pool 10 + overflow 10)          = 40
+    # 合计 200,留出余量后取 300。改上面任一参数前先重算这笔账。
+    command:
+      - postgres
+      - -c
+      - max_connections=300
     environment:
       <<: *postgres-env
     ports:
@@ -25,6 +33,21 @@ services:
       timeout: 3s
       retries: 20
 
+  # P4:任务队列。Redis Streams 的 consumer group 让多个 worker 副本共享
+  # 一条队列,ack + pending 列表让消费者崩溃后的任务能被别的副本接管。
+  redis:
+    image: redis:7-alpine
+    container_name: jobcopilot-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   api:
     build:
       context: .
@@ -34,14 +57,27 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       JOBCOPILOT_ENV: ${JOBCOPILOT_ENV:-dev}
       JOBCOPILOT_DATABASE_URL: postgresql+asyncpg://jobcopilot:jobcopilot@postgres:5432/jobcopilot
       JOBCOPILOT_CORS_ALLOW_ORIGINS: '["http://localhost:3000","http://localhost"]'
       JOBCOPILOT_DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       JOBCOPILOT_LLM_PROVIDER: ${LLM_PROVIDER:-dashscope}
-      JOBCOPILOT_LLM_MAX_CONCURRENCY: ${JOBCOPILOT_LLM_MAX_CONCURRENCY:-4}
+      JOBCOPILOT_LLM_MAX_CONCURRENCY: ${JOBCOPILOT_LLM_MAX_CONCURRENCY:-32}
       JOBCOPILOT_JD_ANALYSIS_MAX_CONCURRENCY: ${JOBCOPILOT_JD_ANALYSIS_MAX_CONCURRENCY:-1}
+      # P0/P1:令牌签名密钥与注册赠额。auth_secret 留空时 /api/auth 一律 401。
+      JOBCOPILOT_AUTH_SECRET: ${JOBCOPILOT_AUTH_SECRET:-dev-auth-secret-change-in-prod}
+      JOBCOPILOT_BILLING_SIGNUP_GRANT_CNY: ${JOBCOPILOT_BILLING_SIGNUP_GRANT_CNY:-5}
+      # P2:每进程连接池。api 是 gunicorn 4 worker → 4 × (20+20) = 160 连接上限。
+      JOBCOPILOT_DB_POOL_SIZE: ${JOBCOPILOT_DB_POOL_SIZE:-20}
+      JOBCOPILOT_DB_MAX_OVERFLOW: ${JOBCOPILOT_DB_MAX_OVERFLOW:-20}
+      # P4:任务队列。留空则 worker 退化为轮询 jobs 表(仍然多副本安全)。
+      JOBCOPILOT_REDIS_URL: ${JOBCOPILOT_REDIS_URL:-redis://redis:6379/0}
+      # P7:过载保护。
+      JOBCOPILOT_QUEUE_HIGH_WATERMARK: ${JOBCOPILOT_QUEUE_HIGH_WATERMARK:-500}
+      JOBCOPILOT_UPSTREAM_BREAKER_THRESHOLD: ${JOBCOPILOT_UPSTREAM_BREAKER_THRESHOLD:-8}
       # Langfuse 三件套:public_key 留空 → SDK noop(README / AGENTS.md)。
       # api 容器内走 service name 通信,host 默认 http://langfuse:3000(容器内端口仍是 3000)
       JOBCOPILOT_LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse:3000}
@@ -49,6 +85,37 @@ services:
       JOBCOPILOT_LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     ports:
       - "8000:8000"
+
+  # P4:长任务执行进程。不监听端口,按队列深度独立扩副本。
+  # 不设 container_name —— 有了它 replicas > 1 会因为名字冲突起不来。
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: ${JOBCOPILOT_WORKER_REPLICAS:-2}
+    environment:
+      JOBCOPILOT_ENV: ${JOBCOPILOT_ENV:-dev}
+      JOBCOPILOT_DATABASE_URL: postgresql+asyncpg://jobcopilot:jobcopilot@postgres:5432/jobcopilot
+      JOBCOPILOT_DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      JOBCOPILOT_LLM_PROVIDER: ${LLM_PROVIDER:-dashscope}
+      JOBCOPILOT_LLM_MAX_CONCURRENCY: ${JOBCOPILOT_LLM_MAX_CONCURRENCY:-32}
+      JOBCOPILOT_AUTH_SECRET: ${JOBCOPILOT_AUTH_SECRET:-dev-auth-secret-change-in-prod}
+      JOBCOPILOT_REDIS_URL: ${JOBCOPILOT_REDIS_URL:-redis://redis:6379/0}
+      # 每个 worker 副本并发跑几条 job。副本数 × 这个值 = 同时在飞的任务数,
+      # 上游并发再由 llm_max_concurrency 的信号量兜一层。
+      JOBCOPILOT_JOB_WORKER_CONCURRENCY: ${JOBCOPILOT_JOB_WORKER_CONCURRENCY:-4}
+      JOBCOPILOT_DB_POOL_SIZE: ${JOBCOPILOT_DB_POOL_SIZE:-10}
+      JOBCOPILOT_DB_MAX_OVERFLOW: ${JOBCOPILOT_DB_MAX_OVERFLOW:-10}
+      JOBCOPILOT_LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse:3000}
+      JOBCOPILOT_LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      JOBCOPILOT_LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
 
   web:
     build:
@@ -121,6 +188,7 @@ services:
 
 volumes:
   postgres-data:
+  redis-data:
   caddy-data:
   caddy-config:
   langfuse-data:

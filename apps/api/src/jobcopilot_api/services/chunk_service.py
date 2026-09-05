@@ -232,24 +232,38 @@ def split_markdown(
     return chunks
 
 
-async def rechunk_note(session: AsyncSession, note_id: int) -> int:
+async def rechunk_note(
+    session: AsyncSession, note_id: int, *, user_id: int
+) -> int:
     """笔记内容更新 / 新建后重新切片。
 
     DELETE + INSERT 同事务:旧 chunks 全删,新 chunks 入库,embedding 留 NULL
     给 embed_worker 异步补。返回 chunk 数。
 
-    note 不存在 → ValueError(由 service 层包装成 note_not_found)。
+    note 不存在或不属于该用户 → ValueError(service 层包装成 note_not_found)。
+    chunks 继承 note 的 `user_id`,让召回侧能只用 note_chunks 一张表做归属过滤。
     """
-    note = await session.get(Note, note_id)
+    note = (
+        await session.execute(
+            select(Note)
+            .where(Note.id == note_id)
+            .where(Note.user_id == user_id)
+        )
+    ).scalar_one_or_none()
     if note is None:
         raise ValueError(f"note {note_id} not found")
 
-    await session.execute(delete(NoteChunk).where(NoteChunk.note_id == note_id))
+    await session.execute(
+        delete(NoteChunk)
+        .where(NoteChunk.note_id == note_id)
+        .where(NoteChunk.user_id == user_id)
+    )
 
     parsed = split_markdown(list(note.folder_path), note.content_md)
     if parsed:
         session.add_all(
             NoteChunk(
+                user_id=user_id,
                 note_id=note_id,
                 folder_path=p.folder_path,
                 heading_path=p.heading_path,
@@ -269,6 +283,8 @@ async def get_chunks_for_node(
     folder_path: list[str],
     heading_path: list[str] | None,
     limit: int = 30,
+    *,
+    user_id: int,
 ) -> list[NoteChunk]:
     """节点 prefix 命中 chunks(docs/TECH_DESIGN.md 出题前剪枝)。
 
@@ -282,7 +298,8 @@ async def get_chunks_for_node(
     quiz_service 自己判。
     """
     stmt = select(NoteChunk).where(
-        NoteChunk.folder_path[1 : len(folder_path)] == folder_path
+        NoteChunk.user_id == user_id,
+        NoteChunk.folder_path[1 : len(folder_path)] == folder_path,
     )
     if heading_path:
         stmt = stmt.where(

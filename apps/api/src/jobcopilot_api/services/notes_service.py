@@ -4,9 +4,12 @@
 - service 层做业务编排 + 事务 + 数据库读写,调 chunk_service 切片
 - **不**直接调 LLM(embedding 由 workers/embed_worker 异步补)
 
-唯一约束:`(folder_path, title) WHERE deleted_at IS NULL` 由 alembic 0016
-`uq_notes_folder_title` 保证;create / update / move 都靠 IntegrityError
-统一映射成 DuplicateFolderTitleError(409 duplicate_folder_title)。
+唯一约束:`(user_id, folder_path, title) WHERE deleted_at IS NULL` 由 alembic
+0025 `uq_notes_user_folder_title` 保证(0016 建的是不带 user_id 的版本,P0
+把它换掉,否则两个用户不能有同名笔记);create / update / move 都靠
+IntegrityError 统一映射成 DuplicateFolderTitleError(409)。
+
+P0:所有函数都要求显式传 `user_id`,每条查询都带归属过滤。
 
 批量入库走前端 File System Access API:用户在浏览器选目录 / 选单篇 .md,
 前端读出 content + 相对路径后整批 POST。后端只接结构化数据,不解压。
@@ -64,9 +67,22 @@ def _to_out(note: Note) -> NoteOut:
     )
 
 
-async def _get_active_or_404(session: AsyncSession, note_id: int) -> Note:
-    note = await session.get(Note, note_id)
-    if note is None or note.deleted_at is not None:
+async def _get_active_or_404(
+    session: AsyncSession, note_id: int, *, user_id: int
+) -> Note:
+    """归属过滤写在这里,所有单条读写都必须经过它。
+
+    别人的笔记与不存在的笔记返回同一个 404 —— 不泄露"这个 id 存在"。
+    """
+    note = (
+        await session.execute(
+            select(Note)
+            .where(Note.id == note_id)
+            .where(Note.user_id == user_id)
+            .where(Note.deleted_at.is_(None))
+        )
+    ).scalar_one_or_none()
+    if note is None:
         raise NoteNotFoundError(f"note {note_id} not found")
     return note
 
@@ -74,7 +90,7 @@ async def _get_active_or_404(session: AsyncSession, note_id: int) -> Note:
 def _wrap_unique_violation(exc: IntegrityError) -> Exception:
     """uq_notes_folder_title 冲突 → DuplicateFolderTitleError;其他 → 原样。"""
     msg = str(exc.orig) if exc.orig else str(exc)
-    if "uq_notes_folder_title" in msg:
+    if "uq_notes_user_folder_title" in msg or "uq_notes_folder_title" in msg:
         return DuplicateFolderTitleError("同 folder + title 已存在")
     return exc
 
@@ -83,9 +99,10 @@ def _wrap_unique_violation(exc: IntegrityError) -> Exception:
 
 
 async def create_note(
-    session: AsyncSession, payload: NoteCreateIn
+    session: AsyncSession, payload: NoteCreateIn, *, user_id: int
 ) -> NoteOut:
     note = Note(
+        user_id=user_id,
         folder_path=list(payload.folder_path),
         title=payload.title,
         content_md=payload.content_md,
@@ -98,18 +115,18 @@ async def create_note(
         await session.rollback()
         raise _wrap_unique_violation(e) from e
 
-    await chunk_service.rechunk_note(session, note.id)
+    await chunk_service.rechunk_note(session, note.id, user_id=user_id)
     return _to_out(note)
 
 
-async def get_note(session: AsyncSession, note_id: int) -> NoteOut:
-    return _to_out(await _get_active_or_404(session, note_id))
+async def get_note(session: AsyncSession, note_id: int, *, user_id: int) -> NoteOut:
+    return _to_out(await _get_active_or_404(session, note_id, user_id=user_id))
 
 
 async def update_note(
-    session: AsyncSession, note_id: int, payload: NoteUpdateIn
+    session: AsyncSession, note_id: int, payload: NoteUpdateIn, *, user_id: int
 ) -> NoteOut:
-    note = await _get_active_or_404(session, note_id)
+    note = await _get_active_or_404(session, note_id, user_id=user_id)
 
     content_changed = False
     folder_or_title_changed = False
@@ -136,15 +153,19 @@ async def update_note(
 
     # content 改了 → 重切;folder 改了 → chunks.folder_path 反规范化也要刷新
     if content_changed or folder_or_title_changed:
-        await chunk_service.rechunk_note(session, note.id)
+        await chunk_service.rechunk_note(session, note.id, user_id=user_id)
 
     return _to_out(note)
 
 
 async def move_note(
-    session: AsyncSession, note_id: int, new_folder_path: list[str]
+    session: AsyncSession,
+    note_id: int,
+    new_folder_path: list[str],
+    *,
+    user_id: int,
 ) -> NoteOut:
-    note = await _get_active_or_404(session, note_id)
+    note = await _get_active_or_404(session, note_id, user_id=user_id)
     if list(note.folder_path) == list(new_folder_path):
         return _to_out(note)
 
@@ -156,26 +177,30 @@ async def move_note(
         raise _wrap_unique_violation(e) from e
 
     # chunks.folder_path 反规范化,move 后必须重切
-    await chunk_service.rechunk_note(session, note.id)
+    await chunk_service.rechunk_note(session, note.id, user_id=user_id)
     return _to_out(note)
 
 
-async def delete_note(session: AsyncSession, note_id: int) -> None:
+async def delete_note(session: AsyncSession, note_id: int, *, user_id: int) -> None:
     """soft delete + 物理删 chunks(docs/TECH_DESIGN.md:chunks 是 derived,note 软删后切片不应可见)。
 
     M1 简化:不支持恢复软删 note;真要恢复走 rechunk_note 重新切。
     """
-    note = await _get_active_or_404(session, note_id)
+    note = await _get_active_or_404(session, note_id, user_id=user_id)
     note.deleted_at = datetime.now(timezone.utc)
     # 物理删 chunks(同事务)
-    await session.execute(sql_delete(NoteChunk).where(NoteChunk.note_id == note.id))
+    await session.execute(
+        sql_delete(NoteChunk)
+        .where(NoteChunk.note_id == note.id)
+        .where(NoteChunk.user_id == user_id)
+    )
     await session.flush()
 
 
 # --- 树形导航 ----------------------------------------------------------
 
 
-async def get_tree(session: AsyncSession) -> list[TreeNode]:
+async def get_tree(session: AsyncSession, *, user_id: int) -> list[TreeNode]:
     """按 folder_path 聚合所有 active notes 成树。
 
     简单实现:加载全部 notes(MVP 笔记量 < 200,内存 OK),Python 端按 folder_path
@@ -183,6 +208,7 @@ async def get_tree(session: AsyncSession) -> list[TreeNode]:
     """
     stmt = (
         select(Note)
+        .where(Note.user_id == user_id)
         .where(Note.deleted_at.is_(None))
         .order_by(Note.folder_path, Note.title)
     )
@@ -230,6 +256,8 @@ async def batch_import(
     items: list[NoteBatchImportItem],
     root_folder: str | None,
     overwrite: bool,
+    *,
+    user_id: int,
 ) -> BatchImportReport:
     """批量入库:逐条查重 + chunk(同事务)。
 
@@ -250,7 +278,9 @@ async def batch_import(
         title = item.title
         path_label = "/".join(folder_path + [f"{title}.md"])
 
-        existing = await _find_active_by_folder_title(session, folder_path, title)
+        existing = await _find_active_by_folder_title(
+            session, folder_path, title, user_id=user_id
+        )
         if existing is not None:
             if not overwrite:
                 skipped += 1
@@ -260,12 +290,15 @@ async def batch_import(
                 continue
             existing.content_md = item.content_md
             await session.flush()
-            await chunk_service.rechunk_note(session, existing.id)
+            await chunk_service.rechunk_note(
+                session, existing.id, user_id=user_id
+            )
             imported += 1
             note_ids.append(existing.id)
             continue
 
         note = Note(
+            user_id=user_id,
             folder_path=folder_path,
             title=title,
             content_md=item.content_md,
@@ -284,7 +317,7 @@ async def batch_import(
             _ = e
             continue
 
-        await chunk_service.rechunk_note(session, note.id)
+        await chunk_service.rechunk_note(session, note.id, user_id=user_id)
         imported += 1
         note_ids.append(note.id)
 
@@ -297,9 +330,10 @@ async def batch_import(
 
 
 async def _find_active_by_folder_title(
-    session: AsyncSession, folder_path: list[str], title: str
+    session: AsyncSession, folder_path: list[str], title: str, *, user_id: int
 ) -> Note | None:
     stmt = select(Note).where(
+        Note.user_id == user_id,
         Note.folder_path == folder_path,
         Note.title == title,
         Note.deleted_at.is_(None),

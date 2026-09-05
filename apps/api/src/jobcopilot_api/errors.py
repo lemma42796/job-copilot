@@ -33,6 +33,8 @@ class JobCopilotError(Exception):
         super().__init__(detail or self.title)
         self.detail = detail or self.title
         self.errors = errors or []
+        # P7:过载 / 熔断类错误要带 Retry-After,告诉客户端多久后再试。
+        self.headers: dict[str, str] = {}
 
 
 class NotFoundError(JobCopilotError):
@@ -102,6 +104,7 @@ _HTTP_CODE_MAP: dict[int, str] = {
     413: "PAYLOAD_TOO_LARGE",
     415: "UNSUPPORTED_MEDIA",
     429: "RATE_LIMITED",
+    503: "SERVICE_UNAVAILABLE",
 }
 
 
@@ -113,6 +116,7 @@ def _problem(
     detail: str,
     instance: str,
     errors: list[dict[str, Any]] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> ProblemResponse:
     body: dict[str, Any] = {
         "type": f"https://jobcopilot.local/errors/{code.lower().replace('_', '-')}",
@@ -125,7 +129,7 @@ def _problem(
     }
     if errors:
         body["errors"] = errors
-    return ProblemResponse(status_code=status, content=body)
+    return ProblemResponse(status_code=status, content=body, headers=headers or None)
 
 
 def install_exception_handlers(app: FastAPI) -> None:
@@ -138,6 +142,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             detail=exc.detail,
             instance=request.url.path,
             errors=exc.errors or None,
+            headers=getattr(exc, "headers", None),
         )
 
     @app.exception_handler(RequestValidationError)

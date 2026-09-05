@@ -13,7 +13,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Integer, Numeric, String, Text
+from sqlalchemy import BigInteger, Integer, Numeric, String, Text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,6 +23,9 @@ from jobcopilot_api.models.base import Base, IDMixin, TimestampMixin
 
 class Jd(Base, IDMixin, TimestampMixin):
     __tablename__ = "jds"
+
+    # P0 数据隔离:所有业务表按 user_id 归属,service 层每条查询都必须带上它。
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
 
     source: Mapped[str] = mapped_column(
         postgresql.ENUM(

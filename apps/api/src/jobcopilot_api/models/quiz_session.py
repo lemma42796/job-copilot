@@ -32,6 +32,9 @@ from jobcopilot_api.models.base import Base, IDMixin, TimestampMixin
 class QuizSession(Base, IDMixin, TimestampMixin):
     __tablename__ = "quiz_sessions"
 
+    # P0 数据隔离:所有业务表按 user_id 归属,service 层每条查询都必须带上它。
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+
     query: Mapped[str] = mapped_column(Text(), nullable=False)
     mode: Mapped[str] = mapped_column(
         postgresql.ENUM(

@@ -98,6 +98,7 @@ async def build_judge_context(
     *,
     quiz_session: QuizSession,
     questions: list[Question],
+    user_id: int,
 ) -> JudgeContext:
     chunk_ids = judge_context_chunk_ids(
         quiz_session=quiz_session,
@@ -107,17 +108,21 @@ async def build_judge_context(
         raise JudgeIntegrityError(
             "quiz_session.final_context_chunk_ids / questions.evidence_chunk_ids 不能为空"
         )
-    return await load_judge_context(session, chunk_ids)
+    return await load_judge_context(session, chunk_ids, user_id=user_id)
 
 
 async def load_judge_context(
     session: AsyncSession,
     judge_context_chunk_ids: list[int],
+    *,
+    user_id: int,
 ) -> JudgeContext:
     chunks = list(
         (
             await session.execute(
-                sa.select(NoteChunk).where(NoteChunk.id.in_(judge_context_chunk_ids))
+                sa.select(NoteChunk)
+                .where(NoteChunk.id.in_(judge_context_chunk_ids))
+                .where(NoteChunk.user_id == user_id)
             )
         )
         .scalars()
@@ -133,6 +138,7 @@ async def load_judge_context(
     note_titles = await fetch_note_titles(
         session,
         list({chunk.note_id for chunk in chunks}),
+        user_id=user_id,
     )
     return JudgeContext(
         chunk_ids=judge_context_chunk_ids,
@@ -150,10 +156,12 @@ async def judge_and_persist_answer(
     judge_input: AnswerJudgeInput,
     scoring_points: list[ScoringPoint],
     judge_context_chunk_ids: list[int],
+    user_id: int,
 ) -> JudgedAnswer:
     llm_result = await run_judge_with_hard_timeout(
         judge_input,
         sessionmaker=sessionmaker,
+        user_id=user_id,
     )
     judged = extract_judge_output(llm_result)
     judged = map_and_validate_output(
@@ -169,6 +177,7 @@ async def judge_and_persist_answer(
         judged=judged,
         scores=scores,
         llm_result=llm_result,
+        user_id=user_id,
     )
     return JudgedAnswer(judged=judged, scores=scores, llm_result=llm_result)
 
@@ -177,10 +186,13 @@ async def run_judge_with_hard_timeout(
     judge_input: AnswerJudgeInput,
     *,
     sessionmaker: async_sessionmaker[AsyncSession],
+    user_id: int | None = None,
 ) -> LLMResult:
     """Run one Judge call with a service-level wall-clock cap."""
     task = asyncio.create_task(
-        answer_judge_agent.run(judge_input, sessionmaker=sessionmaker)
+        answer_judge_agent.run(
+            judge_input, sessionmaker=sessionmaker, user_id=user_id
+        )
     )
     try:
         done, _pending = await asyncio.wait(
@@ -328,12 +340,14 @@ async def persist_judged_answer(
     judged: AnswerJudgeOutput,
     scores: dict[str, float],
     llm_result: LLMResult,
+    user_id: int,
 ) -> None:
     now = datetime.now(UTC)
     async with sessionmaker() as session:
         await session.execute(
             sa.update(SessionAnswer)
             .where(SessionAnswer.id == answer_id)
+            .where(SessionAnswer.user_id == user_id)
             .values(
                 coverage_score=score_decimal(scores["coverage"]),
                 coverage_evidence=judged.coverage_evidence.model_dump(mode="json"),

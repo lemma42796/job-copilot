@@ -26,6 +26,7 @@ async def run(
     inp: JdParseInput,
     *,
     llm: LLMClient | None = None,
+    user_id: int | None = None,
 ) -> LLMResult:
     """Parse a single JD into `JdParseOutput`.
 
@@ -40,4 +41,5 @@ async def run(
         user=render_user(inp.raw_text),
         response_schema=JdParseOutput,
         temperature=TEMPERATURE,
+        user_id=user_id,
     )

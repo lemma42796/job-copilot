@@ -6,7 +6,7 @@ chunker 从 content_md 取,不依赖磁盘文件。
 
 from __future__ import annotations
 
-from sqlalchemy import String, Text
+from sqlalchemy import BigInteger, String, Text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,6 +16,9 @@ from jobcopilot_api.models.base import Base, IDMixin, TimestampMixin
 
 class Note(Base, IDMixin, TimestampMixin):
     __tablename__ = "notes"
+
+    # P0 数据隔离:所有业务表按 user_id 归属,service 层每条查询都必须带上它。
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
 
     folder_path: Mapped[list[str]] = mapped_column(
         postgresql.ARRAY(Text()), nullable=False

@@ -32,7 +32,7 @@ import {
   getJdLibraryItem,
   listJdAnalyses,
   listJdLibrary,
-  observeJdAnalysis,
+  observeJdAnalysisJob,
   patchJdLibraryItem,
   type AggregatedRequirement,
   type JdAnalysisFilter,
@@ -313,6 +313,8 @@ export default function JdsPage() {
     setAnalysisRunState({ kind: 'loading' });
     setAnalysisProgress([]);
     let resultAnalysisId: number | null = null;
+    // P3:长任务改成 202 + job 事件订阅,断线要靠 job_id 续读。
+    let analysisJobId: number | null = null;
 
     const consumeAnalysisEvents = async (
       stream: AsyncGenerator<JdAnalysisSseFrame>,
@@ -323,6 +325,9 @@ export default function JdsPage() {
           appendAnalysisProgress(`报告 #${frame.data.resource_id} 已创建`);
         } else if (frame.event === 'progress') {
           appendAnalysisProgress(formatAnalysisPhase(frame.data));
+        } else if (frame.event === 'accepted') {
+          analysisJobId = frame.data.job_id;
+          if (frame.data.analysis_id != null) resultAnalysisId = frame.data.analysis_id;
         } else if (frame.event === 'result') {
           resultAnalysisId = frame.data.analysis_id;
           appendAnalysisProgress(
@@ -345,9 +350,9 @@ export default function JdsPage() {
           }),
         );
       } catch (firstError) {
-        if (resultAnalysisId == null) throw firstError;
-        appendAnalysisProgress(`连接中断，正在恢复报告 #${resultAnalysisId}`);
-        await consumeAnalysisEvents(observeJdAnalysis(resultAnalysisId));
+        if (analysisJobId == null) throw firstError;
+        appendAnalysisProgress(`连接中断，正在恢复任务 #${analysisJobId}`);
+        await consumeAnalysisEvents(observeJdAnalysisJob(analysisJobId));
       }
       setAnalysisRunState({ kind: 'success', message: '分析完成' });
       await loadAnalyses();

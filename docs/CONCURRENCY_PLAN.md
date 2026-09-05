@@ -222,7 +222,7 @@ P3。
 - `workers/embed_worker.py` 的 chunk 领取查询补 `FOR UPDATE SKIP LOCKED`,否则多副本重复计费。
 
 **注意**
-本阶段引入 Redis,`docker-compose.yml` 服务数将突破 README 与 AGENTS.md 中记录的"6 服务"约束,需同步更新那两处。
+本阶段引入 Redis 与 worker 两个服务,`docker-compose.yml` 服务数从 6 增至 8,需同步更新 README 的服务清单。
 
 **验收标准**
 - worker 副本从 1 增至 N,任务吞吐近似线性提升。

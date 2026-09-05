@@ -24,6 +24,9 @@ from jobcopilot_api.models.base import Base, IDMixin
 class SessionAnswer(Base, IDMixin):
     __tablename__ = "session_answers"
 
+    # P0 数据隔离:所有业务表按 user_id 归属,service 层每条查询都必须带上它。
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+
     session_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     question_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     order_index: Mapped[int] = mapped_column(Integer, nullable=False)

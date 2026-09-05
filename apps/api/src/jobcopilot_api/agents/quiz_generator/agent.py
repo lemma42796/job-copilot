@@ -42,6 +42,7 @@ async def run(
     inp: QuizGenInput,
     *,
     llm: LLMClient | None = None,
+    user_id: int | None = None,
 ) -> LLMResult:
     """LLM 出题。
 
@@ -79,4 +80,5 @@ async def run(
         messages=messages,
         response_schema=QuizGenOutput,
         temperature=TEMPERATURE,
+        user_id=user_id,
     )

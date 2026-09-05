@@ -25,6 +25,7 @@ async def run(
     inp: CoachChatInput,
     *,
     llm: LLMClient | None = None,
+    user_id: int | None = None,
 ) -> LLMResult:
     client = llm or get_llm_client()
     messages = [
@@ -41,4 +42,5 @@ async def run(
         response_schema=CoachChatOutput,
         temperature=TEMPERATURE,
         max_tokens=MAX_TOKENS,
+        user_id=user_id,
     )

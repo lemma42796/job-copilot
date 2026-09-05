@@ -58,6 +58,8 @@ RRF_K = 60  # 跨 query RRF 平滑常数(同 search_service 内部 RRF 一致)
 async def run(
     session: AsyncSession,
     user_query: str,
+    *,
+    user_id: int | None = None,
 ) -> PipelineResult:
     """全库 RAG retrieval。
 
@@ -66,7 +68,7 @@ async def run(
     rerank 前执行。parent-doc 扩展当前默认禁用,避免背景 chunk 稀释证据。
     """
     # 1. query_rewriter(失败回退原 query,不阻塞)
-    rewrite_out = await rewrite_query(user_query)
+    rewrite_out = await rewrite_query(user_query, user_id=user_id)
     expanded_queries = rewrite_out.expanded_queries
     weights = query_weights(rewrite_out)
     governance = governance_context_from_rewrite(rewrite_out)
@@ -77,11 +79,11 @@ async def run(
     hybrid_rankings: list[list[NoteChunk]] = []
     for q in expanded_queries:
         ranking = await global_hybrid_search(
-            session, q, top_k=HYBRID_TOP_K_PER_QUERY
+            session, q, top_k=HYBRID_TOP_K_PER_QUERY, user_id=user_id
         )
         hybrid_rankings.append(ranking)
     anchor_ranking = await protected_anchor_search(
-        session, governance, expanded_queries
+        session, governance, expanded_queries, user_id=user_id
     )
     if anchor_ranking:
         hybrid_rankings.append(anchor_ranking)
@@ -110,6 +112,7 @@ async def run(
         user_query,
         fused,
         top_k=min(POST_RERANK_PROVIDER_TOP_K, len(fused)),
+        user_id=user_id,
     )
     post_rerank = post_rerank_governance_blend(
         fused,
@@ -125,7 +128,7 @@ async def run(
 
     # 6. enrich note_title(batch JOIN 一次)
     note_ids = list({chunk.note_id for chunk, _ in selected_scored})
-    note_titles = await fetch_note_titles(session, note_ids)
+    note_titles = await fetch_note_titles(session, note_ids, user_id=user_id)
 
     # 7. 组装 FinalContextChunk(保留 selected 顺序)
     final_context_chunks = [
@@ -191,6 +194,8 @@ def _normalize_rrf_weights(
 async def expand_to_parent_docs(
     session: AsyncSession,
     scored: list[tuple[NoteChunk, float]],
+    *,
+    user_id: int | None = None,
 ) -> list[tuple[NoteChunk, float]]:
     """命中段 < PARENT_DOC_THRESHOLD_CHARS 字的 chunk 扩到同 H2 的 sibling。
 
@@ -227,6 +232,8 @@ async def expand_to_parent_docs(
 
     note_ids = {k[0] for k in pending_keys}
     stmt = sa.select(NoteChunk).where(NoteChunk.note_id.in_(note_ids))
+    if user_id is not None:
+        stmt = stmt.where(NoteChunk.user_id == user_id)
     candidates = (await session.execute(stmt)).scalars().all()
     for sib in candidates:
         if not sib.heading_path:
@@ -239,10 +246,12 @@ async def expand_to_parent_docs(
 
 
 async def fetch_note_titles(
-    session: AsyncSession, note_ids: list[int]
+    session: AsyncSession, note_ids: list[int], *, user_id: int | None = None
 ) -> dict[int, str]:
     if not note_ids:
         return {}
     stmt = sa.select(Note.id, Note.title).where(Note.id.in_(set(note_ids)))
+    if user_id is not None:
+        stmt = stmt.where(Note.user_id == user_id)
     rows = (await session.execute(stmt)).all()
     return {row.id: row.title for row in rows}

@@ -11,7 +11,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import DateTime, Integer, Numeric, String, Text, text
+from sqlalchemy import BigInteger, DateTime, Integer, Numeric, String, Text, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -20,6 +20,9 @@ from jobcopilot_api.models.base import Base, IDMixin
 
 class JdAnalysis(Base, IDMixin):
     __tablename__ = "jd_analyses"
+
+    # P0 数据隔离:所有业务表按 user_id 归属,service 层每条查询都必须带上它。
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
 
     jd_ids: Mapped[list[int]] = mapped_column(
         postgresql.ARRAY(postgresql.BIGINT()), nullable=False

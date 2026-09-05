@@ -23,6 +23,7 @@ def compute_cache_key(
     thinking_mode: bool,
     prompt_version_id: int | None,
     temperature: float | None = None,
+    user_id: int | None = None,
 ) -> str:
     payload = {
         "model": model,
@@ -32,6 +33,9 @@ def compute_cache_key(
         "thinking_mode": thinking_mode,
         "prompt_version_id": prompt_version_id,
         "temperature": temperature,
+        # P6:缓存按用户隔离。prompt 里带的是该用户的笔记 chunk 内容,
+        # 跨用户共享既会泄露笔记,也让计费归属说不清。
+        "user_id": user_id,
     }
     serialized = json.dumps(
         payload,

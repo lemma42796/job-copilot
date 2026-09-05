@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, Integer, Numeric, Text, func, text
+from sqlalchemy import BigInteger, Date, DateTime, Integer, Numeric, Text, func, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -21,6 +21,9 @@ from jobcopilot_api.models.base import Base, IDMixin
 
 class KnowledgeGap(Base, IDMixin):
     __tablename__ = "knowledge_gaps"
+
+    # P0 数据隔离:所有业务表按 user_id 归属,service 层每条查询都必须带上它。
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
 
     folder_path: Mapped[list[str]] = mapped_column(
         postgresql.ARRAY(Text()), nullable=False

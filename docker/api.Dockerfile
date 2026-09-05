@@ -34,4 +34,17 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request,sys; \
 sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/v1/health',timeout=2).status==200 else 1)"
 
-CMD ["uvicorn", "jobcopilot_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# P5:单进程 uvicorn 换成 gunicorn 多进程。Python 有 GIL,单个 uvicorn 进程
+# 的 JSON 序列化、Pydantic 校验、SSE 编码都挤在一个核上;worker 数按容器可用
+# CPU 给。每个 worker 各自持有一个 SQLAlchemy 连接池,所以
+# workers × (db_pool_size + db_max_overflow) 必须小于 PostgreSQL 的
+# max_connections —— 默认 4 × (20 + 20) = 160,搭配 docker/postgres 的
+# max_connections=300 有余量。改任一侧前先重算这个乘积。
+CMD ["gunicorn", "jobcopilot_api.main:app", \
+     "--worker-class", "uvicorn.workers.UvicornWorker", \
+     "--workers", "4", \
+     "--bind", "0.0.0.0:8000", \
+     "--timeout", "120", \
+     "--graceful-timeout", "30", \
+     "--keep-alive", "5", \
+     "--access-logfile", "-"]

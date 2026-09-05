@@ -18,6 +18,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from jobcopilot_api.infra.auth import CurrentUserId
 from jobcopilot_api.infra.db import get_session
 from jobcopilot_api.schemas.notes import (
     BatchImportReport,
@@ -41,34 +42,45 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
     status_code=201,
     summary="创建笔记(web 编辑器)",
 )
-async def create_note(payload: NoteCreateIn, session: SessionDep) -> NoteOut:
-    note = await notes_service.create_note(session, payload)
+async def create_note(
+    payload: NoteCreateIn, session: SessionDep, user_id: CurrentUserId
+) -> NoteOut:
+    note = await notes_service.create_note(session, payload, user_id=user_id)
     await session.commit()
     return note
 
 
 @router.get("/tree", response_model=list[TreeNode], summary="树形导航")
-async def get_tree(session: SessionDep) -> list[TreeNode]:
-    return await notes_service.get_tree(session)
+async def get_tree(session: SessionDep, user_id: CurrentUserId) -> list[TreeNode]:
+    return await notes_service.get_tree(session, user_id=user_id)
 
 
 @router.get("/{note_id}", response_model=NoteOut, summary="笔记详情")
-async def get_note(note_id: int, session: SessionDep) -> NoteOut:
-    return await notes_service.get_note(session, note_id)
+async def get_note(
+    note_id: int, session: SessionDep, user_id: CurrentUserId
+) -> NoteOut:
+    return await notes_service.get_note(session, note_id, user_id=user_id)
 
 
 @router.put("/{note_id}", response_model=NoteOut, summary="更新笔记")
 async def update_note(
-    note_id: int, payload: NoteUpdateIn, session: SessionDep
+    note_id: int,
+    payload: NoteUpdateIn,
+    session: SessionDep,
+    user_id: CurrentUserId,
 ) -> NoteOut:
-    note = await notes_service.update_note(session, note_id, payload)
+    note = await notes_service.update_note(
+        session, note_id, payload, user_id=user_id
+    )
     await session.commit()
     return note
 
 
 @router.delete("/{note_id}", status_code=204, summary="软删笔记")
-async def delete_note(note_id: int, session: SessionDep) -> None:
-    await notes_service.delete_note(session, note_id)
+async def delete_note(
+    note_id: int, session: SessionDep, user_id: CurrentUserId
+) -> None:
+    await notes_service.delete_note(session, note_id, user_id=user_id)
     await session.commit()
 
 
@@ -78,9 +90,14 @@ async def delete_note(note_id: int, session: SessionDep) -> None:
     summary="移动到新 folder_path",
 )
 async def move_note(
-    note_id: int, payload: NoteMoveIn, session: SessionDep
+    note_id: int,
+    payload: NoteMoveIn,
+    session: SessionDep,
+    user_id: CurrentUserId,
 ) -> NoteOut:
-    note = await notes_service.move_note(session, note_id, payload.new_folder_path)
+    note = await notes_service.move_note(
+        session, note_id, payload.new_folder_path, user_id=user_id
+    )
     await session.commit()
     return note
 
@@ -91,13 +108,14 @@ async def move_note(
     summary="批量入库 — 前端 File System Access API 读完本地 .md 后整批 POST",
 )
 async def batch_import(
-    payload: NoteBatchImportIn, session: SessionDep
+    payload: NoteBatchImportIn, session: SessionDep, user_id: CurrentUserId
 ) -> BatchImportReport:
     report = await notes_service.batch_import(
         session,
         items=payload.items,
         root_folder=payload.root_folder,
         overwrite=payload.overwrite,
+        user_id=user_id,
     )
     await session.commit()
     return report
