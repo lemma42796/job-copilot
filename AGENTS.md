@@ -5,7 +5,6 @@
 - 项目最新状态 → `docs/STATUS.md`(**只在用户问进度或续作时读**,不主动读)
 - 当前与未完成任务 → `docs/TASKS.md`
 - 技术与架构设计 → `docs/TECH_DESIGN.md`
-- 并发改造方案 → `docs/CONCURRENCY_PLAN.md`(**只在做并发改造任务时读**)
 - 评测通用规范 → `evals/EVAL_GUIDE.md`
 - 组件评测 → `evals/suites/<component>/EVAL.md`
 
@@ -26,7 +25,6 @@
 | `docs/STATUS.md` | 此刻为真的事实、当前分支、当前边界 | 历史条目、评测指标数字 |
 | `docs/TASKS.md` | 未做 / 在做 / 计划做 | 已完成项、工时估算 |
 | `docs/TECH_DESIGN.md` | 稳定架构、跨里程碑约束、决策理由与否决项 | 实现细节、逐步调用流程 |
-| `docs/CONCURRENCY_PLAN.md` | 并发改造各阶段的改动点与验收标准 | 当前系统事实、实施进度 |
 | `evals/EVAL_GUIDE.md` | 评测共同规范与 suite 索引 | 具体运行结果 |
 | `evals/suites/*/EVAL.md` | 方法、dataset schema、指标、阈值、证据边界 | 某次运行的数字 |
 | `evals/reports/*.md` | 单次运行的完整证据 | — |

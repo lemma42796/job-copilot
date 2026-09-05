@@ -184,6 +184,19 @@ Prompt 和模型规则:
 - 文本 LLM Provider 调用必须通过共享 admission gate,避免各 Agent 各自设置互不相干的并发上限。
 - embeddings 和 rerank 不在 OpenAI auto-instrument 覆盖范围,需要显式 generation trace。
 
+# 并发与成本约束
+
+上游 `qwen3.6-flash` 实测配额(**该模型独享,`qwen3-rerank` 与 embedding 各有独立配额池**):TPM 10,000,000 / RPM 30,000。
+
+本项目单次生成调用约 15,000 token(`RERANK_TOP_K=10` 个片段 × `MAX_CHUNK_TOKENS=1000`,加 prompt 与输出),因此先撞的是 TPM:约 667 次/分,RPM 富余 45 倍,该维度不再考虑。按单次调用 30 秒估算,允许**约 333 个 LLM 调用同时在飞**。
+
+由此确定的两条边界:
+
+- **上游配额不是瓶颈,成本是。** 上游不会通过限流帮我们刹车,打多少收多少。余额扣费是唯一刹车,任何提高并发的改动都必须在扣费链路完整之后。
+- **全局并发闸门暂不做 Redis 实现。** 当前 4 个 API 进程 × `llm_max_concurrency=32` = 128,仍在 333 余量内。触发条件是 `进程数 × llm_max_concurrency` 接近 333;届时用 Redis 令牌桶 + Lua 原子脚本,通过 `llm/client.py` 已预留的 `concurrency_gate_factory` 注入(`LLMClient` 接口不变),必须双维度限制 QPS 与 TPM,并同时接管 `services/reranker.py`。
+
+15,000 token / 30 秒这两个数字是读代码推算,未经压测;任一偏离一个数量级则上述结论全部要重算,压测前只用于内部决策,不得对外引用。
+
 # 可观测性与评测
 
 - `llm_calls` 记录 feature、model、thinking、tokens、cost、latency、success、trace 和关联实体。

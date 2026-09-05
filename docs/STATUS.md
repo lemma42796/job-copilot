@@ -33,11 +33,10 @@ purpose: 只记录项目当前已经实现、已经验证的最新事实。
 - 不是 exactly-once:worker 崩在 `running` 中途的 job 不会自动重试,由回收器打终态,人工重发。
 - 无真实支付链路,充值为模拟接口。
 - 语义缓存默认关闭,近似命中阈值未经评测。
-- `CONCURRENCY_PLAN.md` 中除上游配额外的数字均为读码推算,未经压测,不得对外引用。上游 qwen3.6-flash 实测 TPM 10,000,000 / RPM 30,000(该模型独享,rerank 与 embedding 各有独立配额池)。
+- 并发上限的推算依据(单次调用约 15,000 token / 30 秒)未经压测,不得对外引用;口径见 `TECH_DESIGN.md`「并发与成本约束」。
 
 # 相关入口
 
 - 当前与未完成任务 → `TASKS.md`
 - 技术架构 → `TECH_DESIGN.md`
-- 并发改造方案 → `CONCURRENCY_PLAN.md`
 - 评测规范与最新证据 → `../evals/EVAL_GUIDE.md`
