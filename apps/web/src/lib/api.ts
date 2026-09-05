@@ -1,5 +1,6 @@
 import type { components } from '@jobcopilot/schemas';
 
+import { getToken, handleUnauthorized } from './auth';
 import { type SseFrame, streamSse } from './sse';
 
 const API_BASE_URL =
@@ -9,7 +10,23 @@ const API_BASE_URL =
     ? `${window.location.protocol}//${window.location.hostname}:8000`
     : 'http://127.0.0.1:8000');
 
-const USER_ID = process.env.NEXT_PUBLIC_USER_ID ?? '1';
+/**
+ * P0:所有业务请求都要带身份。生产走 `Authorization: Bearer <token>`;
+ * 后端只在 `JOBCOPILOT_ENV=dev` 时才接受 `X-User-Id` 兜底,便于本地调试。
+ */
+const DEV_USER_ID = process.env.NEXT_PUBLIC_USER_ID ?? '1';
+
+function authHeaders(extra?: HeadersInit): Headers {
+  const headers = new Headers(extra);
+  const token = getToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  else if (process.env.NEXT_PUBLIC_DEV_AUTH === 'true') {
+    headers.set('X-User-Id', DEV_USER_ID);
+  }
+  return headers;
+}
+
+export { authHeaders };
 
 export type HealthResponse = components['schemas']['HealthResponse'];
 export type JDStructured = components['schemas']['JDStructured'];
@@ -72,11 +89,7 @@ export class ApiError extends Error {
 }
 
 async function jsonFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers);
-  const method = init.method?.toUpperCase() ?? 'GET';
-  if (method !== 'GET') {
-    headers.set('X-User-Id', USER_ID);
-  }
+  const headers = authHeaders(init.headers);
   if (init.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
   }
@@ -87,6 +100,7 @@ async function jsonFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   if (!res.ok) {
     const problem = (await res.json().catch(() => ({}))) as Problem;
+    if (res.status === 401) handleUnauthorized();
     throw new ApiError(res.status, problem);
   }
   if (res.status === 204) {
@@ -289,6 +303,8 @@ export type JdAnalysisReport = {
 };
 
 export type JdAnalysisSseFrame =
+  // P3:POST 返回 202 后由客户端合成的第一帧,携带 job_id 供断线续读。
+  | SseFrame<'accepted', { job_id: number; analysis_id: number | null }>
   | SseFrame<'started', { job_id: string; resource_id: number; jd_count: number }>
   | SseFrame<'progress', { phase: string; jd_count?: number; batch?: number; total?: number }>
   | SseFrame<
@@ -352,23 +368,29 @@ export async function deleteJdLibraryItem(id: number): Promise<void> {
 export function createJdAnalysis(
   input: JdAnalysisCreateInput,
 ): AsyncGenerator<JdAnalysisSseFrame> {
-  return streamSse<JdAnalysisSseFrame>(`${API_BASE_URL}/api/jd-analyses`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-User-Id': USER_ID,
-    },
-    body: JSON.stringify(input),
-  });
+  // 先合成一帧把 job_id / analysis_id 交给页面 —— 断线后要靠 job_id 续读。
+  return enqueueAndStream<JdAnalysisSseFrame>(
+    '/api/jd-analyses',
+    input,
+    (accepted) =>
+      ({
+        event: 'accepted',
+        data: { job_id: accepted.job_id, analysis_id: accepted.resource_id },
+      }) as JdAnalysisSseFrame,
+  );
 }
 
-export function observeJdAnalysis(id: number): AsyncGenerator<JdAnalysisSseFrame> {
-  return streamSse<JdAnalysisSseFrame>(
-    `${API_BASE_URL}/api/jd-analyses/${id}/events`,
-    {
-      headers: { 'X-User-Id': USER_ID },
-    },
-  );
+/**
+ * 恢复观察:analysis 页刷新后用 job_id 续读。
+ *
+ * 旧接口 `/api/jd-analyses/{id}/events` 已删除 —— 它依赖 API 进程内存里的
+ * 订阅队列,多副本下订阅不到别的副本正在跑的任务。
+ */
+export function observeJdAnalysisJob(
+  jobId: number,
+  afterSeq = 0,
+): AsyncGenerator<JdAnalysisSseFrame> {
+  return streamJobEvents<JdAnalysisSseFrame>(jobId, afterSeq);
 }
 
 export async function listJdAnalyses(
@@ -412,7 +434,7 @@ export async function uploadFile(
   const res = await fetch(`${API_BASE_URL}/v1/files/upload`, {
     method: 'POST',
     body: fd,
-    headers: { 'X-User-Id': USER_ID },
+    headers: authHeaders(),
     cache: 'no-store',
   });
   if (!res.ok) {
@@ -446,10 +468,7 @@ export type ProfileParseSseFrame =
 export function parseProfile(input: ProfileParseInput): AsyncGenerator<ProfileParseSseFrame> {
   return streamSse<ProfileParseSseFrame>(`${API_BASE_URL}/v1/profiles/parse`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-User-Id': USER_ID,
-    },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(input),
   });
 }
@@ -457,7 +476,7 @@ export function parseProfile(input: ProfileParseInput): AsyncGenerator<ProfilePa
 export function rechunkProfile(profileId: number): AsyncGenerator<ProfileParseSseFrame> {
   return streamSse<ProfileParseSseFrame>(`${API_BASE_URL}/v1/profiles/${profileId}/rechunk`, {
     method: 'POST',
-    headers: { 'X-User-Id': USER_ID },
+    headers: authHeaders(),
   });
 }
 
@@ -508,10 +527,7 @@ export type MatchSseFrame =
 export function createMatch(input: MatchCreateInput): AsyncGenerator<MatchSseFrame> {
   return streamSse<MatchSseFrame>(`${API_BASE_URL}/v1/matches`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-User-Id': USER_ID,
-    },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(input),
   });
 }
@@ -572,10 +588,7 @@ export type ResumeSseFrame =
 export function createResume(input: ResumeCreateInput): AsyncGenerator<ResumeSseFrame> {
   return streamSse<ResumeSseFrame>(`${API_BASE_URL}/v1/resumes/generate`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-User-Id': USER_ID,
-    },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(input),
   });
 }
@@ -959,6 +972,8 @@ export type QuizSessionListResponse = {
 };
 
 export type QuizCreateSseFrame =
+  // P3:POST 返回 202 后由客户端合成的第一帧。session 行此时已建好。
+  | SseFrame<'accepted', { job_id: number; session_id: number | null }>
   | SseFrame<
       'started',
       { job_id?: string; resource_id: number; query: string; mode: QuizMode }
@@ -1090,17 +1105,71 @@ export type QuizFinishSseFrame =
   | SseFrame<'error', { code: string; detail: string }>
   | SseFrame<'done', { ok: boolean }>;
 
+
+// ---------------------------------------------------------------------------
+// P3:长任务从"一条长 SSE"改成"202 + job_id,再订阅 job 事件"。
+//
+// 对页面组件而言签名没变 —— 下面这些函数仍然返回同一套 SseFrame 的
+// AsyncGenerator。变化在内部:先 POST 拿 job_id(连接立刻结束),再连
+// `/api/jobs/{id}/stream` 读事件。好处是刷新页面 / 断线后能用同一个
+// job_id 从 `after_seq` 续读,不像旧实现那样一断就丢进度。
+// ---------------------------------------------------------------------------
+
+export type JobAccepted = {
+  job_id: number;
+  status: string;
+  kind: string;
+  resource_kind: string | null;
+  resource_id: number | null;
+};
+
+export async function enqueueJob(
+  path: string,
+  body?: unknown,
+): Promise<JobAccepted> {
+  return jsonFetch<JobAccepted>(path, {
+    method: 'POST',
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
+/** 订阅一个 job 的事件流。`afterSeq` 用于断线续读。 */
+export function streamJobEvents<TFrame extends SseFrame>(
+  jobId: number,
+  afterSeq = 0,
+): AsyncGenerator<TFrame> {
+  const qs = afterSeq > 0 ? `?after_seq=${afterSeq}` : '';
+  return streamSse<TFrame>(`${API_BASE_URL}/api/jobs/${jobId}/stream${qs}`, {
+    headers: authHeaders(),
+  });
+}
+
+/** POST 入队 + 立刻订阅,把两步拼成调用方眼里的一条流。 */
+async function* enqueueAndStream<TFrame extends SseFrame>(
+  path: string,
+  body: unknown,
+  onAccepted?: (accepted: JobAccepted) => TFrame | null,
+): AsyncGenerator<TFrame> {
+  const accepted = await enqueueJob(path, body);
+  const prelude = onAccepted?.(accepted);
+  if (prelude) yield prelude;
+  yield* streamJobEvents<TFrame>(accepted.job_id);
+}
+
 export function createQuizSession(
   input: QuizSessionCreateInput,
 ): AsyncGenerator<QuizCreateSseFrame> {
-  return streamSse<QuizCreateSseFrame>(`${API_BASE_URL}/api/quiz/sessions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-User-Id': USER_ID,
-    },
-    body: JSON.stringify(input),
-  });
+  // session 行在 202 阶段就已建好,先合成一帧把 session_id 交给页面,
+  // 页面可以立刻跳转,不用等第一条 worker 事件。
+  return enqueueAndStream<QuizCreateSseFrame>(
+    '/api/quiz/sessions',
+    input,
+    (accepted) =>
+      ({
+        event: 'accepted',
+        data: { job_id: accepted.job_id, session_id: accepted.resource_id },
+      }) as QuizCreateSseFrame,
+  );
 }
 
 export async function saveQuizAnswer(
@@ -1140,19 +1209,16 @@ export async function listQuizSessions(
 }
 
 export function submitQuizSession(sessionId: number): AsyncGenerator<QuizSubmitSseFrame> {
-  return streamSse<QuizSubmitSseFrame>(`${API_BASE_URL}/api/quiz/sessions/${sessionId}/submit`, {
-    method: 'POST',
-    headers: { 'X-User-Id': USER_ID },
-  });
+  return enqueueAndStream<QuizSubmitSseFrame>(
+    `/api/quiz/sessions/${sessionId}/submit`,
+    undefined,
+  );
 }
 
 export function finishQuizSession(sessionId: number): AsyncGenerator<QuizFinishSseFrame> {
-  return streamSse<QuizFinishSseFrame>(
-    `${API_BASE_URL}/api/quiz/sessions/${sessionId}/finish`,
-    {
-      method: 'POST',
-      headers: { 'X-User-Id': USER_ID },
-    },
+  return enqueueAndStream<QuizFinishSseFrame>(
+    `/api/quiz/sessions/${sessionId}/finish`,
+    undefined,
   );
 }
 
@@ -1161,16 +1227,9 @@ export function submitQuizAnswerTurn(
   orderIndex: number,
   input: QuizAnswerTurnSubmitInput,
 ): AsyncGenerator<QuizAnswerTurnSseFrame> {
-  return streamSse<QuizAnswerTurnSseFrame>(
-    `${API_BASE_URL}/api/quiz/sessions/${sessionId}/answers/${orderIndex}/turns`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-User-Id': USER_ID,
-      },
-      body: JSON.stringify(input),
-    },
+  return enqueueAndStream<QuizAnswerTurnSseFrame>(
+    `/api/quiz/sessions/${sessionId}/answers/${orderIndex}/turns`,
+    input,
   );
 }
 
@@ -1181,6 +1240,80 @@ export async function abandonQuizSession(
     `/api/quiz/sessions/${sessionId}/abandon`,
     { method: 'POST' },
   );
+}
+
+
+// ---------------------------------------------------------------------------
+// P0/P1:认证与余额
+// ---------------------------------------------------------------------------
+
+export type AuthTokenResponse = {
+  access_token: string;
+  token_type: string;
+  expires_at: string;
+};
+
+export type CurrentUser = {
+  id: number;
+  email: string;
+  name: string | null;
+  locale: string;
+  created_at: string;
+};
+
+export type BalanceResponse = {
+  user_id: number;
+  balance_cny: string;
+  total_topup_cny: string;
+  total_spent_cny: string;
+};
+
+export type SpendSummaryResponse = {
+  total_spent_cny: string;
+  items: { channel: string; feature: string; spent_cny: string; calls: number }[];
+};
+
+export async function register(input: {
+  email: string;
+  password: string;
+  name?: string;
+}): Promise<AuthTokenResponse> {
+  return jsonFetch<AuthTokenResponse>('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function login(input: {
+  email: string;
+  password: string;
+}): Promise<AuthTokenResponse> {
+  return jsonFetch<AuthTokenResponse>('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getCurrentUser(signal?: AbortSignal): Promise<CurrentUser> {
+  return jsonFetch<CurrentUser>('/api/auth/me', { signal });
+}
+
+export async function getBalance(signal?: AbortSignal): Promise<BalanceResponse> {
+  return jsonFetch<BalanceResponse>('/api/billing/balance', { signal });
+}
+
+/** 模拟充值 —— 没有接支付,只是往账本里记一笔 topup。 */
+export async function topupBalance(amountCny: string): Promise<BalanceResponse> {
+  return jsonFetch<BalanceResponse>('/api/billing/topup', {
+    method: 'POST',
+    body: JSON.stringify({ amount_cny: amountCny }),
+  });
+}
+
+export async function getSpendSummary(
+  signal?: AbortSignal,
+): Promise<SpendSummaryResponse> {
+  return jsonFetch<SpendSummaryResponse>('/api/billing/spend-summary', { signal });
 }
 
 export { API_BASE_URL };

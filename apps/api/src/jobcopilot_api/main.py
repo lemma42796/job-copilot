@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -30,9 +29,7 @@ from jobcopilot_api.infra.db import get_sessionmaker  # noqa: E402
 from jobcopilot_api.infra.logging import setup_logging  # noqa: E402
 from jobcopilot_api.infra.prompts import load_prompt_versions  # noqa: E402
 from jobcopilot_api.infra.request_id import RequestIDMiddleware  # noqa: E402
-from jobcopilot_api.routers import health, jd, notes, quiz  # noqa: E402
-from jobcopilot_api.services import jd_service  # noqa: E402
-from jobcopilot_api.workers import embed_worker  # noqa: E402
+from jobcopilot_api.routers import auth, health, jd, jobs, notes, quiz  # noqa: E402
 
 
 @asynccontextmanager
@@ -41,28 +38,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # (agent_name, version) on app.state for agents to look up.
     app.state.prompt_versions = await load_prompt_versions(get_sessionmaker())
 
-    # 后台 embed worker — 笔记入库时 embedding 留 NULL,worker 异步补
-    # (docs/TECH_DESIGN.md)。stop_event 让 shutdown 干净退出。
-    stop_event = asyncio.Event()
-    worker_task = asyncio.create_task(
-        embed_worker.run_forever(stop_event), name="embed_worker"
-    )
-    app.state.embed_worker_stop = stop_event
-    app.state.embed_worker_task = worker_task
-
-    # JD 分析执行与 SSE 观察解耦。进程重启后复用持久化 jd_ids 恢复
-    # in_progress 记录;单进程 MVP 不引入外部任务队列或 lease。
-    await jd_service.recover_in_progress_analyses(get_sessionmaker())
-
-    try:
-        yield
-    finally:
-        await jd_service.shutdown_analysis_tasks()
-        stop_event.set()
-        try:
-            await asyncio.wait_for(worker_task, timeout=10.0)
-        except asyncio.TimeoutError:
-            worker_task.cancel()
+    # P4:API 进程不再跑任何后台任务。embed worker、job worker、超期回收
+    # 都搬到独立的 worker 容器(`python -m jobcopilot_api.workers.main`)。
+    # API 多进程 / 多副本后,后台任务挂在 lifespan 里会被每个进程各跑一份,
+    # 既重复调用上游也重复扣费。
+    yield
 
 
 def create_app() -> FastAPI:
@@ -95,6 +75,8 @@ def create_app() -> FastAPI:
     # 切换到 /api 是单独切片,避免 M1 改部署链路)。新业务模块按 OpenAPI / Pydantic schemas
     # 统一挂 /api。
     app.include_router(health.router, prefix="/v1")
+    app.include_router(auth.router, prefix="/api")
+    app.include_router(jobs.router, prefix="/api")
     app.include_router(notes.router, prefix="/api")
     app.include_router(quiz.router, prefix="/api")
     app.include_router(jd.router, prefix="/api")

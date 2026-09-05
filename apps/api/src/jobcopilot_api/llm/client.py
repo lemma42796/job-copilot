@@ -37,7 +37,9 @@ from tenacity import (
 )
 from tenacity.wait import wait_base
 
+from jobcopilot_api.llm import breaker
 from jobcopilot_api.llm.cache_key import compute_cache_key
+from jobcopilot_api.llm import semantic_cache
 from jobcopilot_api.llm.cache_store import CacheStore, NoopCacheStore
 from jobcopilot_api.llm.errors import (
     LLMAuthError,
@@ -75,6 +77,9 @@ class ProviderRequest:
     timeout_s: float
     max_tokens: int = 4096
     temperature: float | None = None  # docs/TECH_DESIGN.md:agent 显式传不依赖默认
+    # 调用方 feature 名(query_rewriter / quiz_generator / ...)。生产
+    # provider 不看它;StubProvider 靠它分发预构响应(P8 压测)。
+    feature: str = ""
     messages: list[ChatMessage] | None = None
     # 思考力度档位,thinking_mode=False 时忽略。见 tiers.TierConfig。
     reasoning_effort: str | None = None
@@ -427,6 +432,7 @@ class BaseLLMClient:
             reasoning_effort=cfg.reasoning_effort,
             prompt_version_id=prompt_version_id,
             temperature=temperature,
+            user_id=user_id,
         )
 
         success = False
@@ -438,6 +444,15 @@ class BaseLLMClient:
             cached_resp = (
                 await self._cache_store.get(cache_key) if on_token is None else None
             )
+            if cached_resp is None and on_token is None:
+                # P6:精确 key 未命中时再试语义近似命中(默认关闭)。
+                # 只在同一 user_id 的历史缓存里找,跨用户复用会泄露笔记内容。
+                cached_resp = await semantic_cache.lookup(
+                    user_id=user_id,
+                    feature=feature,
+                    model=cfg.model,
+                    semantic_text=cache_key_user or "",
+                )
             if cached_resp is not None:
                 acc.content = cached_resp.content
                 if response_schema is not None:
@@ -452,6 +467,9 @@ class BaseLLMClient:
                     cached = True
 
             if not cached:
+                # P1:调用前检查余额。成本后验,不做预授权 —— 只要余额还是
+                # 正的就放行,调用返回后按实际成本扣。余额耗尽即拒绝。
+                await self._assert_can_spend(user_id)
                 resp = await self._call_with_admission(
                     ProviderRequest(
                         model=cfg.model,
@@ -464,6 +482,7 @@ class BaseLLMClient:
                         max_tokens=effective_max_tokens,
                         temperature=temperature,
                         messages=first_messages,
+                        feature=feature,
                     ),
                     on_token=on_token,
                 )
@@ -494,6 +513,7 @@ class BaseLLMClient:
                                     if messages is not None
                                     else None
                                 ),
+                                feature=feature,
                             ),
                             on_token=on_token,
                         )
@@ -603,10 +623,24 @@ class BaseLLMClient:
                     "cache_creation_input_tokens": acc.cache_creation_input_tokens,
                 },
             )
+            # P6:给刚写入的行补 user_id + 请求向量,让它以后能被近似命中。
+            await semantic_cache.remember(
+                cache_key=cache_key,
+                user_id=user_id,
+                semantic_text=cache_key_user or "",
+            )
 
         return result
 
     # ---------- internals ----------
+
+    @staticmethod
+    async def _assert_can_spend(user_id: int | None) -> None:
+        # Imported lazily: billing pulls in the ORM layer, and `llm.client`
+        # must stay importable in unit tests that never touch a database.
+        from jobcopilot_api.services import billing_service
+
+        await billing_service.assert_can_spend(user_id)
 
     async def _call_with_admission(
         self,
@@ -615,6 +649,8 @@ class BaseLLMClient:
         on_token: OnTokenCallback | None = None,
     ) -> ProviderResponse:
         """Apply process-wide backpressure before touching the provider."""
+        # P7:熔断先于闸门 —— 熔断期内连信号量都不该占。
+        breaker.check()
         if self._concurrency_gate_factory is None:
             return await self._call_with_retry(request, on_token=on_token)
         async with self._concurrency_gate_factory():
@@ -633,7 +669,14 @@ class BaseLLMClient:
             reraise=True,
         ):
             with attempt:
-                return await self._provider.complete(request, on_token=on_token)
+                try:
+                    resp = await self._provider.complete(request, on_token=on_token)
+                except LLMUpstreamError as exc:
+                    if exc.upstream_status_code == 429:
+                        breaker.record_rate_limited()
+                    raise
+                breaker.record_success()
+                return resp
         # Unreachable: AsyncRetrying with reraise=True always either returns or raises.
         raise RuntimeError("retry loop exited without result")  # pragma: no cover
 

@@ -172,6 +172,18 @@ Langfuse: http://localhost:3001
 Caddy:    http://localhost
 ```
 
+首次启动后先在 `http://localhost:3000/login` 注册一个账号 —— 所有业务接口都要
+登录态,注册时会发放一笔体验额度(`JOBCOPILOT_BILLING_SIGNUP_GRANT_CNY`)。
+
+Compose 现在有 8 个服务:`postgres`、`redis`、`api`、`worker`、`web`、`caddy`、
+`langfuse-db`、`langfuse`。其中 `worker` 是长任务执行进程(默认 2 副本,
+`JOBCOPILOT_WORKER_REPLICAS` 调整),`redis` 是它的任务队列。
+`api` 只处理在线请求,不再跑任何后台任务。
+
+```bash
+docker compose up -d --scale worker=4
+```
+
 ## 配置
 
 | 变量 | 必填 | 说明 |
@@ -183,6 +195,15 @@ Caddy:    http://localhost
 | `LANGFUSE_PUBLIC_KEY` | 否 | 可选 Langfuse public key;留空时 SDK noop |
 | `LANGFUSE_SECRET_KEY` | 否 | 可选 Langfuse secret key |
 | `LANGFUSE_HOST` | 否 | 可选 Langfuse host;Compose 容器内默认 `http://langfuse:3000` |
+| `JOBCOPILOT_AUTH_SECRET` | 是(生产) | 令牌签名密钥;留空时所有 `/api/auth` 接口返回 401 |
+| `JOBCOPILOT_BILLING_SIGNUP_GRANT_CNY` | 否 | 注册赠额,默认 `5` |
+| `JOBCOPILOT_REDIS_URL` | 否 | 任务队列;留空时 worker 退化为轮询 `jobs` 表(仍然多副本安全) |
+| `JOBCOPILOT_WORKER_REPLICAS` | 否 | worker 副本数,默认 `2` |
+| `JOBCOPILOT_JOB_WORKER_CONCURRENCY` | 否 | 每个 worker 副本并发跑几条 job,默认 `4` |
+| `JOBCOPILOT_LLM_MAX_CONCURRENCY` | 否 | 进程内上游并发闸门,默认 `32` |
+| `JOBCOPILOT_DB_POOL_SIZE` / `JOBCOPILOT_DB_MAX_OVERFLOW` | 否 | 每进程连接池,默认 `20` / `20` |
+| `JOBCOPILOT_QUEUE_HIGH_WATERMARK` | 否 | 待执行任务水位,超过后新任务返回 503 + `Retry-After` |
+| `JOBCOPILOT_LLM_SEMANTIC_CACHE_ENABLED` | 否 | 语义近似缓存,默认关闭 |
 
 ## 使用方式
 
@@ -212,14 +233,25 @@ Caddy:    http://localhost
 | `GET /v1/health` | 服务健康检查 |
 | `POST /api/notes/batch-import` | 导入浏览器读取到的 Markdown 笔记 |
 | `GET /api/notes/tree` | 读取笔记树 |
-| `POST /api/quiz/sessions` | 通过 SSE 创建主题类 RAG 练习 session |
+| `POST /api/auth/register` / `POST /api/auth/login` | 注册 / 登录,返回 bearer token |
+| `GET /api/auth/me` | 当前用户 |
+| `GET /api/billing/balance` / `POST /api/billing/topup` | 余额与模拟充值 |
+| `GET /api/billing/spend-summary` | 按功能 / 渠道的成本归因 |
+| `POST /api/quiz/sessions` | 创建主题类 RAG 练习 session(202 + job_id) |
 | `GET /api/quiz/sessions/{id}` | 恢复 quiz session 并回放状态 |
-| `POST /api/quiz/sessions/{id}/answers/{order_index}/turns` | 通过 SSE 提交初答、补答或追问教练 |
-| `POST /api/quiz/sessions/{id}/finish` | 通过 SSE 生成整场总结 |
+| `POST /api/quiz/sessions/{id}/answers/{order_index}/turns` | 提交初答、补答或追问教练(202 + job_id) |
+| `POST /api/quiz/sessions/{id}/finish` | 生成整场总结(202 + job_id) |
+| `POST /api/quiz/sessions/{id}/submit` | 触发 Judge 评分(202 + job_id) |
+| `GET /api/jobs/{id}` | 查异步任务状态 |
+| `GET /api/jobs/{id}/stream` | 订阅异步任务进度(SSE,支持 `after_seq` 续读) |
 | `POST /api/jds` | 上传并解析文本 JD |
 | `GET /api/jds` | 列出已保存 JD |
-| `POST /api/jd-analyses` | 通过 SSE 运行 JD 一键分析 |
+| `POST /api/jd-analyses` | 运行 JD 一键分析(202 + job_id) |
 | `GET /api/jd-analyses/{id}` | 读取已保存的 JD 分析报告 |
+
+长任务一律走 **202 + job_id**:POST 只写一行 `jobs` 就返回,执行在 worker 进程,
+进度通过 `GET /api/jobs/{id}/stream` 订阅。断线后带上已收到的 `after_seq` 续读,
+不丢事件。
 
 完整请求/响应契约以开发环境 `/v1/docs` 和 `/v1/openapi.json` 为准;跨接口约束见 [`docs/TECH_DESIGN.md`](docs/TECH_DESIGN.md)。
 
@@ -233,15 +265,26 @@ apps/web (Next.js 15 / React 19)
         |
         | REST + SSE
         v
-apps/api (FastAPI / SQLAlchemy 2.x async)
-  routers:  notes, quiz, jd, health
-  services: retrieval, quiz, answer, interview, jd, recall
-  agents:   quiz_generator, answer_judge, jd_parser, jd_aggregator, coach_chat
-  llm:      provider abstraction, cache, pricing, logging
-  infra:    Postgres, pgvector, Langfuse, request id
-        |
-        v
+apps/api (FastAPI / SQLAlchemy 2.x async, gunicorn + UvicornWorker)
+  routers:  auth, notes, quiz, jd, jobs, health
+  services: auth, billing, job, retrieval, quiz, answer, interview, jd, recall
+  llm:      provider abstraction, cache, semantic cache, pricing, logging, breaker
+  infra:    Postgres, pgvector, Redis Streams, Langfuse, request id
+        |                                   |
+        | 202 + job_id                      | REST/SSE 只读
+        v                                   |
+Redis Streams (consumer group + XACK)       |
+        |                                   |
+        v                                   |
+worker 进程 (N 副本)                         |
+  job_worker:   quiz / answer / finish / submit / jd_analysis
+  embed_worker: note_chunks embedding (FOR UPDATE SKIP LOCKED)
+  agents:       quiz_generator, answer_judge, jd_parser, jd_aggregator, coach_chat
+        |                                   |
+        v                                   v
 Postgres 16 + pgvector
+  users / user_balances / balance_transactions
+  jobs / job_events
   notes / note_chunks / questions / quiz_sessions / session_answers
   session_events / jds / jd_analyses / llm_response_cache / llm_calls
         |
@@ -249,6 +292,11 @@ Postgres 16 + pgvector
 DashScope / Qwen
   generation, embedding, rerank
 ```
+
+所有业务表都带 `user_id`,service 层每条查询都按它过滤;笔记文件也按
+`<notes_fs_root>/users/<user_id>/` 分目录。每次上游调用前查余额、调用后按
+实际 `cost_cny` 扣费,三条链路(生成 / rerank / embedding)都进
+`llm_calls` + `balance_transactions`。
 
 ## 技术栈
 
@@ -271,6 +319,7 @@ apps/
 packages/
   schemas/          shared TypeScript schemas
 docs/               状态、任务、技术架构文档
+loadtest/           k6 压测脚本(手动跑,不进 CI)
 evals/              评测规范、dataset 与运行报告
 docker/             Dockerfiles and service config
 test-notes/         local dogfood notes and recall output

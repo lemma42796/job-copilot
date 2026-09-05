@@ -3,8 +3,11 @@
 职责(docs/TECH_DESIGN.md):
 - hybrid_search_in_node:节点 prefix 限定的 hybrid search,被 chunk_service /
   quiz_service 用作出题前剪枝(超 30 chunks 时取语义 Top-30)
-- global_hybrid_search:跨用户全部笔记的 hybrid search,
+- global_hybrid_search:**单个用户**全部笔记的 hybrid search,
   暴露给 AnswerJudge 的 lookup_in_notes_global tool(docs/TECH_DESIGN.md,M2)
+
+P0:所有召回查询强制带 `NoteChunk.user_id == user_id`。`user_id=None` 只
+允许出现在离线评测脚本里(没有归属过滤,不能出现在任何在线路径上)。
 
 底层:
 - vector 路 — pgvector cosine_distance + HNSW(ix_note_chunks_embedding_hnsw)
@@ -19,6 +22,7 @@ RRF_K / HYBRID_PER_PATH_K 常量在本文件,dogfood 后调动作只改这里。
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,6 +63,8 @@ async def hybrid_search_in_node(
     heading_path: list[str] | None,
     query: str,
     top_k: int = DEFAULT_TOP_K,
+    *,
+    user_id: int | None = None,
 ) -> list[NoteChunk]:
     """节点 prefix 限定 hybrid search(M1)。
 
@@ -77,6 +83,7 @@ async def hybrid_search_in_node(
         top_k=top_k,
         folder_path=folder_path,
         heading_path=heading_path,
+        user_id=user_id,
     )
 
 
@@ -84,10 +91,12 @@ async def global_hybrid_search(
     session: AsyncSession,
     query: str,
     top_k: int = 3,
+    *,
+    user_id: int | None = None,
 ) -> list[NoteChunk]:
-    """全用户笔记 hybrid search(AnswerJudge lookup_in_notes_global tool 入口,M2)。
+    """该用户全部笔记的 hybrid search(AnswerJudge lookup tool 入口,M2)。
 
-    单用户 MVP 不带 user_id 过滤;M4 多用户时加 user_id WHERE。
+    "global" 指的是"不限 folder / heading 前缀",不是"跨用户"。
     """
     return await _hybrid_search(
         session,
@@ -95,6 +104,7 @@ async def global_hybrid_search(
         top_k=top_k,
         folder_path=None,
         heading_path=None,
+        user_id=user_id,
     )
 
 
@@ -102,14 +112,17 @@ async def global_hybrid_search_with_diagnostics(
     session: AsyncSession,
     query: str,
     top_k: int = 3,
+    *,
+    user_id: int | None = None,
 ) -> HybridSearchDiagnostics:
-    """全用户笔记 hybrid search + 诊断字段,只给 eval/report 使用。"""
+    """同上 + 诊断字段,只给 eval/report 使用。"""
     return await _hybrid_search_with_diagnostics(
         session,
         query=query,
         top_k=top_k,
         folder_path=None,
         heading_path=None,
+        user_id=user_id,
     )
 
 
@@ -120,8 +133,9 @@ async def _hybrid_search(
     top_k: int,
     folder_path: list[str] | None,
     heading_path: list[str] | None,
+    user_id: int | None = None,
 ) -> list[NoteChunk]:
-    embed_result = await embed_query_cached(query)
+    embed_result = await embed_query_cached(query, user_id=user_id)
     if not embed_result.vectors:
         return []
     vec = embed_result.vectors[0]
@@ -132,11 +146,11 @@ async def _hybrid_search(
     # SQL(撞 InvalidRequestError "concurrent operations are not permitted")。
     # 两路都是 indexed 查询(HNSW + GIN),串行延迟可控。
     vector_chunks = await _vector_search(
-        session, folder_path, heading_path, vec, per_path_k
+        session, folder_path, heading_path, vec, per_path_k, user_id
     )
     if lex_query:
         lexical_chunks = await _lexical_search(
-            session, folder_path, heading_path, lex_query, per_path_k
+            session, folder_path, heading_path, lex_query, per_path_k, user_id
         )
     else:
         lexical_chunks = []
@@ -152,8 +166,9 @@ async def _hybrid_search_with_diagnostics(
     top_k: int,
     folder_path: list[str] | None,
     heading_path: list[str] | None,
+    user_id: int | None = None,
 ) -> HybridSearchDiagnostics:
-    embed_result = await embed_query_cached(query)
+    embed_result = await embed_query_cached(query, user_id=user_id)
     if not embed_result.vectors:
         return HybridSearchDiagnostics(
             query=query,
@@ -171,11 +186,11 @@ async def _hybrid_search_with_diagnostics(
     # SQL(撞 InvalidRequestError "concurrent operations are not permitted")。
     # 两路都是 indexed 查询(HNSW + GIN),串行延迟可控。
     vector_hits = await _vector_search_with_scores(
-        session, folder_path, heading_path, vec, per_path_k
+        session, folder_path, heading_path, vec, per_path_k, user_id
     )
     if lex_query:
         lexical_hits = await _lexical_search_with_scores(
-            session, folder_path, heading_path, lex_query, per_path_k
+            session, folder_path, heading_path, lex_query, per_path_k, user_id
         )
     else:
         lexical_hits = []
@@ -194,11 +209,19 @@ async def _hybrid_search_with_diagnostics(
     )
 
 
-def _apply_prefix_filters(
-    stmt: sa.Select[tuple[NoteChunk]],
+def _apply_scope_filters(
+    stmt: Any,
     folder_path: list[str] | None,
     heading_path: list[str] | None,
-) -> sa.Select[tuple[NoteChunk]]:
+    user_id: int | None,
+) -> Any:
+    """P0 归属过滤 + folder / heading 前缀过滤。
+
+    归属过滤在最前面,和前缀过滤写在同一个函数里 —— 每条召回 SQL 都必须
+    经过它,漏掉 user_id 的路径不存在。
+    """
+    if user_id is not None:
+        stmt = stmt.where(NoteChunk.user_id == user_id)
     if folder_path:
         stmt = stmt.where(
             NoteChunk.folder_path[1 : len(folder_path)] == folder_path
@@ -216,10 +239,11 @@ async def _vector_search(
     heading_path: list[str] | None,
     vector: list[float],
     k: int,
+    user_id: int | None = None,
 ) -> list[NoteChunk]:
     """HNSW cosine top-K。WHERE embedding IS NOT NULL 跳过 worker 还没算的 chunk。"""
     stmt = sa.select(NoteChunk).where(NoteChunk.embedding.is_not(None))
-    stmt = _apply_prefix_filters(stmt, folder_path, heading_path)
+    stmt = _apply_scope_filters(stmt, folder_path, heading_path, user_id)
     stmt = stmt.order_by(NoteChunk.embedding.cosine_distance(vector)).limit(k)
     return list((await session.execute(stmt)).scalars().all())
 
@@ -230,11 +254,12 @@ async def _vector_search_with_scores(
     heading_path: list[str] | None,
     vector: list[float],
     k: int,
+    user_id: int | None = None,
 ) -> list[HybridRouteHit]:
     """HNSW cosine top-K + distance。distance 越小越相似。"""
     distance = NoteChunk.embedding.cosine_distance(vector)
     stmt = sa.select(NoteChunk, distance).where(NoteChunk.embedding.is_not(None))
-    stmt = _apply_prefix_filters(stmt, folder_path, heading_path)
+    stmt = _apply_scope_filters(stmt, folder_path, heading_path, user_id)
     stmt = stmt.order_by(distance).limit(k)
     rows = (await session.execute(stmt)).all()
     return [
@@ -249,6 +274,7 @@ async def _lexical_search(
     heading_path: list[str] | None,
     ts_query: str,
     k: int,
+    user_id: int | None = None,
 ) -> list[NoteChunk]:
     """tsvector @@ to_tsquery 走 GIN ix_note_chunks_content_tsv;ts_rank 排序。
 
@@ -259,7 +285,7 @@ async def _lexical_search(
     content_tsv: sa.ColumnElement[str] = sa.literal_column("content_tsv")
     rank = sa.func.ts_rank(content_tsv, tsq)
     stmt = sa.select(NoteChunk).where(content_tsv.op("@@")(tsq))
-    stmt = _apply_prefix_filters(stmt, folder_path, heading_path)
+    stmt = _apply_scope_filters(stmt, folder_path, heading_path, user_id)
     stmt = stmt.order_by(rank.desc()).limit(k)
     return list((await session.execute(stmt)).scalars().all())
 
@@ -270,13 +296,14 @@ async def _lexical_search_with_scores(
     heading_path: list[str] | None,
     ts_query: str,
     k: int,
+    user_id: int | None = None,
 ) -> list[HybridRouteHit]:
     """tsvector lexical top-K + ts_rank。score 越大越匹配。"""
     tsq = sa.func.to_tsquery("simple", ts_query)
     content_tsv: sa.ColumnElement[str] = sa.literal_column("content_tsv")
     rank = sa.func.ts_rank(content_tsv, tsq)
     stmt = sa.select(NoteChunk, rank).where(content_tsv.op("@@")(tsq))
-    stmt = _apply_prefix_filters(stmt, folder_path, heading_path)
+    stmt = _apply_scope_filters(stmt, folder_path, heading_path, user_id)
     stmt = stmt.order_by(rank.desc()).limit(k)
     rows = (await session.execute(stmt)).all()
     return [

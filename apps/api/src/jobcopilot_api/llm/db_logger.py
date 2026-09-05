@@ -1,4 +1,4 @@
-"""`DBCallLogger` — persists `LLMResult` to the `llm_calls` table.
+"""`DBCallLogger` — persists `LLMResult` to `llm_calls` and charges balance.
 
 ADR-0004 D4 in code form:
 
@@ -12,9 +12,16 @@ ADR-0004 D4 in code form:
 - Total fault tolerance: any exception from the DB layer is swallowed and
   logged at WARNING. The cost log is best-effort; we never want a logging
   failure to break a successful LLM call.
+
+P1:落账后按 `cost_cny` 实扣用户余额,流水关联到刚写入的 `llm_calls.id`。
+缓存命中的调用 `cost_cny` 为 0,不产生扣费 — 用户天然受益于缓存。
+本类是**文本生成**这条链路的记账点;rerank 与 embedding 各自在
+`services/reranker.py` / `llm/embedders.py` 里走同一套 `record_usage`。
 """
 
 from __future__ import annotations
+
+from decimal import Decimal
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -26,14 +33,26 @@ log = structlog.get_logger(__name__)
 
 
 class DBCallLogger:
-    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession] | None = None) -> None:
         self._sessionmaker = sessionmaker
 
+    def _get_sessionmaker(self) -> async_sessionmaker[AsyncSession]:
+        if self._sessionmaker is not None:
+            return self._sessionmaker
+        from jobcopilot_api.infra.db import get_sessionmaker
+
+        return get_sessionmaker()
+
     async def log(self, result: LLMResult) -> None:
+        from jobcopilot_api.services import billing_service
+
+        llm_call_id: int | None = None
         try:
-            async with self._sessionmaker() as session:
-                session.add(_to_record(result))
+            async with self._get_sessionmaker()() as session:
+                record = _to_record(result)
+                session.add(record)
                 await session.commit()
+                llm_call_id = record.id
         except Exception as exc:
             log.warning(
                 "llm_call_log_failed",
@@ -42,6 +61,14 @@ class DBCallLogger:
                 model=result.model,
                 error=str(exc),
             )
+
+        await billing_service.charge(
+            user_id=result.user_id,
+            cost_cny=Decimal(result.cost_cny),
+            channel=billing_service.CHANNEL_GENERATION,
+            feature=result.feature,
+            llm_call_id=llm_call_id,
+        )
 
 
 def _to_record(result: LLMResult) -> LlmCall:

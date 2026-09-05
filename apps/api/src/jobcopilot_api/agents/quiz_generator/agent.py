@@ -42,18 +42,28 @@ async def run(
     inp: QuizGenInput,
     *,
     llm: LLMClient | None = None,
+    user_id: int | None = None,
+    correction: str | None = None,
 ) -> LLMResult:
     """LLM 出题。
 
     返回 LLMResult — `.parsed` 是 `QuizGenOutput`(已 Pydantic 校验);
     `.tokens_in / tokens_out / cost_cny / model` 喂 service 层落 audit。
+
+    `correction` 非空时表示重试:上一轮输出通过了 Pydantic 校验但违反
+    service 层完整性约束,把失败原因拼进 prompt 让模型修正;prompt 变了
+    也天然绕开语义缓存,不会重放同一份坏输出。
     """
     client = llm or get_llm_client()
+    correction_note = (
+        "\n\n【重试:上一次输出未通过完整性校验,必须逐条修正后再输出完整 JSON】\n"
+        + (correction or "")
+    ) if correction else ""
     user = render_user(
         query=inp.query,
         chunks=inp.chunks,
         question_count=inp.question_count,
-    )
+    ) + correction_note
     messages = [
         *build_chunk_cache_messages(inp.chunks),
         {"role": "system", "content": SYSTEM},
@@ -62,7 +72,8 @@ async def run(
             "content": render_task(
                 query=inp.query,
                 question_count=inp.question_count,
-            ),
+            )
+            + correction_note,
         },
     ]
     return await client.complete(
@@ -74,9 +85,11 @@ async def run(
             chunks=inp.chunks,
             question_count=inp.question_count,
         )
+        + correction_note
         if llm is None
         else user,
         messages=messages,
         response_schema=QuizGenOutput,
         temperature=TEMPERATURE,
+        user_id=user_id,
     )

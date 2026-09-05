@@ -25,6 +25,9 @@ from jobcopilot_api.models.base import Base, IDMixin
 class NoteChunk(Base, IDMixin):
     __tablename__ = "note_chunks"
 
+    # P0 数据隔离:所有业务表按 user_id 归属,service 层每条查询都必须带上它。
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+
     note_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
     folder_path: Mapped[list[str]] = mapped_column(

@@ -158,6 +158,51 @@ class DummyEmbedder:
         )
 
 
+class StubEmbedder:
+    """压测专用 stub embedding(P8):hash 向量 + 固定延迟 / 固定并发上限。
+
+    向量算法与 DummyEmbedder 同源(确定性 hash,无语义),但每次调用
+    占用 stub 上游并发位并模拟 `stub_latency_s` 延迟,让 embedding
+    链路的吞吐与队列行为可测。零网络、零真实 token。
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str = "stub-embed-v0",
+        dimensions: int = EMBED_DIMENSIONS,
+    ) -> None:
+        self._model = model
+        self._dim = dimensions
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def dimensions(self) -> int:
+        return self._dim
+
+    async def embed(self, texts: list[str]) -> EmbeddingResult:
+        from jobcopilot_api.llm.providers.stub import stub_upstream_call
+
+        if len(texts) > EMBED_BATCH_LIMIT:
+            raise ValueError(f"batch size {len(texts)} > {EMBED_BATCH_LIMIT}; chunk 上游应预切")
+        if not texts:
+            return EmbeddingResult(
+                vectors=[], tokens_in=0, model=self._model, cost_cny=Decimal("0")
+            )
+        await stub_upstream_call()
+        vectors = [_hash_to_unit_vector(t, self._dim) for t in texts]
+        tokens = sum(len(t) for t in texts)
+        return EmbeddingResult(
+            vectors=vectors,
+            tokens_in=tokens,
+            model=self._model,
+            cost_cny=Decimal("0"),
+        )
+
+
 # ---------- Dashscope ----------
 
 

@@ -32,7 +32,7 @@ from jobcopilot_api.schemas.agents.quiz_generator import (
     GeneratedQuestion,
     QuizGenChunkInput,
 )
-from jobcopilot_api.services import answer_judge_service, recall_service
+from jobcopilot_api.services import answer_judge_service, billing_service, recall_service
 from jobcopilot_api.services.answer_judge_service import (
     JudgeCallFailedError,
     JudgeIntegrityError,
@@ -70,19 +70,42 @@ class _JudgeTask:
     judge_context_chunk_ids: list[int]
 
 
+async def load_owned_session(
+    session: AsyncSession,
+    session_id: int,
+    *,
+    user_id: int,
+) -> QuizSession:
+    """P0:按 (id, user_id) 取会话。全仓所有 quiz_session 读写的唯一入口。
+
+    别人的 session 与不存在的 session 返回同一个 404。
+    """
+    quiz_session = (
+        await session.execute(
+            sa.select(QuizSession)
+            .where(QuizSession.id == session_id)
+            .where(QuizSession.user_id == user_id)
+        )
+    ).scalar_one_or_none()
+    if quiz_session is None:
+        raise NotFoundError(f"quiz_session {session_id} 不存在")
+    return quiz_session
+
+
 async def get_session_detail(
     session: AsyncSession,
     session_id: int,
+    *,
+    user_id: int,
 ) -> QuizSessionDetailOut:
-    quiz_session = await session.get(QuizSession, session_id)
-    if quiz_session is None:
-        raise NotFoundError(f"quiz_session {session_id} 不存在")
+    quiz_session = await load_owned_session(session, session_id, user_id=user_id)
 
     answers = list(
         (
             await session.execute(
                 sa.select(SessionAnswer)
                 .where(SessionAnswer.session_id == session_id)
+                .where(SessionAnswer.user_id == user_id)
                 .order_by(SessionAnswer.order_index)
             )
         )
@@ -93,7 +116,9 @@ async def get_session_detail(
     questions = list(
         (
             await session.execute(
-                sa.select(Question).where(Question.id.in_(question_ids))
+                sa.select(Question)
+                .where(Question.id.in_(question_ids))
+                .where(Question.user_id == user_id)
             )
         )
         .scalars()
@@ -116,6 +141,7 @@ async def get_session_detail(
                 await session.execute(
                     sa.select(SessionEvent)
                     .where(SessionEvent.answer_id.in_(answer_ids))
+                    .where(SessionEvent.user_id == user_id)
                     .where(
                         SessionEvent.event_type.in_(
                             [
@@ -257,6 +283,7 @@ async def get_session_detail(
 async def list_sessions(
     session: AsyncSession,
     *,
+    user_id: int,
     status: str | None = None,
     cursor: int | None = None,
     limit: int = 20,
@@ -267,6 +294,7 @@ async def list_sessions(
             SessionAnswer.session_id.label("session_id"),
             sa.func.count(SessionAnswer.id).label("question_count"),
         )
+        .where(SessionAnswer.user_id == user_id)
         .group_by(SessionAnswer.session_id)
         .subquery()
     )
@@ -278,6 +306,7 @@ async def list_sessions(
             ),
         )
         .outerjoin(answer_count, answer_count.c.session_id == QuizSession.id)
+        .where(QuizSession.user_id == user_id)
         .order_by(QuizSession.id.desc())
         .limit(limit + 1)
     )
@@ -312,12 +341,12 @@ async def list_sessions(
 async def get_session_recall_markdown(
     session: AsyncSession,
     session_id: int,
+    *,
+    user_id: int,
 ) -> str:
-    quiz_session = await session.get(QuizSession, session_id)
-    if quiz_session is None:
-        raise NotFoundError(f"quiz_session {session_id} 不存在")
+    quiz_session = await load_owned_session(session, session_id, user_id=user_id)
     file_markdown = recall_service.read_session_summary_markdown(
-        quiz_session.recall_md_path
+        quiz_session.recall_md_path, user_id=user_id
     )
     if isinstance(file_markdown, str) and file_markdown.strip():
         return file_markdown
@@ -334,10 +363,10 @@ async def save_draft(
     session_id: int,
     order_index: int,
     payload: AnswerDraftIn,
+    *,
+    user_id: int,
 ) -> None:
-    quiz_session = await session.get(QuizSession, session_id)
-    if quiz_session is None:
-        raise NotFoundError(f"quiz_session {session_id} 不存在")
+    quiz_session = await load_owned_session(session, session_id, user_id=user_id)
     if quiz_session.status != "in_progress":
         raise SessionNotInProgressError(
             f"session {session_id} 当前状态为 {quiz_session.status},不能继续答题"
@@ -347,6 +376,7 @@ async def save_draft(
     result = await session.execute(
         sa.update(SessionAnswer)
         .where(SessionAnswer.session_id == session_id)
+        .where(SessionAnswer.user_id == user_id)
         .where(SessionAnswer.order_index == order_index)
         .values(
             user_answer=payload.user_answer,
@@ -378,10 +408,15 @@ async def save_draft(
 async def submit_session_sse(
     sessionmaker: async_sessionmaker[AsyncSession],
     session_id: int,
+    *,
+    user_id: int,
 ) -> AsyncIterator[dict[str, Any]]:
-    """评分 SSE:逐题 Judge → Python 算分 → 落库 → 汇总 session 分。"""
+    """评分事件流:逐题 Judge → Python 算分 → 落库 → 汇总 session 分。
+
+    P3 之后由 worker 消费,事件写 `job_events`。
+    """
     try:
-        tasks = await _load_judge_tasks(sessionmaker, session_id)
+        tasks = await _load_judge_tasks(sessionmaker, session_id, user_id=user_id)
     except JobCopilotError as e:
         yield _ev("error", _error_payload(e))
         yield _ev("done", {"ok": False})
@@ -411,7 +446,13 @@ async def submit_session_sse(
                 judge_input=judge_input,
                 scoring_points=task.question.scoring_points,
                 judge_context_chunk_ids=task.judge_context_chunk_ids,
+                user_id=user_id,
             )
+        except billing_service.InsufficientBalanceError as e:
+            # P1:就地中止。前面已经评完的题目分数已落库,不回滚。
+            yield _ev("error", _error_payload(e))
+            yield _ev("done", {"ok": False})
+            return
         except (LLMError, JudgeCallFailedError) as e:
             detail = str(e) or "Judge 调用失败"
             yield _ev(
@@ -446,7 +487,7 @@ async def submit_session_sse(
         )
 
     try:
-        summary = await _finalize_session(sessionmaker, session_id)
+        summary = await _finalize_session(sessionmaker, session_id, user_id=user_id)
     except JobCopilotError as e:
         yield _ev("error", _error_payload(e))
         yield _ev("done", {"ok": False})
@@ -458,10 +499,10 @@ async def submit_session_sse(
 async def abandon_session(
     session: AsyncSession,
     session_id: int,
+    *,
+    user_id: int,
 ) -> dict[str, Any]:
-    quiz_session = await session.get(QuizSession, session_id)
-    if quiz_session is None:
-        raise NotFoundError(f"quiz_session {session_id} 不存在")
+    quiz_session = await load_owned_session(session, session_id, user_id=user_id)
     if quiz_session.status != "in_progress":
         raise SessionNotInProgressError(
             f"session {session_id} 当前状态为 {quiz_session.status},不能放弃"
@@ -495,11 +536,13 @@ def _error_payload(exc: JobCopilotError) -> dict[str, Any]:
 async def _load_judge_tasks(
     sessionmaker: async_sessionmaker[AsyncSession],
     session_id: int,
+    *,
+    user_id: int,
 ) -> list[_JudgeTask]:
     async with sessionmaker() as session:
-        quiz_session = await session.get(QuizSession, session_id)
-        if quiz_session is None:
-            raise NotFoundError(f"quiz_session {session_id} 不存在")
+        quiz_session = await load_owned_session(
+            session, session_id, user_id=user_id
+        )
         if quiz_session.status != "in_progress":
             raise SessionNotInProgressError(
                 f"session {session_id} 当前状态为 {quiz_session.status},不能提交"
@@ -510,6 +553,7 @@ async def _load_judge_tasks(
                 await session.execute(
                     sa.select(SessionAnswer)
                     .where(SessionAnswer.session_id == session_id)
+                    .where(SessionAnswer.user_id == user_id)
                     .order_by(SessionAnswer.order_index)
                 )
             )
@@ -534,7 +578,9 @@ async def _load_judge_tasks(
         questions = list(
             (
                 await session.execute(
-                    sa.select(Question).where(Question.id.in_(question_ids))
+                    sa.select(Question)
+                    .where(Question.id.in_(question_ids))
+                    .where(Question.user_id == user_id)
                 )
             )
             .scalars()
@@ -549,6 +595,7 @@ async def _load_judge_tasks(
             session,
             quiz_session=quiz_session,
             questions=task_questions,
+            user_id=user_id,
         )
 
         tasks: list[_JudgeTask] = []
@@ -605,14 +652,16 @@ def _session_summary(agent_state: dict[str, Any] | None) -> dict[str, Any] | Non
 async def _finalize_session(
     sessionmaker: async_sessionmaker[AsyncSession],
     session_id: int,
+    *,
+    user_id: int,
 ) -> dict[str, Any]:
     async with sessionmaker() as session:
         answers = list(
             (
                 await session.execute(
-                    sa.select(SessionAnswer).where(
-                        SessionAnswer.session_id == session_id
-                    )
+                    sa.select(SessionAnswer)
+                    .where(SessionAnswer.session_id == session_id)
+                    .where(SessionAnswer.user_id == user_id)
                 )
             )
             .scalars()
@@ -630,6 +679,7 @@ async def _finalize_session(
         await session.execute(
             sa.update(QuizSession)
             .where(QuizSession.id == session_id)
+            .where(QuizSession.user_id == user_id)
             .values(
                 status="submitted",
                 coverage_score=answer_judge_service.score_decimal(coverage),

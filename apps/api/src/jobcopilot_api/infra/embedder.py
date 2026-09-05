@@ -8,13 +8,16 @@ indirection on the profiles router, same pattern as `_llm_dep`).
 
 from __future__ import annotations
 
-from jobcopilot_api.llm.embedders import DashscopeEmbedder, Embedder
+from jobcopilot_api.llm.embedders import DashscopeEmbedder, Embedder, StubEmbedder
 from jobcopilot_api.settings import settings
 
 _embedder: Embedder | None = None
 
 
 def _build_default_embedder() -> Embedder:
+    # P8 压测:与 infra/llm.py 同一开关,embedding 换 stub 假上游。
+    if settings.llm_provider == "stub":
+        return StubEmbedder()
     return DashscopeEmbedder(api_key=settings.dashscope_api_key)
 
 

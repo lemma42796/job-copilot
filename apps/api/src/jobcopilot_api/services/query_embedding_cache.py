@@ -16,7 +16,7 @@ from typing import Any
 import structlog
 from sqlalchemy import text
 
-from jobcopilot_api.agents.embedder.agent import EMBED_VERSION
+from jobcopilot_api.agents.embedder.agent import EMBED_VERSION, embed_batch
 from jobcopilot_api.infra.db import get_sessionmaker
 from jobcopilot_api.infra.embedder import get_embedder
 from jobcopilot_api.llm.embedders import (
@@ -56,7 +56,11 @@ class QueryEmbeddingCacheMissError(RuntimeError):
     """Raised when query embedding cache-only mode cannot satisfy a query."""
 
 
-async def embed_query_cached(query: str) -> EmbeddingResult:
+async def embed_query_cached(
+    query: str,
+    *,
+    user_id: int | None = None,
+) -> EmbeddingResult:
     """Embed one search query, using a persistent exact-query cache.
 
     The cache key includes normalized query text, model, embedding version, and
@@ -72,6 +76,7 @@ async def embed_query_cached(query: str) -> EmbeddingResult:
         normalized_query=normalized_query,
         model=model,
         dimensions=dimensions,
+        user_id=user_id,
     )
 
     if settings.llm_cache_enabled:
@@ -90,7 +95,9 @@ async def embed_query_cached(query: str) -> EmbeddingResult:
             f"dimensions={dimensions}, embed_version={EMBED_VERSION}"
         )
 
-    result = await embedder.embed([normalized_query])
+    # 走 agents/embedder.embed_batch 而不是 embedder.embed:那里挂着并发闸门、
+    # 余额闸门与 llm_calls 记账,直接调 embedder 会绕过全部三项。
+    result = await embed_batch([normalized_query], user_id=user_id)
     if settings.llm_cache_enabled and result.vectors:
         await _put_cached_embedding(
             cache_key=cache_key,
@@ -113,6 +120,7 @@ def compute_query_embedding_cache_key(
     normalized_query: str,
     model: str,
     dimensions: int,
+    user_id: int | None = None,
 ) -> str:
     payload = {
         "kind": FEATURE,
@@ -120,6 +128,9 @@ def compute_query_embedding_cache_key(
         "model": model,
         "embed_version": EMBED_VERSION,
         "dimensions": dimensions,
+        # P6:query 文本本身是用户输入,`request` 列会存原文,跨用户共享
+        # 等于把一个用户搜过什么暴露给另一个用户 —— 按 user_id 隔离。
+        "user_id": user_id,
     }
     text = json.dumps(
         payload,

@@ -475,6 +475,7 @@ async def protected_anchor_search(
     expanded_queries: list[str],
     *,
     top_k: int = PROTECTED_ANCHOR_TOP_K,
+    user_id: int | None = None,
 ) -> list[NoteChunk]:
     """Supplement protected queries with exact failure-recovery anchors.
 
@@ -496,11 +497,10 @@ async def protected_anchor_search(
             NoteChunk.content,
         )
     )
-    stmt = (
-        sa.select(NoteChunk)
-        .where(_anchor_route_predicate(path_text, route))
-        .limit(PROTECTED_ANCHOR_SQL_LIMIT)
-    )
+    stmt = sa.select(NoteChunk).where(_anchor_route_predicate(path_text, route))
+    if user_id is not None:
+        stmt = stmt.where(NoteChunk.user_id == user_id)
+    stmt = stmt.limit(PROTECTED_ANCHOR_SQL_LIMIT)
     candidates = list((await session.execute(stmt)).scalars().all())
     scored: list[tuple[NoteChunk, float]] = []
     for chunk in candidates:

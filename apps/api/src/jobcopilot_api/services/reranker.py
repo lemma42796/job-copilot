@@ -13,6 +13,12 @@
   (response.usage.total_tokens 已按此公式给值)
 - `gte-rerank-v2` 将于 2026-05-30 下线;新实现只用 qwen3-rerank
 
+P1 / P2 / P7 补齐(原实现绕过全部管控):
+- 走 `llm/admission.py` 的进程内并发闸门,与文本生成共用一个上限。
+- 调用前查余额,调用后经 `llm/usage.py` 落 `llm_calls` 并按 `cost_cny` 实扣。
+- 上游 429 计入 `llm/breaker.py` 的熔断计数。
+- 候选数不超过 top_k 时直接跳过(P6):这时精排不改变结果集,只花钱。
+
 工程边界:
 - **不走 OpenAI SDK**:rerank 不在 OpenAI 协议标准里,langfuse.openai 也不
   patch — 这里直接 httpx + 手动 generation 包;无 Langfuse key 时不构造
@@ -30,12 +36,17 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
+from time import monotonic
 from typing import Any
 
 import httpx
 
 from jobcopilot_api.infra.langfuse import start_generation
+from jobcopilot_api.llm import breaker
+from jobcopilot_api.llm.admission import get_llm_admission_gate
+from jobcopilot_api.llm.usage import FEATURE_RERANK, record_usage
 from jobcopilot_api.models.note_chunk import NoteChunk
+from jobcopilot_api.services import billing_service
 from jobcopilot_api.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -130,18 +141,69 @@ async def rerank(
     top_k: int = DEFAULT_TOP_K,
     instruct: str = DEFAULT_INSTRUCT,
     model: str = DEFAULT_MODEL,
+    user_id: int | None = None,
 ) -> RerankResult:
     """对 hybrid 召回的 chunks 跑 cross-encoder 精排。
 
     chunks 顺序假设是 hybrid RRF 后的优先级(失败回退时直接截前 top_k)。
+    `user_id` 用于扣费归属;None 表示评测脚本等无归属调用,不计费。
     """
     if not chunks:
         return RerankResult(
             scored=[], total_tokens=0, model=model, cost_cny=Decimal("0")
         )
 
+    # P6:候选不超过 top_k 时,精排排完还是这一组,顺序变化对下游取全量
+    # context 无影响 —— 直接跳过,省一次上游调用。
+    if settings.rerank_skip_when_candidates_le_top_k and len(chunks) <= top_k:
+        logger.debug(
+            "rerank skipped: %d candidates <= top_k %d", len(chunks), top_k
+        )
+        return RerankResult(
+            scored=[(chunk, 0.0) for chunk in chunks],
+            total_tokens=0,
+            model=model,
+            cost_cny=Decimal("0"),
+        )
+
     candidate_chunks = chunks[:QWEN3_RERANK_MAX_DOCUMENTS]
     documents = [_format_document(c) for c in candidate_chunks]
+
+    # P8 压测:上游换 stub 假实现 —— 固定延迟 / 固定并发上限,零真实调用。
+    # 记账仍走 record_usage(模拟 token / 成本),保持账本链路满负载。
+    if settings.llm_provider == "stub":
+        from jobcopilot_api.llm.providers.stub import stub_upstream_call
+
+        await billing_service.assert_can_spend(user_id)
+        breaker.check()
+        started = monotonic()
+        async with get_llm_admission_gate():
+            await stub_upstream_call()
+        breaker.record_success()
+        stub_tokens = len(query) + sum(len(d) for d in documents)
+        stub_cost = _rerank_cost(stub_tokens)
+        await record_usage(
+            user_id=user_id,
+            feature=FEATURE_RERANK,
+            channel=billing_service.CHANNEL_RERANK,
+            model=model,
+            tokens_in=stub_tokens,
+            cost_cny=stub_cost,
+            latency_ms=int((monotonic() - started) * 1000),
+            success=True,
+            metadata={"doc_count": len(documents), "top_k": top_k, "stub": True},
+        )
+        scored = [
+            (chunk, 1.0 - 0.01 * i)
+            for i, chunk in enumerate(candidate_chunks[:top_k])
+        ]
+        return RerankResult(
+            scored=scored,
+            total_tokens=stub_tokens,
+            model=model,
+            cost_cny=stub_cost,
+        )
+
     generation = start_generation(
         name="reranker",
         model=model,
@@ -152,24 +214,45 @@ async def rerank(
             "document_format": "content + weak_source_context",
         },
     )
+    # P1:调用前查余额。余额不足直接向上抛,由 worker 映射成 job 终态。
+    await billing_service.assert_can_spend(user_id)
+    breaker.check()
+    started = monotonic()
     try:
         client = _get_http_client()
-        resp = await client.post(
-            RERANK_PATH,
-            json={
-                "model": model,
-                "query": query,
-                "documents": documents,
-                "top_n": min(top_k, len(documents)),
-                "return_documents": False,
-                "instruct": instruct,
-            },
-        )
+        # P2:与文本生成共用同一个进程内并发闸门。
+        async with get_llm_admission_gate():
+            resp = await client.post(
+                RERANK_PATH,
+                json={
+                    "model": model,
+                    "query": query,
+                    "documents": documents,
+                    "top_n": min(top_k, len(documents)),
+                    "return_documents": False,
+                    "instruct": instruct,
+                },
+            )
+        if resp.status_code == 429:
+            breaker.record_rate_limited()
         resp.raise_for_status()
         body = resp.json()
+        breaker.record_success()
     except (httpx.HTTPError, ValueError) as exc:
         generation.end(level="ERROR", status_message=f"rerank_failed: {exc}")
         logger.warning("rerank failed, falling back to hybrid order: %s", exc)
+        await record_usage(
+            user_id=user_id,
+            feature=FEATURE_RERANK,
+            channel=billing_service.CHANNEL_RERANK,
+            model=model,
+            tokens_in=0,
+            cost_cny=Decimal("0"),
+            latency_ms=int((monotonic() - started) * 1000),
+            success=False,
+            error_code="rerank_failed",
+            metadata={"doc_count": len(documents)},
+        )
         fallback = [(c, 0.0) for c in candidate_chunks[:top_k]]
         return RerankResult(
             scored=fallback,
@@ -201,6 +284,18 @@ async def rerank(
         metadata={
             "cost_cny": str(cost),
         },
+    )
+    # P1:rerank 落 llm_calls 并实扣。这条链路此前既不落账也不过闸门。
+    await record_usage(
+        user_id=user_id,
+        feature=FEATURE_RERANK,
+        channel=billing_service.CHANNEL_RERANK,
+        model=model,
+        tokens_in=total_tokens,
+        cost_cny=cost,
+        latency_ms=int((monotonic() - started) * 1000),
+        success=True,
+        metadata={"doc_count": len(documents), "top_k": top_k},
     )
     return RerankResult(
         scored=scored,

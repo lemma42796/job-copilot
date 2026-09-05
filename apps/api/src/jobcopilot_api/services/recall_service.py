@@ -3,6 +3,10 @@
 The database keeps `recall_md_path` as a logical path under `notes/`; this
 module maps that path to a local notes root and writes only generated recall
 files. It never accepts arbitrary user paths.
+
+P0:`settings.notes_fs_root` 不再是单一根目录 —— 每个用户有自己的子目录
+`<root>/users/<user_id>/`,一个用户的 recall 文件永远落不到另一个用户的
+目录下,读取同样受 `_ensure_under_root` 约束。
 """
 
 from __future__ import annotations
@@ -28,15 +32,24 @@ def session_recall_logical_path(session_id: int) -> str:
     return str(LOGICAL_RECALL_ROOT / f"{session_id}.md")
 
 
-def write_session_summary_markdown(session_id: int, markdown: str) -> str:
-    """Atomically write `notes/_recall/{session_id}.md`.
+def user_notes_root(user_id: int) -> Path:
+    """该用户的笔记 / recall 物理根目录。"""
+    if user_id <= 0:
+        raise RecallWriteFailedError(f"user_id={user_id} 非法")
+    return _notes_fs_root() / "users" / str(user_id)
+
+
+def write_session_summary_markdown(
+    session_id: int, markdown: str, *, user_id: int
+) -> str:
+    """Atomically write `<root>/users/<user_id>/_recall/{session_id}.md`.
 
     Returns the logical path stored in `quiz_sessions.recall_md_path`.
     """
     if not markdown.strip():
         raise RecallWriteFailedError("session summary markdown 为空")
 
-    path = _physical_recall_path(session_id)
+    path = _physical_recall_path(session_id, user_id=user_id)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_name(f".{path.name}.tmp")
@@ -48,7 +61,9 @@ def write_session_summary_markdown(session_id: int, markdown: str) -> str:
     return session_recall_logical_path(session_id)
 
 
-def read_session_summary_markdown(logical_path: str | None) -> str | None:
+def read_session_summary_markdown(
+    logical_path: str | None, *, user_id: int
+) -> str | None:
     """Read a previously written recall markdown file.
 
     Invalid or missing paths return None so old sessions can still fall back to
@@ -58,7 +73,7 @@ def read_session_summary_markdown(logical_path: str | None) -> str | None:
     if session_id is None:
         return None
 
-    path = _physical_recall_path(session_id)
+    path = _physical_recall_path(session_id, user_id=user_id)
     if not path.is_file():
         return None
     try:
@@ -67,8 +82,8 @@ def read_session_summary_markdown(logical_path: str | None) -> str | None:
         return None
 
 
-def _physical_recall_path(session_id: int) -> Path:
-    root = _notes_fs_root()
+def _physical_recall_path(session_id: int, *, user_id: int) -> Path:
+    root = user_notes_root(user_id)
     path = root / "_recall" / f"{session_id}.md"
     _ensure_under_root(root, path)
     return path

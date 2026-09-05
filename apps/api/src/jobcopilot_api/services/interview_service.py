@@ -3,6 +3,10 @@
 This service owns the single-question remediation loop endpoint:
 submit one answer turn, rebuild a context pack, run AnswerJudge on the
 cumulative answer, decide the next action, and persist event/state audit.
+
+P0:每个入口都要求显式 `user_id`,所有 quiz_session / session_answer /
+question / session_event / note_chunk 查询都带归属过滤。
+P3:这里的生成器由 worker 消费,事件写 `job_events`,在线接口只返回 202。
 """
 
 from __future__ import annotations
@@ -30,7 +34,12 @@ from jobcopilot_api.schemas.agents.answer_judge import AnswerJudgeInput, AnswerJ
 from jobcopilot_api.schemas.agents.coach_chat import CoachChatInput, CoachChatOutput
 from jobcopilot_api.schemas.agents.quiz_generator import GeneratedQuestion, QuizGenChunkInput
 from jobcopilot_api.schemas.quiz import AnswerTurnSubmitIn
-from jobcopilot_api.services import answer_judge_service, answer_service, recall_service
+from jobcopilot_api.services import (
+    answer_judge_service,
+    answer_service,
+    billing_service,
+    recall_service,
+)
 
 DecisionAction = Literal["ask_next", "remediate", "summarize", "finish"]
 Trigger = Literal["coverage", "fidelity", "depth", "mixed", "none"]
@@ -185,6 +194,8 @@ async def submit_answer_turn_sse(
     session_id: int,
     order_index: int,
     payload: AnswerTurnSubmitIn,
+    *,
+    user_id: int,
 ) -> AsyncIterator[dict[str, Any]]:
     """SSE for POST /quiz/sessions/{id}/answers/{order_index}/turns."""
     if payload.turn_type not in ("auto", "initial", "remediation", "coach_question"):
@@ -212,6 +223,7 @@ async def submit_answer_turn_sse(
                         session_id=session_id,
                         order_index=order_index,
                         text=payload.text,
+                        user_id=user_id,
                     )
                 }
             )
@@ -225,6 +237,7 @@ async def submit_answer_turn_sse(
             session_id=session_id,
             order_index=order_index,
             payload=payload,
+            user_id=user_id,
         ):
             yield event
         return
@@ -235,6 +248,7 @@ async def submit_answer_turn_sse(
             session_id=session_id,
             order_index=order_index,
             payload=payload,
+            user_id=user_id,
         )
     except JobCopilotError as e:
         yield _ev("error", _error_payload(e))
@@ -260,6 +274,7 @@ async def submit_answer_turn_sse(
             sessionmaker,
             session_id=session_id,
             order_index=order_index,
+            user_id=user_id,
         )
         included = [
             "question",
@@ -272,6 +287,7 @@ async def submit_answer_turn_sse(
             included.append("prior_turn_summary")
             await _record_event(
                 sessionmaker,
+                user_id=user_id,
                 session_id=session_id,
                 answer_id=answer_id,
                 question_id=context.question.id,
@@ -302,6 +318,7 @@ async def submit_answer_turn_sse(
             )
         await _record_event(
             sessionmaker,
+            user_id=user_id,
             session_id=session_id,
             answer_id=answer_id,
             question_id=context.question.id,
@@ -336,11 +353,13 @@ async def submit_answer_turn_sse(
             judge_input=judge_input,
             scoring_points=context.local_question.scoring_points,
             judge_context_chunk_ids=context.judge_context_chunk_ids,
+            user_id=user_id,
         )
         judged = judged_answer.judged
         scores = judged_answer.scores
         await _record_event(
             sessionmaker,
+            user_id=user_id,
             session_id=session_id,
             answer_id=answer_id,
             question_id=context.question.id,
@@ -352,6 +371,11 @@ async def submit_answer_turn_sse(
                 "coach_message": judged.coach_message,
             },
         )
+    except billing_service.InsufficientBalanceError as e:
+        # P1:就地中止。本轮答案文本已在 _append_answer_turn 里落库,保留。
+        yield _ev("error", _error_payload(e))
+        yield _ev("done", {"ok": False})
+        return
     except (LLMError, answer_judge_service.JudgeCallFailedError) as e:
         yield _ev(
             "error",
@@ -397,6 +421,7 @@ async def submit_answer_turn_sse(
         round_index=round_index,
         decision=decision,
         scores=scores,
+        user_id=user_id,
     )
 
     yield _ev(
@@ -427,10 +452,14 @@ async def submit_answer_turn_sse(
 async def finish_session_sse(
     sessionmaker: async_sessionmaker[AsyncSession],
     session_id: int,
+    *,
+    user_id: int,
 ) -> AsyncIterator[dict[str, Any]]:
-    """SSE for finishing an M2.1 interview session without re-judging answers."""
+    """Finish an M2.1 interview session without re-judging answers."""
     try:
-        questions = await _load_finish_questions(sessionmaker, session_id)
+        questions = await _load_finish_questions(
+            sessionmaker, session_id, user_id=user_id
+        )
     except JobCopilotError as e:
         yield _ev("error", _error_payload(e))
         yield _ev("done", {"ok": False})
@@ -465,6 +494,7 @@ async def finish_session_sse(
             sessionmaker,
             session_id=session_id,
             questions=questions,
+            user_id=user_id,
         )
     except JobCopilotError as e:
         yield _ev("error", _error_payload(e))
@@ -481,6 +511,7 @@ async def _submit_coach_question_sse(
     session_id: int,
     order_index: int,
     payload: AnswerTurnSubmitIn,
+    user_id: int,
 ) -> AsyncIterator[dict[str, Any]]:
     try:
         turn_info = await _record_coach_question(
@@ -488,6 +519,7 @@ async def _submit_coach_question_sse(
             session_id=session_id,
             order_index=order_index,
             payload=payload,
+            user_id=user_id,
         )
     except JobCopilotError as e:
         yield _ev("error", _error_payload(e))
@@ -514,6 +546,7 @@ async def _submit_coach_question_sse(
             sessionmaker,
             session_id=session_id,
             order_index=order_index,
+            user_id=user_id,
         )
         included = [
             "question",
@@ -548,11 +581,12 @@ async def _submit_coach_question_sse(
             ],
             scores=_answer_scores(context.answer),
         )
-        llm_result = await coach_chat_agent.run(coach_input)
+        llm_result = await coach_chat_agent.run(coach_input, user_id=user_id)
         coach_output = _extract_coach_chat_output(llm_result)
 
         await _record_event(
             sessionmaker,
+            user_id=user_id,
             session_id=session_id,
             answer_id=answer_id,
             question_id=question_id,
@@ -572,6 +606,10 @@ async def _submit_coach_question_sse(
                 "cost_cny": str(llm_result.cost_cny),
             },
         )
+    except billing_service.InsufficientBalanceError as e:
+        yield _ev("error", _error_payload(e))
+        yield _ev("done", {"ok": False})
+        return
     except LLMError as e:
         yield _ev(
             "error",
@@ -603,54 +641,90 @@ async def _submit_coach_question_sse(
     yield _ev("done", {"ok": True})
 
 
+async def _load_owned_answer(
+    session: AsyncSession,
+    *,
+    session_id: int,
+    order_index: int,
+    user_id: int,
+) -> SessionAnswer:
+    answer = (
+        await session.execute(
+            sa.select(SessionAnswer)
+            .where(SessionAnswer.session_id == session_id)
+            .where(SessionAnswer.user_id == user_id)
+            .where(SessionAnswer.order_index == order_index)
+        )
+    ).scalar_one_or_none()
+    if answer is None:
+        raise NotFoundError(
+            f"session {session_id} 下不存在 order_index={order_index} 的答案"
+        )
+    return answer
+
+
+async def _load_owned_question(
+    session: AsyncSession, question_id: int, *, user_id: int
+) -> Question:
+    question = (
+        await session.execute(
+            sa.select(Question)
+            .where(Question.id == question_id)
+            .where(Question.user_id == user_id)
+        )
+    ).scalar_one_or_none()
+    if question is None:
+        raise ContextPackFailedError("session_answer 引用了不存在的 question")
+    return question
+
+
 async def _record_coach_question(
     sessionmaker: async_sessionmaker[AsyncSession],
     *,
     session_id: int,
     order_index: int,
     payload: AnswerTurnSubmitIn,
+    user_id: int,
 ) -> dict[str, Any]:
     now = datetime.now(UTC)
     async with sessionmaker() as session:
-        quiz_session = await session.get(QuizSession, session_id)
-        if quiz_session is None:
-            raise NotFoundError(f"quiz_session {session_id} 不存在")
+        quiz_session = await answer_service.load_owned_session(
+            session, session_id, user_id=user_id
+        )
         if quiz_session.status != "in_progress":
             raise answer_service.SessionNotInProgressError(
                 f"session {session_id} 当前状态为 {quiz_session.status},不能继续答题"
             )
 
-        answer = (
-            await session.execute(
-                sa.select(SessionAnswer)
-                .where(SessionAnswer.session_id == session_id)
-                .where(SessionAnswer.order_index == order_index)
-            )
-        ).scalar_one_or_none()
-        if answer is None:
-            raise NotFoundError(
-                f"session {session_id} 下不存在 order_index={order_index} 的答案"
-            )
+        answer = await _load_owned_answer(
+            session,
+            session_id=session_id,
+            order_index=order_index,
+            user_id=user_id,
+        )
         if answer.judged_at is None or not (
             answer.coach_message
             or (answer.remediation_state or {}).get("remediation_prompt")
         ):
             raise ValidationError("请先提交本题答案并等教练反馈后再追问")
 
-        question = await session.get(Question, answer.question_id)
-        if question is None:
-            raise ContextPackFailedError("session_answer 引用了不存在的 question")
+        question = await _load_owned_question(
+            session, answer.question_id, user_id=user_id
+        )
         judge_context_chunk_ids = answer_judge_service.judge_context_chunk_ids(
             quiz_session=quiz_session,
             questions=[question],
         )
-        await _ensure_judge_context_chunks_exist(session, judge_context_chunk_ids)
+        await _ensure_judge_context_chunks_exist(
+            session, judge_context_chunk_ids, user_id=user_id
+        )
 
         round_index = int(
             (
                 await session.execute(
                     sa.select(sa.func.count(SessionEvent.id))
                     .where(SessionEvent.session_id == session_id)
+                    .where(SessionEvent.user_id == user_id)
                     .where(SessionEvent.answer_id == answer.id)
                     .where(SessionEvent.event_type == "coach_answered")
                 )
@@ -665,6 +739,7 @@ async def _record_coach_question(
         }
         session.add(
             SessionEvent(
+                user_id=user_id,
                 session_id=session_id,
                 answer_id=answer.id,
                 question_id=answer.question_id,
@@ -689,19 +764,15 @@ async def _classify_auto_turn_type(
     session_id: int,
     order_index: int,
     text: str,
+    user_id: int,
 ) -> Literal["initial", "remediation", "coach_question"]:
     async with sessionmaker() as session:
-        answer = (
-            await session.execute(
-                sa.select(SessionAnswer)
-                .where(SessionAnswer.session_id == session_id)
-                .where(SessionAnswer.order_index == order_index)
-            )
-        ).scalar_one_or_none()
-        if answer is None:
-            raise NotFoundError(
-                f"session {session_id} 下不存在 order_index={order_index} 的答案"
-            )
+        answer = await _load_owned_answer(
+            session,
+            session_id=session_id,
+            order_index=order_index,
+            user_id=user_id,
+        )
         answer_turns = list(answer.answer_turns or [])
         if not answer_turns or not (answer.user_answer or "").strip():
             return "initial"
@@ -749,36 +820,34 @@ async def _append_answer_turn(
     session_id: int,
     order_index: int,
     payload: AnswerTurnSubmitIn,
+    user_id: int,
 ) -> dict[str, int]:
     now = datetime.now(UTC)
     async with sessionmaker() as session:
-        quiz_session = await session.get(QuizSession, session_id)
-        if quiz_session is None:
-            raise NotFoundError(f"quiz_session {session_id} 不存在")
+        quiz_session = await answer_service.load_owned_session(
+            session, session_id, user_id=user_id
+        )
         if quiz_session.status != "in_progress":
             raise answer_service.SessionNotInProgressError(
                 f"session {session_id} 当前状态为 {quiz_session.status},不能继续答题"
             )
 
-        answer = (
-            await session.execute(
-                sa.select(SessionAnswer)
-                .where(SessionAnswer.session_id == session_id)
-                .where(SessionAnswer.order_index == order_index)
-            )
-        ).scalar_one_or_none()
-        if answer is None:
-            raise NotFoundError(
-                f"session {session_id} 下不存在 order_index={order_index} 的答案"
-            )
-        question = await session.get(Question, answer.question_id)
-        if question is None:
-            raise ContextPackFailedError("session_answer 引用了不存在的 question")
+        answer = await _load_owned_answer(
+            session,
+            session_id=session_id,
+            order_index=order_index,
+            user_id=user_id,
+        )
+        question = await _load_owned_question(
+            session, answer.question_id, user_id=user_id
+        )
         judge_context_chunk_ids = answer_judge_service.judge_context_chunk_ids(
             quiz_session=quiz_session,
             questions=[question],
         )
-        await _ensure_judge_context_chunks_exist(session, judge_context_chunk_ids)
+        await _ensure_judge_context_chunks_exist(
+            session, judge_context_chunk_ids, user_id=user_id
+        )
 
         turns = list(answer.answer_turns or [])
         round_index = len(turns)
@@ -819,6 +888,7 @@ async def _append_answer_turn(
         }
         session.add(
             SessionEvent(
+                user_id=user_id,
                 session_id=session_id,
                 answer_id=answer.id,
                 question_id=answer.question_id,
@@ -835,11 +905,13 @@ async def _append_answer_turn(
 async def _load_finish_questions(
     sessionmaker: async_sessionmaker[AsyncSession],
     session_id: int,
+    *,
+    user_id: int,
 ) -> list[_FinishQuestion]:
     async with sessionmaker() as session:
-        quiz_session = await session.get(QuizSession, session_id)
-        if quiz_session is None:
-            raise NotFoundError(f"quiz_session {session_id} 不存在")
+        quiz_session = await answer_service.load_owned_session(
+            session, session_id, user_id=user_id
+        )
         if quiz_session.status != "in_progress":
             raise answer_service.SessionNotInProgressError(
                 f"session {session_id} 当前状态为 {quiz_session.status},不能结束本场"
@@ -850,6 +922,7 @@ async def _load_finish_questions(
                 await session.execute(
                     sa.select(SessionAnswer)
                     .where(SessionAnswer.session_id == session_id)
+                    .where(SessionAnswer.user_id == user_id)
                     .order_by(SessionAnswer.order_index)
                 )
             )
@@ -879,7 +952,9 @@ async def _load_finish_questions(
         questions = list(
             (
                 await session.execute(
-                    sa.select(Question).where(Question.id.in_(question_ids))
+                    sa.select(Question)
+                    .where(Question.id.in_(question_ids))
+                    .where(Question.user_id == user_id)
                 )
             )
             .scalars()
@@ -894,6 +969,7 @@ async def _load_finish_questions(
                 await session.execute(
                     sa.select(SessionEvent)
                     .where(SessionEvent.session_id == session_id)
+                    .where(SessionEvent.user_id == user_id)
                     .where(SessionEvent.event_type == "judge_completed")
                     .order_by(SessionEvent.id)
                 )
@@ -952,6 +1028,7 @@ async def _summarize_and_finish_session(
     *,
     session_id: int,
     questions: list[_FinishQuestion],
+    user_id: int,
 ) -> dict[str, Any]:
     coverage = _average([question.coverage_score for question in questions])
     fidelity = _average([question.fidelity_score for question in questions])
@@ -965,9 +1042,9 @@ async def _summarize_and_finish_session(
     }
 
     async with sessionmaker() as session:
-        quiz_session = await session.get(QuizSession, session_id)
-        if quiz_session is None:
-            raise NotFoundError(f"quiz_session {session_id} 不存在")
+        quiz_session = await answer_service.load_owned_session(
+            session, session_id, user_id=user_id
+        )
         if quiz_session.status != "in_progress":
             raise answer_service.SessionNotInProgressError(
                 f"session {session_id} 当前状态为 {quiz_session.status},不能结束本场"
@@ -987,7 +1064,7 @@ async def _summarize_and_finish_session(
         if not isinstance(markdown, str):
             raise recall_service.RecallWriteFailedError("session summary markdown 缺失")
         recall_md_path = recall_service.write_session_summary_markdown(
-            session_id, markdown
+            session_id, markdown, user_id=user_id
         )
         state = dict(quiz_session.agent_state or {})
         state.update(
@@ -1014,6 +1091,7 @@ async def _summarize_and_finish_session(
         quiz_session.updated_at = now
         session.add(
             SessionEvent(
+                user_id=user_id,
                 session_id=session_id,
                 answer_id=None,
                 question_id=None,
@@ -1025,6 +1103,7 @@ async def _summarize_and_finish_session(
         )
         session.add(
             SessionEvent(
+                user_id=user_id,
                 session_id=session_id,
                 answer_id=None,
                 question_id=None,
@@ -1053,32 +1132,28 @@ async def _build_context_pack(
     *,
     session_id: int,
     order_index: int,
+    user_id: int,
 ) -> _TurnContext:
     async with sessionmaker() as session:
-        quiz_session = await session.get(QuizSession, session_id)
-        if quiz_session is None:
-            raise NotFoundError(f"quiz_session {session_id} 不存在")
-        answer = (
-            await session.execute(
-                sa.select(SessionAnswer)
-                .where(SessionAnswer.session_id == session_id)
-                .where(SessionAnswer.order_index == order_index)
-            )
-        ).scalar_one_or_none()
-        if answer is None:
-            raise NotFoundError(
-                f"session {session_id} 下不存在 order_index={order_index} 的答案"
-            )
-        question = await session.get(Question, answer.question_id)
-        if question is None:
-            raise ContextPackFailedError("session_answer 引用了不存在的 question")
+        quiz_session = await answer_service.load_owned_session(
+            session, session_id, user_id=user_id
+        )
+        answer = await _load_owned_answer(
+            session,
+            session_id=session_id,
+            order_index=order_index,
+            user_id=user_id,
+        )
+        question = await _load_owned_question(
+            session, answer.question_id, user_id=user_id
+        )
 
         total_questions = int(
             (
                 await session.execute(
-                    sa.select(sa.func.count(SessionAnswer.id)).where(
-                        SessionAnswer.session_id == session_id
-                    )
+                    sa.select(sa.func.count(SessionAnswer.id))
+                    .where(SessionAnswer.session_id == session_id)
+                    .where(SessionAnswer.user_id == user_id)
                 )
             ).scalar_one()
         )
@@ -1086,11 +1161,14 @@ async def _build_context_pack(
             quiz_session=quiz_session,
             questions=[question],
         )
-        await _ensure_judge_context_chunks_exist(session, judge_context_chunk_ids)
+        await _ensure_judge_context_chunks_exist(
+            session, judge_context_chunk_ids, user_id=user_id
+        )
 
         judge_context = await answer_judge_service.load_judge_context(
             session,
             judge_context_chunk_ids,
+            user_id=user_id,
         )
         local_question = answer_judge_service.question_to_local(
             question,
@@ -1123,6 +1201,8 @@ async def _build_context_pack(
 async def _ensure_judge_context_chunks_exist(
     session: AsyncSession,
     judge_context_chunk_ids: list[int],
+    *,
+    user_id: int,
 ) -> None:
     if not judge_context_chunk_ids:
         raise ContextPackFailedError(
@@ -1131,9 +1211,9 @@ async def _ensure_judge_context_chunks_exist(
     existing_ids = set(
         (
             await session.execute(
-                sa.select(NoteChunk.id).where(
-                    NoteChunk.id.in_(judge_context_chunk_ids)
-                )
+                sa.select(NoteChunk.id)
+                .where(NoteChunk.id.in_(judge_context_chunk_ids))
+                .where(NoteChunk.user_id == user_id)
             )
         )
         .scalars()
@@ -1462,10 +1542,17 @@ async def _persist_decision(
     round_index: int,
     decision: _Decision,
     scores: dict[str, float],
+    user_id: int,
 ) -> None:
     now = datetime.now(UTC)
     async with sessionmaker() as session:
-        answer = await session.get(SessionAnswer, answer_id)
+        answer = (
+            await session.execute(
+                sa.select(SessionAnswer)
+                .where(SessionAnswer.id == answer_id)
+                .where(SessionAnswer.user_id == user_id)
+            )
+        ).scalar_one_or_none()
         previous_state = dict(answer.remediation_state or {}) if answer is not None else {}
         score_history = _score_history_from_state(previous_state)
         score_history.append(_scores_for_event(scores))
@@ -1482,9 +1569,16 @@ async def _persist_decision(
         await session.execute(
             sa.update(SessionAnswer)
             .where(SessionAnswer.id == answer_id)
+            .where(SessionAnswer.user_id == user_id)
             .values(remediation_state=state, updated_at=now)
         )
-        quiz_session = await session.get(QuizSession, session_id)
+        quiz_session = (
+            await session.execute(
+                sa.select(QuizSession)
+                .where(QuizSession.id == session_id)
+                .where(QuizSession.user_id == user_id)
+            )
+        ).scalar_one_or_none()
         if quiz_session is not None:
             quiz_session.last_agent_node = "decide_next_action"
             quiz_session.agent_state = {
@@ -1495,6 +1589,7 @@ async def _persist_decision(
             }
         session.add(
             SessionEvent(
+                user_id=user_id,
                 session_id=session_id,
                 answer_id=answer_id,
                 question_id=question_id,
@@ -1507,6 +1602,7 @@ async def _persist_decision(
         if decision.remediation_prompt is not None:
             session.add(
                 SessionEvent(
+                    user_id=user_id,
                     session_id=session_id,
                     answer_id=answer_id,
                     question_id=question_id,
@@ -1522,6 +1618,7 @@ async def _persist_decision(
 async def _record_event(
     sessionmaker: async_sessionmaker[AsyncSession],
     *,
+    user_id: int,
     session_id: int,
     answer_id: int | None,
     question_id: int | None,
@@ -1533,6 +1630,7 @@ async def _record_event(
     async with sessionmaker() as session:
         session.add(
             SessionEvent(
+                user_id=user_id,
                 session_id=session_id,
                 answer_id=answer_id,
                 question_id=question_id,

@@ -11,7 +11,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, Integer, String, func
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import BigInteger, DateTime, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -27,6 +28,12 @@ class LlmResponseCache(Base, IDMixin):
 
     # FK to prompt_versions.id (ON DELETE SET NULL) declared in migration 0015.
     prompt_version_id: Mapped[int | None] = mapped_column(BigInteger)
+
+    # P6:近似命中所需。user_id 隔离(request 里是用户原文,跨用户复用会
+    # 泄露笔记内容),semantic_text 是算向量用的规范化文本。
+    user_id: Mapped[int | None] = mapped_column(BigInteger)
+    semantic_text: Mapped[str | None] = mapped_column(Text)
+    request_embedding: Mapped[list[float] | None] = mapped_column(Vector(1024))
 
     request: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     response: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)

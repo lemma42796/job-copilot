@@ -20,6 +20,7 @@ from jobcopilot_api.schemas.agents.query_rewriter import (
     QueryRewriteOutput,
     WeightedQuery,
 )
+from jobcopilot_api.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ USER_TEMPLATE = "用户 query:{user_query}"
 
 # §2.7.4 失败回退:trace warning 但不阻塞流程
 FALLBACK_RATIONALE = "query_rewrite 失败,回退原 query"
+SHORT_QUERY_RATIONALE = "query 过短,跳过 rewrite(P6 省调用)"
 
 ORIGINAL_QUERY_WEIGHT = 2.0
 DEFAULT_REWRITE_WEIGHT = 1.0
@@ -81,16 +83,41 @@ ROLE_DEFAULT_WEIGHTS = {
 }
 
 
+def _fallback_output(user_query: str, rationale: str) -> QueryRewriteOutput:
+    return QueryRewriteOutput(
+        intent="zero_hit_candidate",
+        core_entities=[],
+        must_keep_terms=[],
+        weighted_queries=[
+            WeightedQuery(
+                query=user_query,
+                role="original",
+                weight=ORIGINAL_QUERY_WEIGHT,
+            )
+        ],
+        expanded_queries=[user_query],
+        rationale=rationale,
+    )
+
+
 async def rewrite_query(
     user_query: str,
     *,
     llm: LLMClient | None = None,
+    user_id: int | None = None,
 ) -> QueryRewriteOutput:
     """LLM 改写 query,失败回退 [user_query]。
 
     总是返回 QueryRewriteOutput(失败时 expanded_queries=[user_query]),
     上层不需要 try/except;trace 里 langfuse generation 已记 ERROR 痕迹。
+
+    P6:query 短于 `settings.query_rewrite_min_chars` 时直接跳过这次 LLM
+    调用 —— 一两个词的 query 没有可改写的结构,扩展出来的多是同义噪声,
+    而 hybrid 的 lexical 路本来就能覆盖。
     """
+    if len(user_query.strip()) < settings.query_rewrite_min_chars:
+        return _fallback_output(user_query, SHORT_QUERY_RATIONALE)
+
     client = llm or get_llm_client()
     try:
         result = await client.complete(
@@ -99,25 +126,13 @@ async def rewrite_query(
             system=SYSTEM_PROMPT,
             user=USER_TEMPLATE.format(user_query=user_query),
             response_schema=QueryRewriteOutput,
+            user_id=user_id,
         )
     except LLMError as exc:
         logger.warning(
             "query_rewrite failed, falling back to user_query: %s", exc
         )
-        return QueryRewriteOutput(
-            intent="zero_hit_candidate",
-            core_entities=[],
-            must_keep_terms=[],
-            weighted_queries=[
-                WeightedQuery(
-                    query=user_query,
-                    role="original",
-                    weight=ORIGINAL_QUERY_WEIGHT,
-                )
-            ],
-            expanded_queries=[user_query],
-            rationale=FALLBACK_RATIONALE,
-        )
+        return _fallback_output(user_query, FALLBACK_RATIONALE)
 
     parsed = result.parsed
     assert isinstance(parsed, QueryRewriteOutput)  # response_schema 已校验

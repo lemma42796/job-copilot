@@ -39,6 +39,7 @@ from jobcopilot_api.agents.quiz_generator.prompts import (
 from jobcopilot_api.errors import JobCopilotError, NoChunksForQueryError
 from jobcopilot_api.llm.client import LLMResult
 from jobcopilot_api.llm.errors import LLMError
+from jobcopilot_api.llm.tiers import Tier, tier_to_model
 from jobcopilot_api.models.note_chunk import NoteChunk
 from jobcopilot_api.models.question import Question
 from jobcopilot_api.models.quiz_session import QuizSession
@@ -52,6 +53,7 @@ from jobcopilot_api.schemas.agents.quiz_generator import (
 )
 from jobcopilot_api.schemas.quiz import QuizSessionCreateIn
 from jobcopilot_api.schemas.retrieval import FinalContextChunk
+from jobcopilot_api.services import billing_service
 from jobcopilot_api.services.query_rewriter import query_weights, rewrite_query
 from jobcopilot_api.services.reranker import rerank
 from jobcopilot_api.services.retrieval_governance import (
@@ -76,6 +78,10 @@ logger = logging.getLogger(__name__)
 
 REFERENCE_POINTS_MIN = 2
 REFERENCE_POINTS_MAX = 5
+# quiz_generator 输出过 Pydantic 校验但违反完整性约束时的总尝试次数
+# (首次 + 重试)。重试把失败原因拼进 prompt;每次尝试都是真实 LLM 调用
+# 并正常计费,次数收敛在 2 避免成本放大。
+GEN_INTEGRITY_ATTEMPTS = 2
 EVIDENCE_SUPPORT_MIN_SCORE = 0.18
 EVIDENCE_SUPPORT_MIN_HITS = 2
 _CITATION_RE = re.compile(r"\[(\d+)\]")
@@ -113,15 +119,21 @@ class IntegrityCheckError(JobCopilotError):
 async def start_session_sse(
     sessionmaker: async_sessionmaker[AsyncSession],
     payload: QuizSessionCreateIn,
+    *,
+    user_id: int,
+    session_id: int | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """SSE 事件流(OpenAPI / Pydantic schemas)。
+    """出题事件流。
 
-    yield dict 形态 `{"event": "<name>", "data": "<json string>"}`
-    给 EventSourceResponse 直接转发。
+    P3 之后这个生成器由 worker 消费,产出的事件写 `job_events`;在线接口
+    不再直接订阅它。`session_id` 由在线接口预建(202 立即返回时就要给出
+    resource_id),worker 侧复用而不是重建。
     """
-    session_id: int | None = None
     try:
-        session_id = await _create_quiz_session(sessionmaker, payload)
+        if session_id is None:
+            session_id = await _create_quiz_session(
+                sessionmaker, payload, user_id=user_id
+            )
         yield _ev(
             "started",
             {
@@ -133,7 +145,7 @@ async def start_session_sse(
 
         # 1. query rewrite
         yield _ev("progress", {"phase": "query_rewriting"})
-        rewrite_out = await rewrite_query(payload.query)
+        rewrite_out = await rewrite_query(payload.query, user_id=user_id)
         expanded_queries = rewrite_out.expanded_queries
         weights = query_weights(rewrite_out)
         governance = governance_context_from_rewrite(rewrite_out)
@@ -151,11 +163,11 @@ async def start_session_sse(
             hybrid_rankings: list[list[NoteChunk]] = []
             for q in expanded_queries:
                 ranking = await global_hybrid_search(
-                    s, q, top_k=HYBRID_TOP_K_PER_QUERY
+                    s, q, top_k=HYBRID_TOP_K_PER_QUERY, user_id=user_id
                 )
                 hybrid_rankings.append(ranking)
             anchor_ranking = await protected_anchor_search(
-                s, governance, expanded_queries
+                s, governance, expanded_queries, user_id=user_id
             )
             if anchor_ranking:
                 hybrid_rankings.append(anchor_ranking)
@@ -190,6 +202,7 @@ async def start_session_sse(
                 payload.query,
                 fused,
                 top_k=min(POST_RERANK_PROVIDER_TOP_K, len(fused)),
+                user_id=user_id,
             )
             post_rerank = post_rerank_governance_blend(
                 fused,
@@ -203,7 +216,7 @@ async def start_session_sse(
             # disabled until evidence/background chunks are separated.
             selected_scored = post_rerank.selected
             note_ids = list({chunk.note_id for chunk, _ in selected_scored})
-            note_titles = await fetch_note_titles(s, note_ids)
+            note_titles = await fetch_note_titles(s, note_ids, user_id=user_id)
 
         final_context_chunks = [
             FinalContextChunk(
@@ -228,13 +241,19 @@ async def start_session_sse(
         await _update_session_audit(
             sessionmaker,
             session_id,
+            user_id=user_id,
             expanded_queries=expanded_queries,
             final_context_chunk_ids=final_context_chunk_ids,
         )
 
-        # 7. quiz_generator LLM
+        # 7. quiz_generator LLM。model 从 tier 配置读,不硬编码 —— 改
+        # llm/tiers.py 的模型时进度事件自动跟着变。
         yield _ev(
-            "progress", {"phase": "generating", "model": "qwen3.8-flash"}
+            "progress",
+            {
+                "phase": "generating",
+                "model": tier_to_model(Tier.CHEAP).model,
+            },
         )
         gen_chunks = [
             QuizGenChunkInput(
@@ -252,25 +271,42 @@ async def start_session_sse(
             chunks=gen_chunks,
             question_count=payload.question_count,
         )
-        try:
-            llm_result = await quiz_generator_agent.run(gen_input)
-        except LLMError as e:
-            raise IntegrityCheckError(f"quiz_generator LLM 调用失败:{e}") from e
+        correction: str | None = None
+        for attempt in range(1, GEN_INTEGRITY_ATTEMPTS + 1):
+            try:
+                llm_result = await quiz_generator_agent.run(
+                    gen_input, user_id=user_id, correction=correction
+                )
+            except LLMError as e:
+                raise IntegrityCheckError(f"quiz_generator LLM 调用失败:{e}") from e
 
-        gen_output = llm_result.parsed
-        if not isinstance(gen_output, QuizGenOutput):
-            raise IntegrityCheckError(
-                "quiz_generator 没返回有效的 QuizGenOutput"
-            )
+            gen_output = llm_result.parsed
+            if not isinstance(gen_output, QuizGenOutput):
+                raise IntegrityCheckError(
+                    "quiz_generator 没返回有效的 QuizGenOutput"
+                )
 
-        # 8. 后处理 + 完整性校验
-        rows = _build_question_rows(
-            gen_output=gen_output,
-            gen_chunks=gen_chunks,
-            query=payload.query,
-            mode=payload.mode,
-            llm_result=llm_result,
-        )
+            # 8. 后处理 + 完整性校验;结构约束失败时带原因重试一次
+            #    (scoring_points 数量 / 引用完整性等属于 LLM 输出方差,
+            #     Pydantic 层拦不住,盲重采样成功率低,把失败原因反馈给模型)
+            try:
+                rows = _build_question_rows(
+                    gen_output=gen_output,
+                    gen_chunks=gen_chunks,
+                    query=payload.query,
+                    mode=payload.mode,
+                    llm_result=llm_result,
+                )
+            except IntegrityCheckError as e:
+                correction = str(e)
+                if attempt >= GEN_INTEGRITY_ATTEMPTS:
+                    raise
+                yield _ev(
+                    "progress",
+                    {"phase": "generating_retry", "attempt": attempt + 1},
+                )
+                continue
+            break
         yield _ev(
             "progress",
             {
@@ -281,7 +317,7 @@ async def start_session_sse(
 
         # 9. INSERT questions + session_answers
         question_rows = await _insert_questions_and_answers(
-            sessionmaker, session_id, rows
+            sessionmaker, session_id, rows, user_id=user_id
         )
 
         # 10. emit question_ready × N
@@ -303,20 +339,27 @@ async def start_session_sse(
 
     except NoChunksForQueryError as e:
         if session_id is not None:
-            await _mark_session_abandoned(sessionmaker, session_id)
+            await _mark_session_abandoned(sessionmaker, session_id, user_id=user_id)
         yield _ev(
             "error", {"code": "no_chunks_for_query", "detail": e.detail}
         )
         yield _ev("done", {"ok": False})
+    except billing_service.InsufficientBalanceError as e:
+        # P1:余额中途耗尽 → 就地中止。出题的题目是末尾一次性 INSERT,
+        # 中止发生在生成前则无产物,不产生坏数据;session 标 abandoned。
+        if session_id is not None:
+            await _mark_session_abandoned(sessionmaker, session_id, user_id=user_id)
+        yield _ev("error", {"code": e.code, "detail": e.detail})
+        yield _ev("done", {"ok": False})
     except IntegrityCheckError as e:
         if session_id is not None:
-            await _mark_session_abandoned(sessionmaker, session_id)
+            await _mark_session_abandoned(sessionmaker, session_id, user_id=user_id)
         yield _ev("error", {"code": e.code, "detail": e.detail})
         yield _ev("done", {"ok": False})
     except Exception as e:
         logger.exception("quiz session %s 内部错误", session_id)
         if session_id is not None:
-            await _mark_session_abandoned(sessionmaker, session_id)
+            await _mark_session_abandoned(sessionmaker, session_id, user_id=user_id)
         yield _ev(
             "error", {"code": "internal_error", "detail": str(e)}
         )
@@ -338,20 +381,35 @@ def _ev(event: str, data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def create_quiz_session(
+    session: AsyncSession,
+    payload: QuizSessionCreateIn,
+    *,
+    user_id: int,
+) -> QuizSession:
+    """在线接口预占 quiz_sessions 行(P3:POST 只写库,不碰 LLM)。"""
+    qs = QuizSession(
+        user_id=user_id,
+        query=payload.query,
+        mode=payload.mode,
+        jd_ids=payload.jd_ids,
+        trigger="manual",
+    )
+    session.add(qs)
+    await session.flush()
+    return qs
+
+
 async def _create_quiz_session(
     sessionmaker: async_sessionmaker[AsyncSession],
     payload: QuizSessionCreateIn,
+    *,
+    user_id: int,
 ) -> int:
     """预占 quiz_sessions 行,返回 session_id;status / started_at /
     trigger / mode 走 server_default(mode 也有 default 但显式传更清晰)。"""
     async with sessionmaker() as s:
-        qs = QuizSession(
-            query=payload.query,
-            mode=payload.mode,
-            jd_ids=payload.jd_ids,
-            trigger="manual",
-        )
-        s.add(qs)
+        qs = await create_quiz_session(s, payload, user_id=user_id)
         await s.commit()
         return qs.id
 
@@ -360,6 +418,7 @@ async def _update_session_audit(
     sessionmaker: async_sessionmaker[AsyncSession],
     session_id: int,
     *,
+    user_id: int,
     expanded_queries: list[str],
     final_context_chunk_ids: list[int],
 ) -> None:
@@ -367,6 +426,7 @@ async def _update_session_audit(
         await s.execute(
             sa.update(QuizSession)
             .where(QuizSession.id == session_id)
+            .where(QuizSession.user_id == user_id)
             .values(
                 expanded_queries=expanded_queries,
                 final_context_chunk_ids=final_context_chunk_ids,
@@ -376,12 +436,16 @@ async def _update_session_audit(
 
 
 async def _mark_session_abandoned(
-    sessionmaker: async_sessionmaker[AsyncSession], session_id: int
+    sessionmaker: async_sessionmaker[AsyncSession],
+    session_id: int,
+    *,
+    user_id: int,
 ) -> None:
     async with sessionmaker() as s:
         await s.execute(
             sa.update(QuizSession)
             .where(QuizSession.id == session_id)
+            .where(QuizSession.user_id == user_id)
             .values(
                 status="abandoned",
                 abandoned_at=datetime.now(UTC),
@@ -716,6 +780,8 @@ async def _insert_questions_and_answers(
     sessionmaker: async_sessionmaker[AsyncSession],
     session_id: int,
     rows: list[dict[str, Any]],
+    *,
+    user_id: int,
 ) -> list[Question]:
     """批量 INSERT questions 拿 ids → INSERT session_answers × N。
 
@@ -725,7 +791,7 @@ async def _insert_questions_and_answers(
     async with sessionmaker() as s:
         questions: list[Question] = []
         for r in rows:
-            q = Question(**r)
+            q = Question(user_id=user_id, **r)
             s.add(q)
             questions.append(q)
         await s.flush()  # 拿 questions.id
@@ -733,6 +799,7 @@ async def _insert_questions_and_answers(
         for idx, q in enumerate(questions):
             s.add(
                 SessionAnswer(
+                    user_id=user_id,
                     session_id=session_id,
                     question_id=q.id,
                     order_index=idx,

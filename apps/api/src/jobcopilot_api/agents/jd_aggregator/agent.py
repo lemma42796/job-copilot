@@ -80,6 +80,7 @@ async def run(
     *,
     llm: LLMClient | None = None,
     on_progress: ProgressCallback | None = None,
+    user_id: int | None = None,
 ) -> JdAggregateOutput:
     client = llm or get_llm_client()
     stats = _CallStats()
@@ -111,6 +112,7 @@ async def run(
             response_schema=JdRequirementReduceOutput,
             temperature=REDUCE_TEMPERATURE,
             timeout_s=REDUCE_TIMEOUT_S,
+            user_id=user_id,
         )
         stats.add(result)
         reduce_output = _expect_parsed(result, JdRequirementReduceOutput)
@@ -130,6 +132,7 @@ async def run(
             response_schema=JdRequirementReduceOutput,
             temperature=REDUCE_TEMPERATURE,
             timeout_s=REDUCE_TIMEOUT_S,
+            user_id=user_id,
         )
         stats.add(merge_result)
         merge_output = _expect_parsed(merge_result, JdRequirementReduceOutput)
@@ -154,6 +157,7 @@ async def run(
         response_schema=JdLearningPathOutput,
         temperature=LEARNING_PATH_TEMPERATURE,
         timeout_s=LEARNING_PATH_TIMEOUT_S,
+        user_id=user_id,
     )
     stats.add(path_result)
     path_output = _expect_parsed(path_result, JdLearningPathOutput)

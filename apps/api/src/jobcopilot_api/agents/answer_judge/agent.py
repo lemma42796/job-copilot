@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from time import monotonic
+from types import SimpleNamespace
 from typing import Any
 
 from langfuse.openai import AsyncOpenAI
@@ -42,6 +43,7 @@ from jobcopilot_api.agents.answer_judge.prompts import (
 )
 from jobcopilot_api.agents.context_cache import build_chunk_cache_messages
 from jobcopilot_api.infra.llm import get_llm_client
+from jobcopilot_api.llm import breaker
 from jobcopilot_api.llm.admission import get_llm_admission_gate
 from jobcopilot_api.llm.client import LLMClient, LLMResult
 from jobcopilot_api.llm.db_logger import DBCallLogger
@@ -58,13 +60,18 @@ from jobcopilot_api.schemas.agents.answer_judge import (
     AnswerJudgeInput,
     AnswerJudgeOutput,
 )
+from jobcopilot_api.services import billing_service
 from jobcopilot_api.services.retrieval_pipeline import fetch_note_titles
 from jobcopilot_api.services.search_service import global_hybrid_search
 from jobcopilot_api.settings import settings
 
 TEMPERATURE = 0.2  # docs/TECH_DESIGN.md
-TOOL_MAX_CALLS = 5
-MAX_JUDGE_ROUNDS = TOOL_MAX_CALLS * 2 + 4
+TOOL_MAX_CALLS = 3
+# P6:单次答案提交的 LLM 调用数上界。原值 TOOL_MAX_CALLS(5) * 2 + 4 = 14,
+# 是把"每次工具调用都要一轮往返 + 每轮都可能 schema 重试"叠满的最坏情况。
+# 实际分布远低于上界,收敛到 3 * 2 + 2 = 8:仍留一次 schema 重试和一次
+# 强制 lookup 的余量,同时把最坏情况的成本砍掉约四成。
+MAX_JUDGE_ROUNDS = TOOL_MAX_CALLS * 2 + 2
 TOOL_REF_ID_START = 1000
 TOOL_NAME_LOOKUP = "lookup_in_notes_global"
 CLAIM_JACCARD_THRESHOLD = 0.45
@@ -122,6 +129,7 @@ async def run(
     *,
     llm: LLMClient | None = None,
     sessionmaker: async_sessionmaker[AsyncSession] | None = None,
+    user_id: int | None = None,
 ) -> LLMResult:
     """LLM Judge 三层 evidence。
 
@@ -129,7 +137,9 @@ async def run(
     service 层负责 semantic integrity、[N] → DB id 映射、Python 算分与落库。
     """
     if sessionmaker is not None and llm is None:
-        return await _run_with_lookup_tool(inp, sessionmaker=sessionmaker)
+        return await _run_with_lookup_tool(
+            inp, sessionmaker=sessionmaker, user_id=user_id
+        )
 
     client = llm or get_llm_client()
     user = render_user(
@@ -162,6 +172,7 @@ async def run(
         messages=messages,
         response_schema=AnswerJudgeOutput,
         temperature=TEMPERATURE,
+        user_id=user_id,
     )
 
 
@@ -169,6 +180,7 @@ async def _run_with_lookup_tool(
     inp: AnswerJudgeInput,
     *,
     sessionmaker: async_sessionmaker[AsyncSession],
+    user_id: int | None = None,
 ) -> LLMResult:
     """AnswerJudge production path with `lookup_in_notes_global` tool use."""
     cfg = tier_to_model(Tier.CHEAP)
@@ -206,6 +218,10 @@ async def _run_with_lookup_tool(
                 else "none"
             )
             force_lookup_next = False
+            # P1:闸门在循环体内逐轮检查 —— 余额中途耗尽就地中止,已产生的
+            # 结果保留,不回滚。抛出的 InsufficientBalanceError 由 worker 侧
+            # 映射成 job 的 insufficient_balance 终态。
+            await billing_service.assert_can_spend(user_id)
             # 上游不支持在思考模式下强制指定工具(tool_choice 指名 function),
             # 故 forced 轮单独关掉思考;其余轮次跟随 tier 配置。
             resp = await _create_chat_completion(
@@ -226,6 +242,7 @@ async def _run_with_lookup_tool(
                         tool_call,
                         sessionmaker=sessionmaker,
                         state=tool_state,
+                        user_id=user_id,
                     )
                     messages.append(
                         {
@@ -303,6 +320,7 @@ async def _run_with_lookup_tool(
             success=True,
             error_code=None,
             tool_state=tool_state,
+            user_id=user_id,
         )
         await logger.log(result)
         return result
@@ -320,6 +338,7 @@ async def _run_with_lookup_tool(
             success=False,
             error_code=_error_code_of(exc),
             tool_state=tool_state,
+            user_id=user_id,
         )
         await logger.log(result)
         raise
@@ -328,6 +347,11 @@ async def _run_with_lookup_tool(
 def _get_tool_client() -> AsyncOpenAI:
     global _tool_client
     if _tool_client is None:
+        # P8 压测:stub 模式下 _create_chat_completion 不碰这个 client,
+        # 无 key 也不报错。
+        if settings.llm_provider == "stub":
+            _tool_client = AsyncOpenAI(api_key="stub", base_url=DASHSCOPE_BASE_URL)
+            return _tool_client
         if not settings.dashscope_api_key:
             raise LLMAuthError("AnswerJudge tool path requires DashScope API key")
         _tool_client = AsyncOpenAI(
@@ -345,6 +369,31 @@ async def _create_chat_completion(
     thinking_mode: bool,
     tool_mode: str,
 ) -> Any:
+    # P8 压测:上游换 stub 假实现 —— 直接返回无 tool_calls 的终态 JSON,
+    # 循环首轮即收敛。token 折算与 StubProvider 同口径(÷4)。
+    if settings.llm_provider == "stub":
+        from jobcopilot_api.llm.providers.stub import (
+            stub_answer_judge_content,
+            stub_upstream_call,
+        )
+
+        async with get_llm_admission_gate():
+            await stub_upstream_call()
+        content = stub_answer_judge_content()
+        prompt_chars = sum(len(str(m.get("content", ""))) for m in messages)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=content, tool_calls=None)
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=max(1, prompt_chars // 4),
+                completion_tokens=max(1, len(content) // 4),
+                prompt_tokens_details=None,
+            ),
+        )
+
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": list(messages),
@@ -370,12 +419,14 @@ async def _create_chat_completion(
     else:
         kwargs["response_format"] = {"type": "json_object"}
 
+    breaker.check()
     try:
         async with get_llm_admission_gate():
-            return await client.chat.completions.create(**kwargs)
+            resp = await client.chat.completions.create(**kwargs)
     except (APITimeoutError, APIConnectionError) as exc:
         raise LLMTimeoutError(str(exc)) from exc
     except RateLimitError as exc:
+        breaker.record_rate_limited()
         raise LLMUpstreamError(str(exc), status_code=429) from exc
     except InternalServerError as exc:
         raise LLMUpstreamError(str(exc), status_code=exc.status_code or 500) from exc
@@ -390,8 +441,12 @@ async def _create_chat_completion(
     except APIStatusError as exc:
         status = exc.status_code or 0
         if status >= 500 or status == 429:
+            if status == 429:
+                breaker.record_rate_limited()
             raise LLMUpstreamError(str(exc), status_code=status) from exc
         raise LLMAuthError(str(exc)) from exc
+    breaker.record_success()
+    return resp
 
 
 async def _handle_tool_call(
@@ -399,6 +454,7 @@ async def _handle_tool_call(
     *,
     sessionmaker: async_sessionmaker[AsyncSession],
     state: _ToolRunState,
+    user_id: int | None = None,
 ) -> list[dict[str, Any]]:
     function = getattr(tool_call, "function", None)
     name = getattr(function, "name", "")
@@ -433,10 +489,14 @@ async def _handle_tool_call(
     state.lookup_claims.append(claim)
     try:
         async with sessionmaker() as session:
-            chunks = await global_hybrid_search(session, claim, top_k=top_k)
+            # P0:lookup 只在本用户的笔记库里检索,绝不跨用户。
+            chunks = await global_hybrid_search(
+                session, claim, top_k=top_k, user_id=user_id
+            )
             note_titles = await fetch_note_titles(
                 session,
                 list({chunk.note_id for chunk in chunks}),
+                user_id=user_id,
             )
     except Exception as exc:
         return [{"chunk_id": None, "error": f"lookup_failed: {exc}"}]
@@ -644,6 +704,7 @@ def _build_result(
     success: bool,
     error_code: str | None,
     tool_state: _ToolRunState,
+    user_id: int | None = None,
 ) -> LLMResult:
     return LLMResult(
         content=usage.content,
@@ -666,7 +727,7 @@ def _build_result(
         thinking_mode=cfg.thinking_mode,
         success=success,
         error_code=error_code,
-        user_id=None,
+        user_id=user_id,
         trace_id=None,
         related_entity=None,
         related_id=None,
