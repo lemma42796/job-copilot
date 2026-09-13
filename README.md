@@ -3,33 +3,10 @@
 > 本地优先的 AI 求职准备工作台:把目标岗位 JD 累积成岗位要求地图和学习路径,再用自己的 Markdown 笔记做 RAG 面试陪练。
 
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Stack](https://img.shields.io/badge/stack-FastAPI%20%2B%20Next.js%20%2B%20Postgres-2f6fef)](#技术栈)
+[![Stack](https://img.shields.io/badge/stack-FastAPI%20%2B%20Next.js%20%2B%20Postgres-2f6fef)](#架构)
 [![LLM](https://img.shields.io/badge/LLM-Qwen%20%40%20DashScope-1f7ae0)](#配置)
 
-[演示截图](#演示截图) | [快速开始](#快速开始) | [文档导航](#文档导航) | [English Summary](#english-summary)
-
 ---
-
-## 目录
-
-- [概览](#概览)
-- [演示截图](#演示截图)
-- [为什么做 JobCopilot](#为什么做-jobcopilot)
-- [功能特性](#功能特性)
-- [快速开始](#快速开始)
-- [配置](#配置)
-- [使用方式](#使用方式)
-- [API Surface](#api-surface)
-- [架构](#架构)
-- [技术栈](#技术栈)
-- [项目结构](#项目结构)
-- [本地开发](#本地开发)
-- [测试与评测](#测试与评测)
-- [限制与非目标](#限制与非目标)
-- [文档导航](#文档导航)
-- [贡献](#贡献)
-- [许可证](#许可证)
-- [English Summary](#english-summary)
 
 ## 概览
 
@@ -38,61 +15,9 @@ JobCopilot 面向正在准备软件工程岗位的计算机学习者和开发者
 1. **JD Intelligence**:把陆续收集的目标岗位 JD 持久化到本地库,解析成结构化数据,聚合重复要求,重算频次,生成学习路径和 quiz topic 候选。
 2. **笔记 RAG 面试陪练**:导入 Markdown 笔记,只从相关笔记 chunks 里检索上下文,生成面试题,用 evidence 评分,并支持多轮补答和追问教练。
 
-项目是单用户、本地优先形态。你的笔记、JD、报告、练习 session 和 recall 文件默认保存在本机工作区和 Postgres 数据库里。LLM 调用通过你自己的 DashScope/Qwen API Key 完成。
+项目是本地优先形态。你的笔记、JD、报告、练习 session 和 recall 文件默认保存在本机工作区和 Postgres 数据库里。LLM 调用通过你自己的 DashScope/Qwen API Key 完成。所有业务表都带 `user_id`,每次上游调用前查余额、调用后按实际成本扣费。
 
-## 演示截图
-
-以下截图来自本地数据,覆盖前端的主要功能面。
-
-### 1. JD 入库与结构化详情
-
-文本 JD 粘贴后立即解析入库,右侧展示结构化字段、技能、职责和成本审计。
-
-![JD 入库与结构化详情](docs/assets/screenshots/jd-library-detail.png)
-
-### 2. JD 覆盖分析与优先补齐
-
-30 条 JD dogfood 报告会沉淀知识库 covered / partial / missing 覆盖矩阵,并把最该补的缺口排到前面。
-
-![JD 覆盖分析与优先补齐](docs/assets/screenshots/jd-analysis-coverage.png)
-
-### 3. 岗位要求证据矩阵
-
-每个聚合后的岗位要求会保留命中短语、证据片段和 covered / partial / missing 状态。
-
-![岗位要求证据矩阵](docs/assets/screenshots/jd-analysis-requirements.png)
-
-### 4. 学习路径与 Quiz Topics
-
-报告产出的 topic 可直接跳到 `/quiz`,把 JD 缺口转成下一轮面试练习。
-
-![学习路径与 Quiz Topics](docs/assets/screenshots/jd-analysis-learning-topics.png)
-
-### 5. 本地笔记导入
-
-浏览器直接读取本机 Markdown 目录或多文件,导入后进入 chunk + embedding 流程。
-
-![本地笔记导入](docs/assets/screenshots/notes-import.png)
-
-### 6. Markdown 笔记库
-
-本地 Markdown 笔记按 folder / heading 组织,作为出题、评分和覆盖分析的私有知识来源。
-
-![Markdown 笔记库](docs/assets/screenshots/notes-library.png)
-
-### 7. RAG 面试练习总结
-
-从主题 query 进入出题、答题、evidence-bound 评分、多轮补答纠偏和整场总结。
-
-![RAG 面试练习总结](docs/assets/screenshots/quiz-session-summary.png)
-
-### 8. 评分证据与多轮反馈
-
-评分细节展开后可以看到 Coverage、Fidelity、Depth 的证据卡片和追问/补答上下文。
-
-![评分证据与多轮反馈](docs/assets/screenshots/quiz-scoring-evidence.png)
-
-## 为什么做 JobCopilot
+### 为什么做 JobCopilot
 
 普通 LLM 官网已经能完成一次性面试问答。JobCopilot 聚焦的是单个聊天窗口很难长期承载的工作流:
 
@@ -101,6 +26,50 @@ JobCopilot 面向正在准备软件工程岗位的计算机学习者和开发者
 - **面试练习必须贴着自己的笔记**:题目和评分应锚定用户写过的 Markdown,避免模型凭训练数据自由发挥。
 - **多轮纠偏需要状态**:初答、补答、教练解释、分数、缺口和总结都需要刷新后可恢复、可回放。
 
+## 演示截图
+
+以下截图来自本地数据,覆盖前端的主要功能面。
+
+### JD 入库与结构化详情
+
+文本 JD 粘贴后立即解析入库,右侧展示结构化字段、技能、职责和成本审计。
+
+![JD 入库与结构化详情](docs/assets/screenshots/jd-library-detail.png)
+
+### JD 覆盖分析与优先补齐
+
+30 条 JD dogfood 报告会沉淀知识库 covered / partial / missing 覆盖矩阵,并把最该补的缺口排到前面。
+
+![JD 覆盖分析与优先补齐](docs/assets/screenshots/jd-analysis-coverage.png)
+
+### 岗位要求证据矩阵
+
+每个聚合后的岗位要求会保留命中短语、证据片段和 covered / partial / missing 状态。
+
+![岗位要求证据矩阵](docs/assets/screenshots/jd-analysis-requirements.png)
+
+### 学习路径与 Quiz Topics
+
+报告产出的 topic 可直接跳到 `/quiz`,把 JD 缺口转成下一轮面试练习。
+
+![学习路径与 Quiz Topics](docs/assets/screenshots/jd-analysis-learning-topics.png)
+
+### 本地笔记导入与笔记库
+
+浏览器直接读取本机 Markdown 目录或多文件,导入后进入 chunk + embedding 流程,按 folder / heading 组织成私有知识来源。
+
+![本地笔记导入](docs/assets/screenshots/notes-import.png)
+
+![Markdown 笔记库](docs/assets/screenshots/notes-library.png)
+
+### RAG 面试练习与评分证据
+
+从主题 query 进入出题、答题、evidence-bound 评分、多轮补答纠偏和整场总结;评分细节展开后可以看到 Coverage、Fidelity、Depth 的证据卡片和追问/补答上下文。
+
+![RAG 面试练习总结](docs/assets/screenshots/quiz-session-summary.png)
+
+![评分证据与多轮反馈](docs/assets/screenshots/quiz-scoring-evidence.png)
+
 ## 功能特性
 
 ### JD Intelligence
@@ -108,7 +77,7 @@ JobCopilot 面向正在准备软件工程岗位的计算机学习者和开发者
 | 功能 | 说明 |
 |------|------|
 | JD 库 | 支持文本粘贴上传 JD,立即调用 `jd_parser` 解析,并支持列表、详情、筛选、title 修改和软删 |
-| JD 一键分析 | `POST /api/jd-analyses` 通过 SSE 跑报告流程:读取 parsed payload、聚合要求、同义去重、Python 重算频次、生成学习路径和 quiz topics |
+| JD 一键分析 | `POST /api/jd-analyses` 走 202 + job_id:读取 parsed payload、聚合要求、同义去重、Python 重算频次、生成学习路径和 quiz topics |
 | 历史报告 | 保存 `jd_analyses` 快照,包含岗位要求地图、证据 JD ids、token/cost 审计和知识库覆盖矩阵 |
 | Topic 跳转 | 报告里的 quiz topic 候选可作为普通 `/quiz` 主题 query 进入面试练习 |
 | JD 输入边界 | 只支持文本 JD,不做截图 OCR |
@@ -128,19 +97,22 @@ JobCopilot 面向正在准备软件工程岗位的计算机学习者和开发者
 
 | 功能 | 说明 |
 |------|------|
-| 本地优先 | Docker Compose 启动 Postgres、API、Web、Caddy 和可选 Langfuse |
-| 流式体验 | 出题、评分、整场总结、JD 一键分析等长流程走 SSE |
+| 本地优先 | Docker Compose 启动 Postgres、Redis、API、worker、Web、Caddy 和可选 Langfuse |
+| 多租户与计费 | 账号注册即发放体验额度,业务查询按 `user_id` 过滤,每次上游调用查余额并按实际 `cost_cny` 扣费 |
+| 异步长任务 | 出题、评分、整场总结、JD 一键分析统一走 **202 + job_id**,worker 进程执行,进度通过 SSE 订阅 |
 | 可观测 | 记录 `trace_id`、LLM calls、token/cost、cache metadata,可选接 Langfuse |
 | 手动闸门 | 测试、lint、typecheck、build、eval runner 保留命令入口,但 push 不自动触发 |
 
-## 快速开始
+完整请求/响应契约以开发环境 `/v1/docs` 和 `/v1/openapi.json` 为准;跨接口约束见 [`docs/TECH_DESIGN.md`](docs/TECH_DESIGN.md)。
+
+## 快速开始与开发
 
 ### 前置条件
 
 - Docker with Compose v2
 - DashScope API Key: [阿里云百炼控制台](https://bailian.console.aliyun.com/)
 
-### 使用 Docker Compose 启动
+### Docker Compose 一键启动
 
 ```bash
 git clone https://github.com/lemma42796/job-copilot.git
@@ -172,17 +144,39 @@ Langfuse: http://localhost:3001
 Caddy:    http://localhost
 ```
 
-首次启动后先在 `http://localhost:3000/login` 注册一个账号 —— 所有业务接口都要
-登录态,注册时会发放一笔体验额度(`JOBCOPILOT_BILLING_SIGNUP_GRANT_CNY`)。
+首次启动后先在 `http://localhost:3000/login` 注册一个账号 —— 所有业务接口都要登录态,注册时会发放一笔体验额度(`JOBCOPILOT_BILLING_SIGNUP_GRANT_CNY`)。
 
-Compose 现在有 8 个服务:`postgres`、`redis`、`api`、`worker`、`web`、`caddy`、
-`langfuse-db`、`langfuse`。其中 `worker` 是长任务执行进程(默认 2 副本,
-`JOBCOPILOT_WORKER_REPLICAS` 调整),`redis` 是它的任务队列。
-`api` 只处理在线请求,不再跑任何后台任务。
+Compose 有 8 个服务:`postgres`、`redis`、`api`、`worker`、`web`、`caddy`、`langfuse-db`、`langfuse`。其中 `worker` 是长任务执行进程(默认 2 副本,`JOBCOPILOT_WORKER_REPLICAS` 调整),`redis` 是它的任务队列。`api` 只处理在线请求,不再跑任何后台任务。
 
 ```bash
 docker compose up -d --scale worker=4
 ```
+
+### 本机进程开发
+
+```bash
+pnpm install
+uv sync
+
+pnpm --filter @jobcopilot/web dev
+uv run uvicorn jobcopilot_api.main:app --reload --app-dir apps/api/src --port 8000
+```
+
+日常开发推荐 Docker Postgres + 本机 API/Web 进程。完整 Docker Compose 更适合干净的一体化启动。
+
+### 手动验证闸门
+
+仓库保留验证命令,但默认由维护者手动运行,push 不自动触发。
+
+```bash
+uv run pytest -q
+uv run ruff check apps/api
+uv run mypy apps/api/src
+pnpm typecheck
+pnpm build
+```
+
+评测规范和组件证据见 [`evals/EVAL_GUIDE.md`](evals/EVAL_GUIDE.md)。
 
 ## 配置
 
@@ -226,35 +220,6 @@ docker compose up -d --scale worker=4
 6. 答得不完整时用补答继续评分;看不懂反馈时追问教练。
 7. 完成 session 后生成 recall 总结。
 
-## API Surface
-
-| Endpoint | 用途 |
-|----------|------|
-| `GET /v1/health` | 服务健康检查 |
-| `POST /api/notes/batch-import` | 导入浏览器读取到的 Markdown 笔记 |
-| `GET /api/notes/tree` | 读取笔记树 |
-| `POST /api/auth/register` / `POST /api/auth/login` | 注册 / 登录,返回 bearer token |
-| `GET /api/auth/me` | 当前用户 |
-| `GET /api/billing/balance` / `POST /api/billing/topup` | 余额与模拟充值 |
-| `GET /api/billing/spend-summary` | 按功能 / 渠道的成本归因 |
-| `POST /api/quiz/sessions` | 创建主题类 RAG 练习 session(202 + job_id) |
-| `GET /api/quiz/sessions/{id}` | 恢复 quiz session 并回放状态 |
-| `POST /api/quiz/sessions/{id}/answers/{order_index}/turns` | 提交初答、补答或追问教练(202 + job_id) |
-| `POST /api/quiz/sessions/{id}/finish` | 生成整场总结(202 + job_id) |
-| `POST /api/quiz/sessions/{id}/submit` | 触发 Judge 评分(202 + job_id) |
-| `GET /api/jobs/{id}` | 查异步任务状态 |
-| `GET /api/jobs/{id}/stream` | 订阅异步任务进度(SSE,支持 `after_seq` 续读) |
-| `POST /api/jds` | 上传并解析文本 JD |
-| `GET /api/jds` | 列出已保存 JD |
-| `POST /api/jd-analyses` | 运行 JD 一键分析(202 + job_id) |
-| `GET /api/jd-analyses/{id}` | 读取已保存的 JD 分析报告 |
-
-长任务一律走 **202 + job_id**:POST 只写一行 `jobs` 就返回,执行在 worker 进程,
-进度通过 `GET /api/jobs/{id}/stream` 订阅。断线后带上已收到的 `after_seq` 续读,
-不丢事件。
-
-完整请求/响应契约以开发环境 `/v1/docs` 和 `/v1/openapi.json` 为准;跨接口约束见 [`docs/TECH_DESIGN.md`](docs/TECH_DESIGN.md)。
-
 ## 架构
 
 ```text
@@ -293,12 +258,11 @@ DashScope / Qwen
   generation, embedding, rerank
 ```
 
-所有业务表都带 `user_id`,service 层每条查询都按它过滤;笔记文件也按
-`<notes_fs_root>/users/<user_id>/` 分目录。每次上游调用前查余额、调用后按
-实际 `cost_cny` 扣费,三条链路(生成 / rerank / embedding)都进
-`llm_calls` + `balance_transactions`。
+长任务一律走 **202 + job_id**:POST 只写一行 `jobs` 就返回,执行在 worker 进程,进度通过 `GET /api/jobs/{id}/stream` 订阅。断线后带上已收到的 `after_seq` 续读,不丢事件。
 
-## 技术栈
+所有业务表都带 `user_id`,service 层每条查询都按它过滤;笔记文件也按 `<notes_fs_root>/users/<user_id>/` 分目录。每次上游调用前查余额、调用后按实际 `cost_cny` 扣费,三条链路(生成 / rerank / embedding)都进 `llm_calls` + `balance_transactions`。
+
+### 技术栈
 
 | 层 | 技术 |
 |----|------|
@@ -310,7 +274,7 @@ DashScope / Qwen
 | Observability | request id, `llm_calls`, token/cost audit, optional Langfuse v2 |
 | Tooling | Docker Compose, uv, pnpm, Biome, ruff, mypy, pytest |
 
-## 项目结构
+### 项目结构
 
 ```text
 apps/
@@ -325,43 +289,9 @@ docker/             Dockerfiles and service config
 test-notes/         local dogfood notes and recall output
 ```
 
-## 本地开发
-
-安装依赖:
-
-```bash
-pnpm install
-uv sync
-```
-
-本机启动前后端:
-
-```bash
-pnpm --filter @jobcopilot/web dev
-uv run uvicorn jobcopilot_api.main:app --reload --app-dir apps/api/src --port 8000
-```
-
-日常开发推荐使用 Docker Postgres + 本机 API/Web 进程。完整 Docker Compose 更适合干净的一体化启动。
-
-## 测试与评测
-
-仓库保留验证命令,但默认由维护者手动运行。push 不自动触发测试、typecheck、lint、build 或 eval jobs。
-
-常用手动闸门:
-
-```bash
-uv run pytest -q
-uv run ruff check apps/api
-uv run mypy apps/api/src
-pnpm typecheck
-pnpm build
-```
-
-评测规范和组件证据见 [`evals/EVAL_GUIDE.md`](evals/EVAL_GUIDE.md)。
-
 ## 限制与非目标
 
-- 单用户本地 dogfood 项目,暂无 auth 或 SaaS 模式。
+- 单机本地 dogfood 形态;有账号 / 登录 / 计费,但不追求 SaaS 运营与多机部署。
 - JD 上传只支持文本粘贴,不做截图 OCR。
 - JD 聚合不是 RAG pipeline。它是对选定 parsed JDs 的有界归纳统计;RAG 只在 topic 进入 `/quiz` 后发生。
 - 项目明确不做简历生成、简历定制、投递追踪。
@@ -387,11 +317,9 @@ pnpm build
 
 请保持改动聚焦,并说明你做过哪些手动验证。
 
-## 许可证
+## 许可证与致谢
 
 [MIT](LICENSE)
-
-## 致谢
 
 - 阿里云百炼 / DashScope / Qwen
 - LangGraph、FastAPI、Next.js、pgvector、SQLAlchemy、Tailwind CSS、Langfuse 和开源社区
@@ -404,4 +332,4 @@ JobCopilot is a local-first AI job-preparation workspace for CS learners and dev
 
 It helps you collect job descriptions over time, turn them into requirement maps, knowledge-coverage matrices, and learning paths, then practice those topics with a note-grounded RAG interview coach.
 
-The project is intentionally single-user and local-first, with manual validation gates and a clear non-goal list around resume generation, application tracking, SR dashboards, and SaaS expansion.
+The project is intentionally local-first, with per-user accounts and billing, manual validation gates, and a clear non-goal list around resume generation, application tracking, and SaaS expansion.
