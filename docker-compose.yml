@@ -33,21 +33,22 @@ services:
       timeout: 3s
       retries: 20
 
-  # P4:任务队列。Redis Streams 的 consumer group 让多个 worker 副本共享
-  # 一条队列,ack + pending 列表让消费者崩溃后的任务能被别的副本接管。
-  redis:
-    image: redis:7-alpine
-    container_name: jobcopilot-redis
+  rabbitmq:
+    image: rabbitmq:4.2
+    container_name: jobcopilot-rabbitmq
+    hostname: rabbitmq
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    environment:
+      RABBITMQ_DEFAULT_USER: ${JOBCOPILOT_RABBITMQ_USER:-jobcopilot}
+      RABBITMQ_DEFAULT_PASS: ${JOBCOPILOT_RABBITMQ_PASSWORD:-jobcopilot}
     ports:
-      - "6379:6379"
+      - "127.0.0.1:5672:5672"
     volumes:
-      - redis-data:/data
+      - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 20
 
   api:
@@ -59,7 +60,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
+      rabbitmq:
         condition: service_healthy
     environment:
       JOBCOPILOT_ENV: ${JOBCOPILOT_ENV:-dev}
@@ -80,7 +81,7 @@ services:
       JOBCOPILOT_DB_POOL_SIZE: ${JOBCOPILOT_DB_POOL_SIZE:-20}
       JOBCOPILOT_DB_MAX_OVERFLOW: ${JOBCOPILOT_DB_MAX_OVERFLOW:-20}
       # P4:任务队列。留空则 worker 退化为轮询 jobs 表(仍然多副本安全)。
-      JOBCOPILOT_REDIS_URL: ${JOBCOPILOT_REDIS_URL:-redis://redis:6379/0}
+      JOBCOPILOT_RABBITMQ_URL: ${JOBCOPILOT_RABBITMQ_URL-amqp://jobcopilot:jobcopilot@rabbitmq:5672/}
       # P7:过载保护。
       JOBCOPILOT_QUEUE_HIGH_WATERMARK: ${JOBCOPILOT_QUEUE_HIGH_WATERMARK:-500}
       JOBCOPILOT_UPSTREAM_BREAKER_THRESHOLD: ${JOBCOPILOT_UPSTREAM_BREAKER_THRESHOLD:-8}
@@ -102,7 +103,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
+      rabbitmq:
         condition: service_healthy
     deploy:
       replicas: ${JOBCOPILOT_WORKER_REPLICAS:-2}
@@ -117,7 +118,7 @@ services:
       JOBCOPILOT_STUB_MAX_CONCURRENCY: ${JOBCOPILOT_STUB_MAX_CONCURRENCY:-256}
       JOBCOPILOT_LLM_CACHE_ENABLED: ${JOBCOPILOT_LLM_CACHE_ENABLED:-true}
       JOBCOPILOT_AUTH_SECRET: ${JOBCOPILOT_AUTH_SECRET:-dev-auth-secret-change-in-prod}
-      JOBCOPILOT_REDIS_URL: ${JOBCOPILOT_REDIS_URL:-redis://redis:6379/0}
+      JOBCOPILOT_RABBITMQ_URL: ${JOBCOPILOT_RABBITMQ_URL-amqp://jobcopilot:jobcopilot@rabbitmq:5672/}
       # 每个 worker 副本并发跑几条 job。副本数 × 这个值 = 同时在飞的任务数,
       # 上游并发再由 llm_max_concurrency 的信号量兜一层。
       JOBCOPILOT_JOB_WORKER_CONCURRENCY: ${JOBCOPILOT_JOB_WORKER_CONCURRENCY:-4}
@@ -198,7 +199,7 @@ services:
 
 volumes:
   postgres-data:
-  redis-data:
+  rabbitmq-data:
   caddy-data:
   caddy-config:
   langfuse-data:

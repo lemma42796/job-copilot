@@ -6,7 +6,7 @@
 
 进程内跑三个协程:
 
-- `job_worker.run_forever` —— 消费 jobs 队列(Redis Streams 或 DB 轮询)
+- `job_worker.run_forever` —— 消费 RabbitMQ jobs 队列，并补发未确认投递
 - `embed_worker.run_forever` —— 补 note_chunks 的 embedding
 - `job_worker.reap_forever` —— 把超期 job 判死
 
@@ -21,6 +21,7 @@ import signal
 import structlog
 
 from jobcopilot_api.infra.logging import setup_logging
+from jobcopilot_api.infra.queue import close_queue
 from jobcopilot_api.workers import embed_worker, job_worker
 
 logger = structlog.get_logger(__name__)
@@ -49,9 +50,7 @@ async def _amain() -> None:
         task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
 
-    from jobcopilot_api.infra.queue import get_queue
-
-    await get_queue().close()
+    await close_queue()
     logger.info("worker_process_stopped")
 
 

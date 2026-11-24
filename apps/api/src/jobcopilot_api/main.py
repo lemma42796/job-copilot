@@ -28,6 +28,7 @@ from jobcopilot_api.errors import install_exception_handlers  # noqa: E402
 from jobcopilot_api.infra.db import get_sessionmaker  # noqa: E402
 from jobcopilot_api.infra.logging import setup_logging  # noqa: E402
 from jobcopilot_api.infra.prompts import load_prompt_versions  # noqa: E402
+from jobcopilot_api.infra.queue import close_queue  # noqa: E402
 from jobcopilot_api.infra.request_id import RequestIDMiddleware  # noqa: E402
 from jobcopilot_api.routers import auth, health, jd, jobs, notes, quiz  # noqa: E402
 
@@ -42,7 +43,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 都搬到独立的 worker 容器(`python -m jobcopilot_api.workers.main`)。
     # API 多进程 / 多副本后,后台任务挂在 lifespan 里会被每个进程各跑一份,
     # 既重复调用上游也重复扣费。
-    yield
+    try:
+        yield
+    finally:
+        await close_queue()
 
 
 def create_app() -> FastAPI:

@@ -26,6 +26,7 @@ from typing import Any
 
 import sqlalchemy as sa
 import structlog
+from aio_pika.exceptions import AMQPException, ChannelInvalidStateError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jobcopilot_api.errors import JobCopilotError, NotFoundError
@@ -143,11 +144,30 @@ async def enqueue(
     return job
 
 
-async def publish(job_id: int) -> None:
-    """把 job_id 推进队列。Redis 未配置时是空操作 —— worker 轮询兜底。"""
+async def publish_pending(job_id: int | None = None) -> bool:
+    """仅发布已提交、未经确认的任务。锁避免多个发布者同时发送同一行。"""
     from jobcopilot_api.infra.queue import get_queue
 
-    await get_queue().publish(job_id)
+    query = (sa.select(Job)
+             .where(Job.status == QUEUED, Job.published_at.is_(None))
+             .where(sa.or_(Job.deadline_at.is_(None), Job.deadline_at > sa.func.now()))
+             .order_by(Job.id).limit(1).with_for_update(skip_locked=True))
+    if job_id is not None:
+        query = query.where(Job.id == job_id)
+    async with get_sessionmaker()() as session, session.begin():
+        job = (await session.execute(query)).scalar_one_or_none()
+        if job is None:
+            return False
+        await get_queue().publish(job.id)
+        job.published_at = datetime.now(UTC)
+    return True
+
+
+async def publish(job_id: int) -> None:
+    try:
+        await publish_pending(job_id)
+    except (AMQPException, ChannelInvalidStateError, OSError, sa.exc.SQLAlchemyError) as exc:
+        log.warning("job_publish_pending", job_id=job_id, error_type=type(exc).__name__)
 
 
 async def get_job(
@@ -264,6 +284,7 @@ async def claim(job_id: int) -> Job | None:
                 sa.update(Job)
                 .where(Job.id == job_id)
                 .where(Job.status == QUEUED)
+                .where(sa.or_(Job.deadline_at.is_(None), Job.deadline_at > now))
                 .values(
                     status=RUNNING,
                     started_at=now,
@@ -278,38 +299,15 @@ async def claim(job_id: int) -> Job | None:
         return job
 
 
-async def claim_next_queued() -> Job | None:
-    """无 Redis 时的轮询领取。`FOR UPDATE SKIP LOCKED` 让多副本不抢同一行。"""
-    now = datetime.now(UTC)
+def remaining_seconds(job: Job) -> float | None:
+    if job.deadline_at is None:
+        return None
+    return max(0.0, (job.deadline_at - datetime.now(UTC)).total_seconds())
+
+
+async def job_status(job_id: int) -> str | None:
     async with get_sessionmaker()() as session:
-        candidate = (
-            await session.execute(
-                sa.select(Job.id)
-                .where(Job.status == QUEUED)
-                .order_by(Job.id)
-                .limit(1)
-                .with_for_update(skip_locked=True)
-            )
-        ).scalar_one_or_none()
-        if candidate is None:
-            return None
-        job = (
-            await session.execute(
-                sa.update(Job)
-                .where(Job.id == candidate)
-                .where(Job.status == QUEUED)
-                .values(
-                    status=RUNNING,
-                    started_at=now,
-                    heartbeat_at=now,
-                    attempt_count=Job.attempt_count + 1,
-                    updated_at=now,
-                )
-                .returning(Job)
-            )
-        ).scalar_one_or_none()
-        await session.commit()
-        return job
+        return await session.scalar(sa.select(Job.status).where(Job.id == job_id))
 
 
 async def append_event(
@@ -356,7 +354,7 @@ async def finish(
     async with get_sessionmaker()() as session:
         await session.execute(
             sa.update(Job)
-            .where(Job.id == job_id)
+            .where(Job.id == job_id, Job.status == RUNNING)
             .values(
                 status=status,
                 result=result,

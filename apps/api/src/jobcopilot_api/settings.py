@@ -99,11 +99,8 @@ class Settings(BaseSettings):
 
     # ---------- P3 / P4 任务与队列 ----------
 
-    # 留空 = 不用 Redis,worker 退化为轮询 jobs 表(单机 dev 可用)。
-    redis_url: str = Field(default="")
-    job_stream_key: str = Field(default="jobcopilot:jobs")
-    job_consumer_group: str = Field(default="jobcopilot-workers")
-    job_claim_min_idle_ms: int = Field(default=120_000, ge=1000)
+    rabbitmq_url: str = Field(default="amqp://jobcopilot:jobcopilot@127.0.0.1:5672/", min_length=1)
+    job_queue_name: str = Field(default="jobcopilot.jobs")
     job_poll_interval_s: float = Field(default=1.0, gt=0)
     job_worker_concurrency: int = Field(default=4, ge=1)
     job_default_deadline_s: int = Field(default=900, ge=30)

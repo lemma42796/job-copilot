@@ -1,208 +1,132 @@
-"""P4 任务队列 —— Redis Streams(consumer group + XACK + XAUTOCLAIM)。
-
-设计要点:
-
-- **消费组**:所有 worker 副本加入同一个 group(`settings.job_consumer_group`),
-  每条 stream 消息只投递给组内一个消费者。
-- **XACK**:handler 跑完(不论成功还是终态失败)才 ack;进程崩溃时消息留在
-  pending 列表。
-- **XAUTOCLAIM**:定期把闲置超过 `settings.job_claim_min_idle_ms` 的 pending
-  消息转到当前消费者名下,实现崩溃接管。
-- **幂等**:stream 消息只携带 `job_id`。真正的去重发生在
-  `job_service.claim()` 的条件写(`WHERE status='queued'`),所以重复投递 /
-  重复接管都不会重复调用 LLM 或重复扣费。
-- **降级**:`settings.redis_url` 为空时 `publish` 是空操作,worker 走
-  `job_service.claim_next_queued()` 的 `FOR UPDATE SKIP LOCKED` 轮询。
-  单机开发不需要起 Redis。
-"""
+"""RabbitMQ 只传 job_id，任务参数和状态保存在 PostgreSQL。"""
 
 from __future__ import annotations
 
-import socket
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from os import getpid
-from typing import Any
+import asyncio
+from collections.abc import Awaitable, Callable
 
+import aio_pika
 import structlog
+from aio_pika.abc import AbstractIncomingMessage, AbstractRobustQueue
+from aio_pika.connection import make_url
 
 from jobcopilot_api.settings import settings
 
 logger = structlog.get_logger(__name__)
 
-
-@dataclass(frozen=True)
-class QueueMessage:
-    """一条待消费的队列消息。
-
-    `ack_id` 为 None 表示这条消息来自 DB 轮询兜底路径,无需 ack。
-    """
-
-    job_id: int
-    ack_id: str | None = None
+BROKER_TIMEOUT_S = 5.0
 
 
-class JobQueue:
-    """队列抽象。两个实现:Redis Streams 与 DB 轮询兜底。"""
-
-    async def publish(self, job_id: int) -> None:  # pragma: no cover - 接口
-        raise NotImplementedError
-
-    async def consume(self) -> AsyncIterator[QueueMessage]:  # pragma: no cover
-        raise NotImplementedError
-        yield  # type: ignore[unreachable]
-
-    async def ack(self, message: QueueMessage) -> None:  # pragma: no cover
-        raise NotImplementedError
-
-    async def close(self) -> None:  # pragma: no cover - 接口
-        return None
+class DeadLetter(Exception):
+    """不能安全重试的任务。"""
 
 
-class NullQueue(JobQueue):
-    """Redis 未配置时的兜底:不投递,worker 直接轮询 jobs 表。"""
-
-    async def publish(self, job_id: int) -> None:
-        return None
-
-    async def consume(self) -> AsyncIterator[QueueMessage]:
-        # 交给 worker 的 DB 轮询分支,这里不产出任何消息。
-        return
-        yield  # type: ignore[unreachable]
-
-    async def ack(self, message: QueueMessage) -> None:
-        return None
-
-
-class RedisStreamQueue(JobQueue):
-    def __init__(self, url: str) -> None:
+class RabbitMQJobQueue:
+    def __init__(self, url: str, name: str) -> None:
         self._url = url
-        self._redis: Any | None = None
-        self._group_ready = False
-        self._consumer = f"{socket.gethostname()}-{getpid()}"
+        self._name = name
+        self._lock = asyncio.Lock()
+        self._connection: aio_pika.RobustConnection | None = None
+        self._queue: AbstractRobustQueue | None = None
 
-    async def _client(self) -> Any:
-        if self._redis is None:
-            from redis.asyncio import Redis  # 延迟导入:API 进程不装也能跑
+    async def _connect(self) -> AbstractRobustQueue:
+        async with self._lock:
+            if self._queue is not None:
+                return self._queue
 
-            self._redis = Redis.from_url(self._url, decode_responses=True)
-        if not self._group_ready:
-            await self._ensure_group(self._redis)
-        return self._redis
-
-    async def _ensure_group(self, redis: Any) -> None:
-        from redis.exceptions import ResponseError
-
-        try:
-            await redis.xgroup_create(
-                name=settings.job_stream_key,
-                groupname=settings.job_consumer_group,
-                id="0",
-                mkstream=True,
-            )
-        except ResponseError as exc:
-            if "BUSYGROUP" not in str(exc):
+            connection = aio_pika.RobustConnection(make_url(self._url))
+            try:
+                await connection.connect(timeout=BROKER_TIMEOUT_S)
+                channel = await connection.channel(publisher_confirms=True, on_return_raises=True)
+                await channel.declare_queue(f"{self._name}.dead", durable=True)
+                queue = await channel.declare_queue(self._name, durable=True)
+            except BaseException:
+                await connection.close()
                 raise
-        self._group_ready = True
+            self._connection = connection
+            self._queue = queue
+            return queue
 
     async def publish(self, job_id: int) -> None:
-        redis = await self._client()
-        await redis.xadd(settings.job_stream_key, {"job_id": str(job_id)})
+        async with asyncio.timeout(BROKER_TIMEOUT_S):
+            queue = await self._connect()
+            await queue.channel.default_exchange.publish(
+                aio_pika.Message(
+                    body=str(job_id).encode("ascii"),
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                ),
+                routing_key=queue.name,
+                mandatory=True,
+            )
 
-    async def consume(self) -> AsyncIterator[QueueMessage]:
-        """先接管闲置 pending,再读新消息。每次调用产出 0..N 条。"""
-        redis = await self._client()
-        block_ms = max(1, int(settings.job_poll_interval_s * 1000))
+    async def consume(self, handle: Callable[[int, bool], Awaitable[None]]) -> None:
+        async with asyncio.timeout(BROKER_TIMEOUT_S):
+            queue = await self._connect()
+            await queue.channel.set_qos(prefetch_count=settings.job_worker_concurrency)
 
-        # 1) 崩溃接管:把别的消费者名下超时未 ack 的消息转给自己。
-        claimed = await redis.xautoclaim(
-            name=settings.job_stream_key,
-            groupname=settings.job_consumer_group,
-            consumername=self._consumer,
-            min_idle_time=settings.job_claim_min_idle_ms,
-            start_id="0-0",
-            count=settings.job_worker_concurrency,
-        )
-        for entry in _entries_from_autoclaim(claimed):
-            message = _to_message(entry)
-            if message is None:
-                await redis.xack(
-                    settings.job_stream_key, settings.job_consumer_group, entry[0]
+        async with queue.iterator() as messages, asyncio.TaskGroup() as tasks:
+            async for message in messages:
+                tasks.create_task(self._process(message, handle))
+
+    async def _process(
+        self, message: AbstractIncomingMessage, handle: Callable[[int, bool], Awaitable[None]]
+    ) -> None:
+        try:
+            async with message.process(requeue=True):
+                try:
+                    job_id = int(message.body)
+                    if job_id <= 0 or job_id > 2**63 - 1:
+                        raise ValueError
+                except ValueError:
+                    reason = "invalid_job_id"
+                else:
+                    for attempt in range(4):
+                        try:
+                            await handle(job_id, message.redelivered or attempt > 0)
+                            return
+                        except DeadLetter as exc:
+                            reason = str(exc)
+                            break
+                        except Exception as exc:
+                            logger.exception("job_delivery_failed", job_id=job_id, attempt=attempt + 1)
+                            reason = type(exc).__name__
+                            if attempt < 3:
+                                await asyncio.sleep(2**attempt)
+
+                # 先确认死信持久投递，再由上下文确认原消息。
+                queue = await self._connect()
+                await queue.channel.default_exchange.publish(
+                    aio_pika.Message(body=message.body,
+                                     headers={"failure": reason},
+                                     delivery_mode=aio_pika.DeliveryMode.PERSISTENT),
+                    routing_key=f"{self._name}.dead", mandatory=True,
+                    timeout=BROKER_TIMEOUT_S,
                 )
-                continue
-            yield message
-
-        # 2) 新消息。
-        response = await redis.xreadgroup(
-            groupname=settings.job_consumer_group,
-            consumername=self._consumer,
-            streams={settings.job_stream_key: ">"},
-            count=settings.job_worker_concurrency,
-            block=block_ms,
-        )
-        for _stream, entries in response or []:
-            for entry in entries:
-                message = _to_message(entry)
-                if message is None:
-                    await redis.xack(
-                        settings.job_stream_key,
-                        settings.job_consumer_group,
-                        entry[0],
-                    )
-                    continue
-                yield message
-
-    async def ack(self, message: QueueMessage) -> None:
-        if message.ack_id is None:
-            return
-        redis = await self._client()
-        await redis.xack(
-            settings.job_stream_key, settings.job_consumer_group, message.ack_id
-        )
+                logger.warning("job_dead_lettered", reason=reason)
+        except Exception:
+            logger.exception("queue_message_processing_error", delivery_tag=message.delivery_tag)
 
     async def close(self) -> None:
-        if self._redis is not None:
-            await self._redis.aclose()
-            self._redis = None
-            self._group_ready = False
+        async with self._lock:
+            if self._connection is not None:
+                await self._connection.close()
+                self._connection = None
+                self._queue = None
 
 
-def _entries_from_autoclaim(result: Any) -> list[Any]:
-    """XAUTOCLAIM 返回 (next_id, entries) 或 (next_id, entries, deleted)。"""
-    if not result or len(result) < 2:
-        return []
-    return list(result[1] or [])
+_queue: RabbitMQJobQueue | None = None
 
 
-def _to_message(entry: Any) -> QueueMessage | None:
-    entry_id, fields = entry
-    raw = (fields or {}).get("job_id")
-    try:
-        job_id = int(raw)
-    except (TypeError, ValueError):
-        logger.warning("queue_message_invalid", entry_id=entry_id, fields=fields)
-        return None
-    return QueueMessage(job_id=job_id, ack_id=entry_id)
-
-
-_queue: JobQueue | None = None
-
-
-def get_queue() -> JobQueue:
-    """进程内单例。`redis_url` 为空返回 NullQueue。"""
+def get_queue() -> RabbitMQJobQueue:
     global _queue
+    url = settings.rabbitmq_url.strip()
     if _queue is None:
-        url = (settings.redis_url or "").strip()
-        _queue = RedisStreamQueue(url) if url else NullQueue()
-        logger.info("job_queue_initialized", backend=type(_queue).__name__)
+        _queue = RabbitMQJobQueue(url, settings.job_queue_name)
     return _queue
 
 
-def reset_queue() -> None:
-    """测试 / 重连用:丢弃单例。"""
+async def close_queue() -> None:
     global _queue
-    _queue = None
-
-
-def queue_enabled() -> bool:
-    return bool((settings.redis_url or "").strip())
+    if _queue is not None:
+        await _queue.close()
+        _queue = None

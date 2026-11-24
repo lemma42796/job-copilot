@@ -3,10 +3,9 @@
 一条 job 的生命周期:
 
 1. 在线接口 `job_service.enqueue` 建行(status=queued)+ commit + `publish`。
-2. worker 收到 job_id(Redis Streams)或轮询到它(无 Redis 时),
-   走 `job_service.claim` 的条件写把 queued→running。**条件写是幂等闸门**:
-   重复投递 / XAUTOCLAIM 接管 / worker 重启重放,只有一次能把状态从 queued
-   改走,所以 LLM 不会被调两次,余额也不会被扣两次。
+2. worker 收到 RabbitMQ 投递的 job_id；未确认的投递由后台补发到 RabbitMQ。
+   只有一次能把 queued 改为 running，避免重复调用 LLM 和扣费。
+   执行结束后才 ACK。已领取的任务中断后，由超期回收处理。
 3. handler 消费对应 service 的 async generator,每 yield 一条事件就
    `job_service.append_event` 落库(seq 由 jobs.last_seq 原子自增分配)。
    在线侧的订阅接口读这张表,不需要和 worker 共享内存。
@@ -28,7 +27,7 @@ from typing import Any
 import structlog
 
 from jobcopilot_api.infra.db import get_sessionmaker
-from jobcopilot_api.infra.queue import QueueMessage, get_queue, queue_enabled
+from jobcopilot_api.infra.queue import DeadLetter, RabbitMQJobQueue, get_queue
 from jobcopilot_api.models.job import (
     KIND_ANSWER_TURN,
     KIND_JD_ANALYSIS,
@@ -209,63 +208,50 @@ def _result_from(events: list[tuple[str, dict[str, Any]]]) -> dict[str, Any] | N
 # ---------- 消费循环 ----------
 
 
-async def _consume_once(semaphore: asyncio.Semaphore) -> bool:
-    """取一批任务并跑。返回 True 表示这轮确实处理了东西。"""
-    queue = get_queue()
-    handled = False
-
-    async def _process(message: QueueMessage) -> None:
-        async with semaphore:
-            job = await job_service.claim(message.job_id)
+async def _consume_rabbitmq(queue: RabbitMQJobQueue, slots: asyncio.Semaphore) -> None:
+    async def handle(job_id: int, redelivered: bool) -> None:
+        async with slots:
+            job = await job_service.claim(job_id)
             if job is not None:
-                await run_job(job)
-            # claim 返回 None:别的副本已经领走或已终态,ack 掉即可。
-            await queue.ack(message)
+                try:
+                    async with asyncio.timeout(job_service.remaining_seconds(job)):
+                        await run_job(job)
+                except TimeoutError:
+                    await job_service.finish(job_id=job_id, status=job_service.DEADLINE_EXCEEDED,
+                                             error_code="deadline_exceeded")
+            status = await job_service.job_status(job_id)
+            if status in (job_service.FAILED, job_service.DEADLINE_EXCEEDED) or status is None:
+                raise DeadLetter(status or "unknown_job")
+            if job is None and status == job_service.RUNNING and redelivered:
+                raise DeadLetter("redelivered_while_running")
 
-    if queue_enabled():
-        tasks = [
-            asyncio.create_task(_process(message))
-            async for message in queue.consume()
-        ]
-        if tasks:
-            handled = True
-            await asyncio.gather(*tasks, return_exceptions=True)
-        return handled
+    while True:
+        try:
+            await queue.consume(handle)
+        except Exception as exc:
+            logger.exception("rabbitmq_consumer_error", error=str(exc))
+        await asyncio.sleep(settings.job_poll_interval_s)
 
-    # 无 Redis:直接从 jobs 表 FOR UPDATE SKIP LOCKED 领。
-    job = await job_service.claim_next_queued()
-    if job is None:
-        return False
-    async with semaphore:
-        await run_job(job)
-    return True
+
+async def _relay_pending(stop: asyncio.Event) -> None:
+    while not stop.is_set():
+        try:
+            if await job_service.publish_pending():
+                continue
+        except Exception:
+            logger.exception("job_publication_retry_failed")
+        await asyncio.sleep(settings.job_poll_interval_s)
 
 
 async def run_forever(stop: asyncio.Event | None = None) -> None:
-    """worker 主循环。空转时按 `job_poll_interval_s` 退避。"""
     stop = stop or asyncio.Event()
-    semaphore = asyncio.Semaphore(settings.job_worker_concurrency)
-    logger.info(
-        "job_worker_started",
-        concurrency=settings.job_worker_concurrency,
-        queue="redis" if queue_enabled() else "db-poll",
-    )
-    while not stop.is_set():
-        try:
-            handled = await _consume_once(semaphore)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - 循环不能因为一次异常退出
-            logger.exception("job_worker_loop_error", error=str(exc))
-            handled = False
-        if not handled:
-            try:
-                await asyncio.wait_for(
-                    stop.wait(), timeout=settings.job_poll_interval_s
-                )
-            except TimeoutError:
-                pass
-    logger.info("job_worker_stopped")
+    slots = asyncio.Semaphore(settings.job_worker_concurrency)
+    async with asyncio.TaskGroup() as tasks:
+        consumer = tasks.create_task(_consume_rabbitmq(get_queue(), slots))
+        relay = tasks.create_task(_relay_pending(stop))
+        await stop.wait()
+        consumer.cancel()
+        relay.cancel()
 
 
 async def reap_forever(stop: asyncio.Event | None = None) -> None:
